@@ -46,6 +46,28 @@ except ImportError:
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+def load_dotenv_file(path: Path) -> None:
+    """Lê um arquivo .env simples (KEY=VALUE por linha) e preenche
+    variáveis de ambiente que ainda não estejam definidas. Usado apenas
+    quando o servidor é iniciado diretamente (python server.py / os .cmd
+    do Windows) — o docker-compose já lê o .env por conta própria."""
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_dotenv_file(ROOT / ".env")
+
 DATA_DIR = ROOT / "data"  # usado apenas para a chave Fernet (.gestao-fiscal.key); dados ficam no PostgreSQL.
 HOST = os.environ.get("SIMPLESCALC_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SIMPLESCALC_PORT", "4173"))
@@ -4948,7 +4970,25 @@ class handler(SimplesCalcHandler):
     pass
 
 def main() -> None:
-    initialize_database()
+    try:
+        initialize_database()
+    except (RuntimeError, *db.ConnectionIssue) as error:
+        message = str(error)
+        print("=" * 63)
+        print(" ERP GESTAO FISCAL - NAO FOI POSSIVEL INICIAR")
+        print("=" * 63)
+        print()
+        print(message)
+        print()
+        if "DATABASE_URL" in message or isinstance(error, db.ConnectionIssue):
+            print("Copie .env.example para .env (na mesma pasta do server.py)")
+            print("e preencha DATABASE_URL com a connection string do seu")
+            print("banco PostgreSQL (Supabase, Neon, Railway, RDS...).")
+            print("Se DATABASE_URL já estiver preenchida, confira se o banco")
+            print("está no ar e se o endereço/senha estão corretos.")
+            print("Depois execute este arquivo novamente.")
+            print()
+        raise SystemExit(1) from error
     server = ThreadingHTTPServer((HOST, PORT), SimplesCalcHandler)
     print(f"ContTech ERP disponível em http://{HOST}:{PORT}")
     print(f"Banco de dados: PostgreSQL ({masked_database_url()})")

@@ -18,12 +18,16 @@ import threading
 from pathlib import Path
 
 import psycopg
+import psycopg_pool
 from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 IntegrityError = pg_errors.IntegrityError
 OperationalError = pg_errors.OperationalError
+# Erros de conexão/indisponibilidade do banco (útil para uma mensagem amigável
+# em vez de um traceback cru quando DATABASE_URL aponta para algo inacessível).
+ConnectionIssue = (pg_errors.OperationalError, psycopg_pool.PoolTimeout)
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 

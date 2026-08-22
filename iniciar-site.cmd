@@ -4,6 +4,39 @@ chcp 65001 >nul
 title ERP Gestao Fiscal - Inteligencia Tributaria - Modo Seguro
 cd /d "%~dp0"
 
+if not exist ".env" (
+  cls
+  echo ===============================================================
+  echo  ERP GESTAO FISCAL - CONFIGURACAO NECESSARIA
+  echo ===============================================================
+  echo.
+  echo Este sistema agora usa um banco PostgreSQL em nuvem ^(Supabase,
+  echo Neon, Railway, RDS ou outro compativel^) em vez do arquivo local.
+  echo.
+  echo 1. Copie o arquivo ".env.example" e renomeie a copia para ".env".
+  echo 2. Abra o ".env" e preencha DATABASE_URL com a connection string
+  echo    do seu banco PostgreSQL.
+  echo 3. Execute este arquivo novamente.
+  echo.
+  pause
+  exit /b 1
+)
+
+findstr /R /C:"^DATABASE_URL=." ".env" >nul 2>&1
+if errorlevel 1 (
+  cls
+  echo ===============================================================
+  echo  ERP GESTAO FISCAL - DATABASE_URL NAO PREENCHIDA
+  echo ===============================================================
+  echo.
+  echo O arquivo ".env" existe, mas a linha DATABASE_URL esta vazia.
+  echo Abra o ".env" e preencha DATABASE_URL com a connection string do
+  echo seu banco PostgreSQL ^(Supabase, Neon, Railway, RDS...^).
+  echo.
+  pause
+  exit /b 1
+)
+
 set "GESTAO_PYTHON="
 where py >nul 2>&1
 if not errorlevel 1 set "GESTAO_PYTHON=py -3"
