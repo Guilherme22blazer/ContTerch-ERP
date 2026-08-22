@@ -4481,6 +4481,13 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": True})
 
 
+
+# Entrypoint exigido pelo runtime Python da Vercel.
+# A Vercel procura uma variável/classe top-level chamada "handler"
+# que seja compatível com BaseHTTPRequestHandler.
+class handler(SimplesCalcHandler):
+    pass
+
 def main() -> None:
     initialize_database()
     server = ThreadingHTTPServer((HOST, PORT), SimplesCalcHandler)
