@@ -6,3 +6,10 @@ app/data/*.db-shm
 app/data/*.db-journal
 __pycache__/
 *.pyc
+
+# Dados agora vivem no PostgreSQL (DATABASE_URL). Estes arquivos eram o
+# banco local antigo e a chave de criptografia; mantidos fora do controle
+# de versão daqui em diante para novos commits.
+simplescalc.db
+.gestao-fiscal.key
+app/data/
