@@ -1,0 +1,13 @@
+{
+  "name": "conttech-erp",
+  "version": "1.0.0",
+  "description": "ContTech ERP - O ERP mais completo do Brasil para contadores",
+  "private": true,
+  "scripts": {
+    "build": "echo 'No build step required for static files'",
+    "lint": "echo 'No linting configured'"
+  },
+  "dependencies": {
+    "@vercel/speed-insights": "^1.0.12"
+  }
+}

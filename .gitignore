@@ -6,3 +6,4 @@ app/data/*.db-shm
 app/data/*.db-journal
 __pycache__/
 *.pyc
+node_modules/
