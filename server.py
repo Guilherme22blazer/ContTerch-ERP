@@ -30,6 +30,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
+import bcrypt
+
+import db
+
 try:
     from cryptography import x509
     from cryptography.fernet import Fernet, InvalidToken
@@ -42,12 +46,12 @@ except ImportError:
 
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
-DB_PATH = DATA_DIR / "simplescalc.db"
+DATA_DIR = ROOT / "data"  # usado apenas para a chave Fernet (.gestao-fiscal.key); dados ficam no PostgreSQL.
 HOST = os.environ.get("SIMPLESCALC_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SIMPLESCALC_PORT", "4173"))
 PRODUCTION_MODE = os.environ.get("CONTTECH_PRODUCTION", "0") == "1"
 SESSION_SECONDS = 8 * 60 * 60
+REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60
 MASTER_KEY_PATH = DATA_DIR / ".gestao-fiscal.key"
 SESSION_CERT_PASSWORDS: dict[tuple[str, str], str] = {}
 CNPJ_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
@@ -65,6 +69,25 @@ SEFAZ_PERMISSIONS = {
     "consult_documents", "manage_certificates", "view_sensitive", "download_xml",
     "export_reports", "view_history", "manage_companies",
 }
+# Ações granulares do RBAC (permissão = "<módulo>.<ação>"), ver migrations
+# 0004/0005/0006/0007 e ensure_rbac_seed().
+PERMISSION_ACTIONS = {
+    "visualizar": "Visualizar",
+    "cadastrar": "Cadastrar",
+    "editar": "Editar",
+    "excluir": "Excluir",
+    "aprovar": "Aprovar",
+    "exportar": "Exportar",
+    "importar": "Importar",
+    "administrar": "Administrar",
+}
+DEFAULT_ROLES = {
+    "SUPER_ADMIN": "Acesso completo ao sistema, incluindo administração de empresas, planos e usuários.",
+    "ADMIN": "Administra usuários e módulos liberados dentro da própria empresa.",
+    "USER": "Acesso aos módulos liberados pelo administrador da empresa.",
+}
+# Ações reservadas exclusivamente ao SUPER_ADMIN (ver seção 4 da especificação).
+SUPER_ADMIN_ONLY_ACTIONS = {"administrar"}
 ERP_MODULES = {
     "tab_inicio": "Visão Geral da Carteira",
     "tab_sefaz_portal": "Consulta SEFAZ e Portal do Contribuinte",
@@ -235,20 +258,53 @@ NFSE_DOCUMENTATION = "https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecn
 NFSE_CONTRIBUTOR_API_DOCUMENTATION = "https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecnica/documentacao-atual/manual-contribuintes-apis-adn-sistema-nacional-nfse.pdf"
 
 
-def connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
+def connect():
+    """Conexão com o PostgreSQL em nuvem (ver db.py). Mantido com este nome
+    e assinatura (`with connect() as database: database.execute(...)`) para
+    preservar todo o código existente que já usava esse padrão com sqlite3."""
+    return db.connect()
 
 
 def password_hash(password: str, salt: str) -> str:
+    """Hash legado (PBKDF2-SHA256). Mantido apenas para verificar senhas já
+    armazenadas antes da migração para bcrypt (ver users.password_algo)."""
     return hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), salt.encode("utf-8"), 180_000
     ).hex()
 
 
+def hash_password(password: str) -> tuple[str, str, str]:
+    """Gera (salt, password_hash, password_algo) para uma senha nova ou
+    redefinida, sempre usando bcrypt (algoritmo atual)."""
+    salt = secrets.token_hex(16)
+    digest = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+    return salt, digest, "bcrypt"
+
+
+def verify_password(password: str, salt: str, stored_hash: str, algo: str) -> bool:
+    """Verifica a senha considerando o algoritmo armazenado: bcrypt (atual) ou
+    pbkdf2 (legado, gerado antes desta migração)."""
+    if algo == "bcrypt":
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+        except ValueError:
+            return False
+    return hmac.compare_digest(password_hash(password, salt), stored_hash)
+
+
 def local_now() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def masked_database_url() -> str:
+    """DATABASE_URL sem credenciais, apenas para logs (ex.: host/nome do banco)."""
+    raw = os.environ.get("DATABASE_URL", "").strip()
+    if not raw:
+        return "DATABASE_URL não configurada"
+    match = re.match(r"^[\w+]+://[^@/]+@([^/?]+)(/[^?]*)?", raw)
+    if match:
+        return f"{match.group(1)}{match.group(2) or ''}"
+    return "conexão configurada"
 
 
 def normalized_modules(value: object) -> list[str]:
@@ -266,7 +322,7 @@ def migrate_legacy_modules(database: sqlite3.Connection) -> None:
         for row in plan_rows:
             for replacement_key in replacement_keys:
                 database.execute(
-                    "INSERT OR IGNORE INTO plan_modules(plan_id, module_key) VALUES (?, ?)",
+                    "INSERT INTO plan_modules(plan_id, module_key) VALUES (?, ?) ON CONFLICT DO NOTHING",
                     (row["plan_id"], replacement_key),
                 )
         user_rows = database.execute(
@@ -275,7 +331,7 @@ def migrate_legacy_modules(database: sqlite3.Connection) -> None:
         for row in user_rows:
             for replacement_key in replacement_keys:
                 database.execute(
-                    "INSERT OR IGNORE INTO user_modules(email, module_key, allowed) VALUES (?, ?, ?)",
+                    "INSERT INTO user_modules(email, module_key, allowed) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
                     (row["email"], replacement_key, row["allowed"]),
                 )
     placeholders = ",".join("?" for _ in ERP_MODULES)
@@ -304,12 +360,13 @@ def apply_feature_access_migrations(database: sqlite3.Connection) -> None:
             continue
         database.execute(
             """
-            INSERT OR IGNORE INTO user_modules(email, module_key, allowed)
+            INSERT INTO user_modules(email, module_key, allowed)
             SELECT users.email, ?, 1
             FROM users
             JOIN plan_modules
               ON plan_modules.plan_id = users.plan_id
              AND plan_modules.module_key = ?
+            ON CONFLICT DO NOTHING
             """,
             (module_key, module_key),
         )
@@ -1659,269 +1716,109 @@ def parse_fiscal_xml(xml_data: bytes, access_key: str) -> dict:
     }
 
 
-def initialize_database() -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    with connect() as database:
-        database.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-              email TEXT PRIMARY KEY,
-              name TEXT NOT NULL,
-              role TEXT NOT NULL,
-              salt TEXT NOT NULL,
-              password_hash TEXT NOT NULL,
-              active INTEGER NOT NULL DEFAULT 1,
-              billing_cycle TEXT,
-              subscription_value REAL NOT NULL DEFAULT 0,
-              monitoring_start TEXT,
-              monitoring_end TEXT,
-              last_login_at TEXT,
-              previous_login_at TEXT,
-              profile_photo_encrypted BLOB,
-              profile_photo_mime TEXT,
-              profile_photo_updated_at TEXT
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-              token TEXT PRIMARY KEY,
-              email TEXT NOT NULL,
-              created_at INTEGER NOT NULL,
-              expires_at INTEGER NOT NULL,
-              FOREIGN KEY(email) REFERENCES users(email)
-            );
-            CREATE TABLE IF NOT EXISTS app_state (
-              id INTEGER PRIMARY KEY CHECK (id = 1),
-              payload TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              updated_by TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS server_audit (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              created_at TEXT NOT NULL,
-              email TEXT NOT NULL,
-              action TEXT NOT NULL,
-              detail TEXT
-            );
-            CREATE TABLE IF NOT EXISTS fiscal_certificates (
-              id TEXT PRIMARY KEY,
-              company TEXT NOT NULL,
-              branch TEXT,
-              document TEXT,
-              holder TEXT NOT NULL,
-              issuer TEXT NOT NULL,
-              serial TEXT NOT NULL,
-              valid_from TEXT NOT NULL,
-              valid_until TEXT NOT NULL,
-              environment TEXT NOT NULL,
-              state_code TEXT,
-              pfx_encrypted BLOB NOT NULL,
-              password_encrypted BLOB,
-              save_password INTEGER NOT NULL DEFAULT 0,
-              created_by TEXT NOT NULL,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              active INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE TABLE IF NOT EXISTS fiscal_queries (
-              id TEXT PRIMARY KEY,
-              access_key TEXT NOT NULL,
-              model TEXT NOT NULL,
-              company TEXT,
-              certificate_id TEXT,
-              environment TEXT NOT NULL,
-              status TEXT NOT NULL,
-              risk_level TEXT NOT NULL,
-              official_code TEXT,
-              source_name TEXT NOT NULL,
-              source_url TEXT NOT NULL,
-              result_encrypted BLOB NOT NULL,
-              xml_encrypted BLOB,
-              xml_filename TEXT,
-              xml_sha256 TEXT,
-              record_origin TEXT NOT NULL DEFAULT 'official_query',
-              import_batch_id TEXT,
-              consulted_by TEXT NOT NULL,
-              consulted_at TEXT NOT NULL,
-              FOREIGN KEY(certificate_id) REFERENCES fiscal_certificates(id)
-            );
-            CREATE TABLE IF NOT EXISTS user_permissions (
-              email TEXT NOT NULL,
-              permission TEXT NOT NULL,
-              allowed INTEGER NOT NULL DEFAULT 1,
-              PRIMARY KEY(email, permission),
-              FOREIGN KEY(email) REFERENCES users(email)
-            );
-            CREATE TABLE IF NOT EXISTS access_plans (
-              id TEXT PRIMARY KEY,
-              name TEXT NOT NULL UNIQUE,
-              description TEXT,
-              monthly_value REAL NOT NULL DEFAULT 0,
-              annual_value REAL NOT NULL DEFAULT 0,
-              max_users INTEGER NOT NULL DEFAULT 1,
-              trial_days INTEGER NOT NULL DEFAULT 0,
-              status TEXT NOT NULL DEFAULT 'Ativo',
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS plan_modules (
-              plan_id TEXT NOT NULL,
-              module_key TEXT NOT NULL,
-              PRIMARY KEY(plan_id, module_key),
-              FOREIGN KEY(plan_id) REFERENCES access_plans(id)
-            );
-            CREATE TABLE IF NOT EXISTS user_modules (
-              email TEXT NOT NULL,
-              module_key TEXT NOT NULL,
-              allowed INTEGER NOT NULL DEFAULT 1,
-              PRIMARY KEY(email, module_key),
-              FOREIGN KEY(email) REFERENCES users(email)
-            );
-            CREATE TABLE IF NOT EXISTS access_audit (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              created_at TEXT NOT NULL,
-              administrator_email TEXT NOT NULL,
-              affected_email TEXT,
-              action TEXT NOT NULL,
-              previous_value TEXT,
-              new_value TEXT,
-              ip_address TEXT
-            );
-            CREATE TABLE IF NOT EXISTS password_reset_tokens (
-              id TEXT PRIMARY KEY,
-              email TEXT NOT NULL,
-              token_hash TEXT NOT NULL UNIQUE,
-              created_at INTEGER NOT NULL,
-              expires_at INTEGER NOT NULL,
-              used_at INTEGER,
-              ip_address TEXT,
-              FOREIGN KEY(email) REFERENCES users(email)
-            );
-            CREATE TABLE IF NOT EXISTS password_reset_attempts (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              email TEXT NOT NULL,
-              ip_address TEXT,
-              attempted_at INTEGER NOT NULL,
-              successful INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS distributed_documents (
-              id TEXT PRIMARY KEY,
-              certificate_id TEXT NOT NULL,
-              environment TEXT NOT NULL,
-              state_code TEXT NOT NULL,
-              nsu TEXT NOT NULL,
-              schema_name TEXT,
-              document_type TEXT,
-              access_key TEXT,
-              direction TEXT,
-              status TEXT,
-              result_encrypted BLOB NOT NULL,
-              xml_encrypted BLOB NOT NULL,
-              synced_by TEXT NOT NULL,
-              received_at TEXT NOT NULL,
-              FOREIGN KEY(certificate_id) REFERENCES fiscal_certificates(id),
-              UNIQUE(certificate_id, environment, nsu)
-            );
-            CREATE TABLE IF NOT EXISTS distribution_state (
-              certificate_id TEXT NOT NULL,
-              environment TEXT NOT NULL,
-              state_code TEXT NOT NULL,
-              last_nsu TEXT NOT NULL DEFAULT '000000000000000',
-              max_nsu TEXT NOT NULL DEFAULT '000000000000000',
-              official_code TEXT,
-              motive TEXT,
-              updated_at TEXT NOT NULL,
-              PRIMARY KEY(certificate_id, environment, state_code),
-              FOREIGN KEY(certificate_id) REFERENCES fiscal_certificates(id)
-            );
-            CREATE TABLE IF NOT EXISTS nfse_monthly_imports (
-              id TEXT PRIMARY KEY,
-              certificate_id TEXT NOT NULL,
-              environment TEXT NOT NULL,
-              month TEXT NOT NULL,
-              source_filename TEXT NOT NULL,
-              source_sha256 TEXT NOT NULL,
-              source_documents INTEGER NOT NULL,
-              imported_documents INTEGER NOT NULL,
-              duplicate_documents INTEGER NOT NULL,
-              cancellation_events INTEGER NOT NULL,
-              ignored_documents INTEGER NOT NULL,
-              error_count INTEGER NOT NULL,
-              is_complete INTEGER NOT NULL DEFAULT 0,
-              imported_by TEXT NOT NULL,
-              imported_at TEXT NOT NULL,
-              FOREIGN KEY(certificate_id) REFERENCES fiscal_certificates(id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_fiscal_queries_date ON fiscal_queries(consulted_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_fiscal_queries_key ON fiscal_queries(access_key);
-            CREATE INDEX IF NOT EXISTS idx_distributed_documents_date ON distributed_documents(received_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_distributed_documents_key ON distributed_documents(access_key);
-            CREATE INDEX IF NOT EXISTS idx_nfse_monthly_imports_lookup ON nfse_monthly_imports(certificate_id, environment, month, imported_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_password_reset_token_hash ON password_reset_tokens(token_hash);
-            CREATE INDEX IF NOT EXISTS idx_password_reset_email_expiry ON password_reset_tokens(email, expires_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_password_reset_attempt_email_time ON password_reset_attempts(email, attempted_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_password_reset_attempt_ip_time ON password_reset_attempts(ip_address, attempted_at DESC);
-            """
+def ensure_default_company(database, name: str = "Empresa Padrão") -> str:
+    """Garante a existência de ao menos uma empresa (multi-tenant) e devolve
+    o id da primeira empresa cadastrada. Usada para associar os usuários e
+    dados já existentes (instalação single-tenant anterior) a uma empresa."""
+    existing = database.execute("SELECT id FROM companies ORDER BY criado_em LIMIT 1").fetchone()
+    if existing:
+        return existing["id"]
+    company_id = uuid.uuid4().hex
+    now = local_now()
+    database.execute(
+        """
+        INSERT INTO companies(id, razao_social, nome_fantasia, status, criado_em, atualizado_em)
+        VALUES (?, ?, ?, 'ATIVA', ?, ?)
+        """,
+        (company_id, name, name, now, now),
+    )
+    database.execute(
+        "INSERT INTO app_state(company_id, payload, updated_at, updated_by) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        (company_id, "{}", now, "system"),
+    )
+    return company_id
+
+
+def ensure_rbac_seed(database) -> dict[str, str]:
+    """Semeia o catálogo RBAC (roles, modules, permissions, role_permissions)
+    a partir das constantes já existentes (ERP_MODULES, PERMISSION_ACTIONS,
+    DEFAULT_ROLES). Devolve um dicionário {nome_do_perfil: id} dos roles."""
+    now = local_now()
+    role_ids: dict[str, str] = {}
+    for role_name, description in DEFAULT_ROLES.items():
+        row = database.execute("SELECT id FROM roles WHERE nome = ?", (role_name,)).fetchone()
+        if row:
+            role_ids[role_name] = row["id"]
+            continue
+        role_id = uuid.uuid4().hex
+        database.execute(
+            "INSERT INTO roles(id, nome, descricao, ativo, criado_em) VALUES (?, ?, ?, TRUE, ?)",
+            (role_id, role_name, description, now),
         )
-        existing_columns = {
-            row["name"] for row in database.execute("PRAGMA table_info(users)").fetchall()
-        }
-        user_columns = {
-            "id": "TEXT",
-            "document": "TEXT",
-            "phone": "TEXT",
-            "company": "TEXT",
-            "company_document": "TEXT",
-            "job_title": "TEXT",
-            "department": "TEXT",
-            "login": "TEXT",
-            "status": "TEXT NOT NULL DEFAULT 'Ativo'",
-            "plan_id": "TEXT",
-            "notes": "TEXT",
-            "created_at": "TEXT",
-            "updated_at": "TEXT",
-            "created_by": "TEXT",
-            "updated_by": "TEXT",
-            "last_login_ip": "TEXT",
-            "login_attempts": "INTEGER NOT NULL DEFAULT 0",
-            "blocked_at": "TEXT",
-            "billing_cycle": "TEXT",
-            "subscription_value": "REAL NOT NULL DEFAULT 0",
-            "monitoring_start": "TEXT",
-            "monitoring_end": "TEXT",
-            "last_login_at": "TEXT",
-            "previous_login_at": "TEXT",
-            "profile_photo_encrypted": "BLOB",
-            "profile_photo_mime": "TEXT",
-            "profile_photo_updated_at": "TEXT",
-        }
-        for column, definition in user_columns.items():
-            if column not in existing_columns:
-                database.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
-        database.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_id ON users(id) WHERE id IS NOT NULL")
-        database.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login ON users(login) WHERE login IS NOT NULL AND login != ''")
-        database.execute("DROP INDEX IF EXISTS idx_users_document")
-        database.execute("DROP INDEX IF EXISTS idx_users_company_document")
-        database.execute("CREATE INDEX IF NOT EXISTS idx_users_document_lookup ON users(document)")
-        database.execute("CREATE INDEX IF NOT EXISTS idx_users_company_document_lookup ON users(company_document)")
-        database.execute("CREATE INDEX IF NOT EXISTS idx_users_status_end ON users(status, monitoring_end)")
-        database.execute("CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan_id)")
-        database.execute("CREATE INDEX IF NOT EXISTS idx_access_audit_user_date ON access_audit(affected_email, created_at DESC)")
-        certificate_columns = {
-            row["name"] for row in database.execute("PRAGMA table_info(fiscal_certificates)").fetchall()
-        }
-        if "state_code" not in certificate_columns:
-            database.execute("ALTER TABLE fiscal_certificates ADD COLUMN state_code TEXT")
-        query_columns = {
-            row["name"] for row in database.execute("PRAGMA table_info(fiscal_queries)").fetchall()
-        }
-        query_column_definitions = {
-            "xml_sha256": "TEXT",
-            "record_origin": "TEXT NOT NULL DEFAULT 'official_query'",
-            "import_batch_id": "TEXT",
-        }
-        for column, definition in query_column_definitions.items():
-            if column not in query_columns:
-                database.execute(f"ALTER TABLE fiscal_queries ADD COLUMN {column} {definition}")
-        database.execute("CREATE INDEX IF NOT EXISTS idx_fiscal_queries_xml_sha ON fiscal_queries(xml_sha256)")
+        role_ids[role_name] = role_id
+
+    for order, (module_code, module_label) in enumerate(ERP_MODULES.items()):
+        row = database.execute("SELECT id FROM modules WHERE codigo = ?", (module_code,)).fetchone()
+        if row:
+            continue
+        database.execute(
+            "INSERT INTO modules(id, codigo, nome, ordem, ativo) VALUES (?, ?, ?, ?, TRUE)",
+            (uuid.uuid4().hex, module_code, module_label, order),
+        )
+
+    module_id_by_code = {
+        row["codigo"]: row["id"]
+        for row in database.execute("SELECT id, codigo FROM modules").fetchall()
+    }
+    for module_code, module_label in ERP_MODULES.items():
+        module_id = module_id_by_code[module_code]
+        for action, action_label in PERMISSION_ACTIONS.items():
+            codigo = f"{module_code}.{action}"
+            if database.execute("SELECT 1 FROM permissions WHERE codigo = ?", (codigo,)).fetchone():
+                continue
+            database.execute(
+                "INSERT INTO permissions(id, codigo, nome, modulo_id) VALUES (?, ?, ?, ?)",
+                (uuid.uuid4().hex, codigo, f"{module_label} — {action_label}", module_id),
+            )
+
+    permission_rows = database.execute("SELECT id, codigo FROM permissions").fetchall()
+    for role_name, role_id in role_ids.items():
+        for permission in permission_rows:
+            action = permission["codigo"].rsplit(".", 1)[-1]
+            if role_name != "SUPER_ADMIN" and action in SUPER_ADMIN_ONLY_ACTIONS:
+                continue
+            if role_name == "USER" and action != "visualizar":
+                continue
+            database.execute(
+                "INSERT INTO role_permissions(role_id, permission_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                (role_id, permission["id"]),
+            )
+    return role_ids
+
+
+def initialize_database() -> None:
+    db.run_migrations()
+    with connect() as database:
+        default_company_id = ensure_default_company(database)
+        role_ids = ensure_rbac_seed(database)
+        database.execute(
+            "UPDATE users SET company_id = COALESCE(company_id, ?)", (default_company_id,)
+        )
+        database.execute(
+            "UPDATE users SET perfil_id = COALESCE(perfil_id, ?) WHERE role = 'Administrador'",
+            (role_ids["SUPER_ADMIN"],),
+        )
+        database.execute(
+            "UPDATE users SET perfil_id = COALESCE(perfil_id, ?) WHERE role != 'Administrador'",
+            (role_ids["USER"],),
+        )
+    _initialize_legacy_data()
+
+
+def _initialize_legacy_data() -> None:
+    with connect() as database:
+        default_company_id = database.execute("SELECT id FROM companies ORDER BY criado_em LIMIT 1").fetchone()["id"]
+        super_admin_role_id = database.execute("SELECT id FROM roles WHERE nome = 'SUPER_ADMIN'").fetchone()["id"]
         user_total = int(database.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"])
         users = []
         if user_total == 0:
@@ -1935,20 +1832,26 @@ def initialize_database() -> None:
                 )
             users = [
                 (
-                    admin_email, admin_name, "Administrador", secrets.token_hex(16),
-                    admin_password, "Anual", 0, dt.date.today().isoformat(),
-                    (dt.date.today() + dt.timedelta(days=365)).isoformat(),
+                    admin_email, admin_name, "Administrador", admin_password, "Anual", 0,
+                    dt.date.today().isoformat(), (dt.date.today() + dt.timedelta(days=365)).isoformat(),
                 )
             ]
-        for email, name, role, salt, password, cycle, value, start, end in users:
+        for email, name, role, password, cycle, value, start, end in users:
+            salt, hashed, algo = hash_password(password)
             database.execute(
                 """
-                INSERT OR IGNORE INTO users
-                (email, name, role, salt, password_hash, active, billing_cycle,
-                 subscription_value, monitoring_start, monitoring_end)
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                INSERT INTO users
+                (email, name, role, salt, password_hash, password_algo, active, billing_cycle,
+                 subscription_value, monitoring_start, monitoring_end, company_id, perfil_id,
+                 id, login, status, created_at, updated_at, created_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'Ativo', ?, ?, 'system', 'system')
+                ON CONFLICT (email) DO NOTHING
                 """,
-                (email, name, role, salt, password_hash(password, salt), cycle, value, start, end),
+                (
+                    email, name, role, salt, hashed, algo, cycle, value, start, end,
+                    default_company_id, super_admin_role_id, uuid.uuid4().hex,
+                    email.split("@", 1)[0], local_now(), local_now(),
+                ),
             )
             database.execute(
                 """
@@ -1976,24 +1879,25 @@ def initialize_database() -> None:
         for plan in plan_rows:
             database.execute(
                 """
-                INSERT OR IGNORE INTO access_plans
+                INSERT INTO access_plans
                 (id, name, description, monthly_value, annual_value, max_users, trial_days, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO NOTHING
                 """,
                 (*plan, now, now),
             )
         for plan_id, modules in DEFAULT_PLAN_MODULES.items():
             for module_key in modules:
                 database.execute(
-                    "INSERT OR IGNORE INTO plan_modules(plan_id, module_key) VALUES (?, ?)",
+                    "INSERT INTO plan_modules(plan_id, module_key) VALUES (?, ?) ON CONFLICT DO NOTHING",
                     (plan_id, module_key),
                 )
         migrate_legacy_modules(database)
         database.execute(
             """
             UPDATE users SET
-              id = COALESCE(NULLIF(id, ''), lower(hex(randomblob(16)))),
-              login = COALESCE(NULLIF(login, ''), lower(substr(email, 1, instr(email, '@') - 1))),
+              id = COALESCE(NULLIF(id, ''), md5(random()::text || clock_timestamp()::text)),
+              login = COALESCE(NULLIF(login, ''), lower(substr(email, 1, position('@' in email) - 1))),
               status = CASE WHEN active = 1 THEN COALESCE(NULLIF(status, ''), 'Ativo') ELSE 'Inativo' END,
               plan_id = COALESCE(NULLIF(plan_id, ''), CASE WHEN role = 'Administrador' THEN 'completo' ELSE 'profissional' END),
               created_at = COALESCE(NULLIF(created_at, ''), ?),
@@ -2012,7 +1916,7 @@ def initialize_database() -> None:
             if not existing_user_modules:
                 for module_key in DEFAULT_PLAN_MODULES[plan_id]:
                     database.execute(
-                        "INSERT OR IGNORE INTO user_modules(email, module_key, allowed) VALUES (?, ?, 1)",
+                        "INSERT INTO user_modules(email, module_key, allowed) VALUES (?, ?, 1) ON CONFLICT DO NOTHING",
                         (email, module_key),
                     )
         if database.execute(
@@ -2020,14 +1924,13 @@ def initialize_database() -> None:
         ).fetchone():
             for permission in ("consult_documents", "view_history"):
                 database.execute(
-                    "INSERT OR IGNORE INTO user_permissions(email, permission, allowed) VALUES (?, ?, 1)",
+                    "INSERT INTO user_sefaz_permissions(email, permission, allowed) VALUES (?, ?, 1) ON CONFLICT DO NOTHING",
                     ("usuario@simplescalc.pro", permission),
                 )
         refresh_expired_subscriptions(database)
         database.execute("DELETE FROM sessions WHERE expires_at < ?", (int(time.time()),))
         database.execute("DELETE FROM password_reset_tokens WHERE expires_at < ? OR used_at IS NOT NULL", (int(time.time()) - 86400,))
         database.execute("DELETE FROM password_reset_attempts WHERE attempted_at < ?", (int(time.time()) - 86400,))
-        database.execute("PRAGMA optimize")
 
 
 class SimplesCalcHandler(SimpleHTTPRequestHandler):
@@ -2098,9 +2001,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             user = database.execute(
                 """
                 SELECT u.id, u.email, u.name, u.role, u.status, u.plan_id,
-                       u.monitoring_start, u.monitoring_end, s.token
+                       u.monitoring_start, u.monitoring_end, u.company_id, u.perfil_id,
+                       r.nome AS perfil_nome, s.token
                 FROM sessions s
                 JOIN users u ON u.email = s.email
+                LEFT JOIN roles r ON r.id = u.perfil_id
                 WHERE s.token = ? AND s.expires_at >= ? AND u.active = 1
                   AND u.status NOT IN ('Inativo', 'Bloqueado', 'Aguardando ativação')
                 """,
@@ -2121,7 +2026,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         with connect() as database:
             database.execute(
                 "INSERT INTO server_audit(created_at, email, action, detail) "
-                "VALUES (datetime('now'), ?, ?, ?)",
+                "VALUES (now()::text, ?, ?, ?)",
                 (email, action, detail[:500]),
             )
 
@@ -2133,7 +2038,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             return set(SEFAZ_PERMISSIONS)
         with connect() as database:
             rows = database.execute(
-                "SELECT permission FROM user_permissions WHERE email = ? AND allowed = 1",
+                "SELECT permission FROM user_sefaz_permissions WHERE email = ? AND allowed = 1",
                 (user["email"],),
             ).fetchall()
         return {row["permission"] for row in rows if row["permission"] in SEFAZ_PERMISSIONS}
@@ -2163,9 +2068,132 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             return None
         return user
 
+    def require_role(self, role_name: str) -> sqlite3.Row | None:
+        """RBAC por perfil (roles.nome), ex.: self.require_role("SUPER_ADMIN")."""
+        user = self.require_user()
+        if user is None:
+            return None
+        if (user["perfil_nome"] or "") != role_name:
+            self.send_json(
+                {"error": f"Acesso não autorizado. Esta área é exclusiva do perfil {role_name}."},
+                HTTPStatus.FORBIDDEN,
+            )
+            return None
+        return user
+
+    def user_role_permissions(self, user: sqlite3.Row) -> set[str]:
+        """Códigos de permissão granular (módulo.ação) efetivos do usuário:
+        permissões do perfil (role_permissions) com exceções individuais
+        (user_permissions) sobrepondo o valor padrão do perfil."""
+        with connect() as database:
+            role_rows = database.execute(
+                """
+                SELECT p.codigo FROM role_permissions rp
+                JOIN permissions p ON p.id = rp.permission_id
+                WHERE rp.role_id = ?
+                """,
+                (user["perfil_id"],),
+            ).fetchall()
+            granted = {row["codigo"] for row in role_rows}
+            exception_rows = database.execute(
+                """
+                SELECT p.codigo, up.allowed FROM user_permissions up
+                JOIN permissions p ON p.id = up.permission_id
+                WHERE up.user_id = ?
+                """,
+                (user["id"],),
+            ).fetchall()
+        for row in exception_rows:
+            if row["allowed"]:
+                granted.add(row["codigo"])
+            else:
+                granted.discard(row["codigo"])
+        return granted
+
+    def require_new_permission(self, user: sqlite3.Row, codigo: str) -> bool:
+        """RBAC granular (módulo.ação). SUPER_ADMIN sempre tem acesso total."""
+        if (user["perfil_nome"] or "") == "SUPER_ADMIN":
+            return True
+        if codigo in self.user_role_permissions(user):
+            return True
+        self.send_json(
+            {"error": f"Seu usuário não possui a permissão '{codigo}'."}, HTTPStatus.FORBIDDEN
+        )
+        return False
+
     def client_ip(self) -> str:
         forwarded = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
         return forwarded or (self.client_address[0] if self.client_address else "")
+
+    def client_device_browser(self) -> tuple[str, str]:
+        """Extrai um resumo simples de dispositivo/navegador do User-Agent
+        (login_logs.dispositivo / login_logs.navegador)."""
+        user_agent = self.headers.get("User-Agent", "")[:300]
+        device = "Mobile" if re.search(r"Mobi|Android|iPhone|iPad", user_agent) else "Desktop"
+        browser = "Outro"
+        for name, pattern in (
+            ("Edge", r"Edg/"), ("Chrome", r"Chrome/"), ("Firefox", r"Firefox/"),
+            ("Safari", r"Safari/"), ("Opera", r"OPR/"),
+        ):
+            if re.search(pattern, user_agent):
+                browser = name
+                break
+        return device, browser
+
+    def write_login_log(
+        self, database, email: str, sucesso: bool, user_id: str | None = None,
+        company_id: str | None = None, motivo_falha: str = "",
+    ) -> None:
+        device, browser = self.client_device_browser()
+        database.execute(
+            """
+            INSERT INTO login_logs(id, user_id, email, empresa_id, data_hora, ip, dispositivo, navegador, sucesso, motivo_falha)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (uuid.uuid4().hex, user_id, email, company_id, local_now(), self.client_ip(), device, browser, sucesso, motivo_falha[:300]),
+        )
+
+    def issue_refresh_token(self, database, email: str, session_token: str) -> str:
+        refresh_token = secrets.token_urlsafe(48)
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        now = int(time.time())
+        database.execute(
+            """
+            INSERT INTO refresh_tokens(id, email, token_hash, session_token, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (uuid.uuid4().hex, email, token_hash, session_token, now, now + REFRESH_TOKEN_SECONDS),
+        )
+        return refresh_token
+
+    def refresh_session(self, payload: dict) -> dict:
+        """POST /api/auth/refresh: troca um refresh token válido por uma nova
+        sessão (access token), rotacionando o refresh token (uso único)."""
+        refresh_token = str(payload.get("refreshToken", "")).strip()
+        if not refresh_token:
+            raise ValueError("Informe o refreshToken.")
+        token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        now = int(time.time())
+        with connect() as database:
+            record = database.execute(
+                "SELECT id, email FROM refresh_tokens WHERE token_hash = ? AND revoked_at IS NULL AND expires_at >= ?",
+                (token_hash, now),
+            ).fetchone()
+            if record is None:
+                raise ValueError("Refresh token inválido ou expirado. Faça login novamente.")
+            user = database.execute(
+                "SELECT email, active, status FROM users WHERE email = ?", (record["email"],)
+            ).fetchone()
+            if user is None or not user["active"] or user["status"] in {"Inativo", "Bloqueado"}:
+                raise ValueError("Acesso indisponível. Consulte o administrador responsável.")
+            database.execute("UPDATE refresh_tokens SET revoked_at = ? WHERE id = ?", (now, record["id"]))
+            new_session_token = secrets.token_urlsafe(32)
+            database.execute(
+                "INSERT INTO sessions(token, email, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (new_session_token, user["email"], now, now + SESSION_SECONDS),
+            )
+            new_refresh_token = self.issue_refresh_token(database, user["email"], new_session_token)
+        return {"token": new_session_token, "refreshToken": new_refresh_token}
 
     def modules_for_user(self, user: sqlite3.Row) -> set[str]:
         with connect() as database:
@@ -2180,7 +2208,10 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         )
         return False
 
-    def admin_access_payload(self) -> dict:
+    def admin_access_payload(self, administrator: sqlite3.Row | None = None) -> dict:
+        """Monta o payload do painel administrativo. Quando `administrator`
+        é informado, a listagem de usuários é restrita à mesma empresa
+        (multi-tenant) — exceto para o perfil SUPER_ADMIN, que enxerga todas."""
         with connect() as database:
             expired_now = refresh_expired_subscriptions(database)
             if expired_now:
@@ -2218,12 +2249,19 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             for row in module_rows:
                 user_modules.setdefault(row["email"], []).append(row["module_key"])
             users = []
+            scope_to_company = bool(
+                administrator
+                and administrator["company_id"]
+                and (administrator["perfil_nome"] or "") != "SUPER_ADMIN"
+            )
             user_rows = database.execute(
                 """
                 SELECT u.*, p.name AS plan_name
                 FROM users u LEFT JOIN access_plans p ON p.id = u.plan_id
-                ORDER BY u.name COLLATE NOCASE
-                """
+                WHERE (? = FALSE) OR u.company_id = ?
+                ORDER BY lower(u.name)
+                """,
+                (scope_to_company, administrator["company_id"] if scope_to_company else None),
             ).fetchall()
             today = dt.datetime.now().astimezone().date()
             for row in user_rows:
@@ -2341,7 +2379,35 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             trial_days = max(1, int(plan["trial_days"] or 7))
             end_date = start_date + dt.timedelta(days=trial_days)
             user_id = uuid.uuid4().hex
-            salt = secrets.token_hex(16)
+            salt, hashed, algo = hash_password(password)
+            company_id = uuid.uuid4().hex
+            # role legado permanece 'Usuário' (comportamento já existente); o
+            # perfil RBAC granular acompanha o mesmo nível de acesso.
+            default_role = database.execute("SELECT id FROM roles WHERE nome = 'USER'").fetchone()["id"]
+            database.execute(
+                """
+                INSERT INTO companies(id, razao_social, nome_fantasia, cnpj, email, telefone, status, plano_id, data_inicio, data_vencimento, criado_em, atualizado_em)
+                VALUES (?, ?, ?, ?, ?, ?, 'ATIVA', ?, ?, ?, ?, ?)
+                """,
+                (
+                    company_id, company, company, document if document_type == "CNPJ" else None, email, phone,
+                    plan["id"], start_date.isoformat(), end_date.isoformat(), now, now,
+                ),
+            )
+            database.execute(
+                "INSERT INTO app_state(company_id, payload, updated_at, updated_by) VALUES (?, ?, ?, ?)",
+                (company_id, "{}", now, email),
+            )
+            database.execute(
+                """
+                INSERT INTO subscriptions(id, empresa_id, plano_id, data_inicio, data_fim, status, periodicidade, criado_em, atualizado_em)
+                VALUES (?, ?, ?, ?, ?, 'TESTE', ?, ?, ?)
+                """,
+                (
+                    uuid.uuid4().hex, company_id, plan["id"], start_date.isoformat(), end_date.isoformat(),
+                    "ANUAL" if billing_cycle == "Anual" else "MENSAL", now, now,
+                ),
+            )
             notes = " · ".join(
                 item for item in (
                     f"Cupom: {coupon_code}" if coupon_code else "",
@@ -2352,17 +2418,17 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             database.execute(
                 """
                 INSERT INTO users(
-                  id, email, name, role, salt, password_hash, active, document, phone, company,
+                  id, email, name, role, salt, password_hash, password_algo, active, document, phone, company,
                   company_document, job_title, department, login, status, plan_id, notes,
                   billing_cycle, subscription_value, monitoring_start, monitoring_end,
-                  created_at, updated_at, created_by, updated_by
-                ) VALUES (?, ?, ?, 'Usuário', ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'Ativo', ?, ?, ?, ?, ?, ?, ?, ?, 'Cadastro público', 'Cadastro público')
+                  created_at, updated_at, created_by, updated_by, company_id, perfil_id, primeiro_acesso
+                ) VALUES (?, ?, ?, 'Usuário', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'Ativo', ?, ?, ?, ?, ?, ?, ?, ?, 'Cadastro público', 'Cadastro público', ?, ?, FALSE)
                 """,
                 (
-                    user_id, email, responsible, salt, password_hash(password, salt), document, phone,
+                    user_id, email, responsible, salt, hashed, algo, document, phone,
                     company, document if document_type == "CNPJ" else "", activity, segment, email,
                     plan["id"], notes, billing_cycle, subscription_value, start_date.isoformat(),
-                    end_date.isoformat(), now, now,
+                    end_date.isoformat(), now, now, company_id, default_role,
                 ),
             )
             module_rows = database.execute(
@@ -2375,7 +2441,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 )
             for permission in ("consult_documents", "view_history"):
                 database.execute(
-                    "INSERT OR IGNORE INTO user_permissions(email, permission, allowed) VALUES (?, ?, 1)",
+                    "INSERT INTO user_sefaz_permissions(email, permission, allowed) VALUES (?, ?, 1) ON CONFLICT DO NOTHING",
                     (email, permission),
                 )
             write_access_audit(
@@ -2474,15 +2540,15 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             ).fetchone()
             if user is None:
                 raise ValueError("Conta não encontrada.")
-            salt = secrets.token_hex(16)
+            salt, hashed, algo = hash_password(password)
             new_status = "Ativo" if user["status"] == "Bloqueado" else user["status"]
             database.execute(
                 """
-                UPDATE users SET salt = ?, password_hash = ?, login_attempts = 0, blocked_at = NULL,
-                  status = ?, updated_at = ?, updated_by = ?
+                UPDATE users SET salt = ?, password_hash = ?, password_algo = ?, login_attempts = 0, blocked_at = NULL,
+                  status = ?, updated_at = ?, updated_by = ?, primeiro_acesso = FALSE
                 WHERE email = ?
                 """,
-                (salt, password_hash(password, salt), new_status, local_now(), user["email"], user["email"]),
+                (salt, hashed, algo, new_status, local_now(), user["email"], user["email"]),
             )
             database.execute("DELETE FROM sessions WHERE email = ?", (user["email"],))
             database.execute("UPDATE password_reset_tokens SET used_at = ? WHERE id = ?", (now, reset_record["id"]))
@@ -2551,24 +2617,29 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             active = 0 if status == "Inativo" else 1
             if existing is None:
                 user_id = uuid.uuid4().hex
-                salt = secrets.token_hex(16)
+                salt, hashed, algo = hash_password(password)
+                perfil_role_name = "ADMIN" if role == "Administrador" else "USER"
+                perfil_id = database.execute(
+                    "SELECT id FROM roles WHERE nome = ?", (perfil_role_name,)
+                ).fetchone()["id"]
                 database.execute(
                     """
                     INSERT INTO users(
-                      id, email, name, role, salt, password_hash, active, document, phone, company,
+                      id, email, name, role, salt, password_hash, password_algo, active, document, phone, company,
                       company_document, job_title, department, login, status, plan_id, notes,
                       billing_cycle, subscription_value, monitoring_start, monitoring_end,
-                      created_at, updated_at, created_by, updated_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      created_at, updated_at, created_by, updated_by, company_id, perfil_id, primeiro_acesso
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
                     """,
                     (
-                        user_id, email, name, role, salt, password_hash(password, salt), active,
+                        user_id, email, name, role, salt, hashed, algo, active,
                         str(payload.get("document", "")).strip(), str(payload.get("phone", "")).strip(),
                         str(payload.get("company", "")).strip(), str(payload.get("companyDocument", "")).strip(),
                         str(payload.get("jobTitle", "")).strip(), str(payload.get("department", "")).strip(),
                         login, status, plan_id, str(payload.get("notes", "")).strip(),
                         str(payload.get("billingCycle", "Mensal")), float(payload.get("subscriptionValue", 0) or 0),
                         start, end, now, now, administrator["email"], administrator["email"],
+                        administrator["company_id"], perfil_id,
                     ),
                 )
                 action = "Administrador criou usuário"
@@ -2593,13 +2664,20 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     ),
                 )
                 if old_email != email:
-                    for table, column in (("sessions", "email"), ("user_permissions", "email"), ("user_modules", "email")):
+                    for table, column in (("sessions", "email"), ("user_sefaz_permissions", "email"), ("user_modules", "email")):
                         database.execute(f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (email, old_email))
                 if password:
                     if len(password) < 8:
                         raise ValueError("A nova senha deve possuir pelo menos 8 caracteres.")
-                    salt = secrets.token_hex(16)
-                    database.execute("UPDATE users SET salt = ?, password_hash = ? WHERE id = ?", (salt, password_hash(password, salt), user_id))
+                    salt, hashed, algo = hash_password(password)
+                    database.execute(
+                        "UPDATE users SET salt = ?, password_hash = ?, password_algo = ?, primeiro_acesso = TRUE WHERE id = ?",
+                        (salt, hashed, algo, user_id),
+                    )
+                database.execute(
+                    "UPDATE users SET perfil_id = (SELECT id FROM roles WHERE nome = ?) WHERE id = ?",
+                    ("ADMIN" if role == "Administrador" else "USER", user_id),
+                )
                 action = "Administrador alterou usuário"
             if not modules:
                 modules = [row["module_key"] for row in database.execute("SELECT module_key FROM plan_modules WHERE plan_id = ?", (plan_id,)).fetchall()]
@@ -3483,7 +3561,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             super().do_GET()
             return
         if path == "/api/health":
-            self.send_json({"ok": True, "database": "sqlite", "version": "1.5", "dfeDistribution": True, "nfseNational": True, "nfseMonthlyPackage": True, "cnpjOfficialApi": bool(os.environ.get("SERPRO_CNPJ_CONSUMER_KEY") and os.environ.get("SERPRO_CNPJ_CONSUMER_SECRET"))})
+            self.send_json({"ok": True, "database": "postgresql", "version": "1.5", "dfeDistribution": True, "nfseNational": True, "nfseMonthlyPackage": True, "cnpjOfficialApi": bool(os.environ.get("SERPRO_CNPJ_CONSUMER_KEY") and os.environ.get("SERPRO_CNPJ_CONSUMER_SECRET"))})
             return
         if path == "/api/public/plans":
             with connect() as database:
@@ -3530,7 +3608,155 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             user = self.require_admin()
             if user is None:
                 return
-            self.send_json(self.admin_access_payload())
+            self.send_json(self.admin_access_payload(user))
+            return
+
+        if path == "/api/admin/backup/export":
+            # Exportação leve (dados estruturais da própria empresa, sem
+            # hash/salt de senha nem blobs cifrados). Backup completo e
+            # recuperação de desastre ficam a cargo do provedor PostgreSQL
+            # (Supabase/Neon/RDS) e do backup.sh (pg_dump), ver seção 27.
+            user = self.require_role("SUPER_ADMIN")
+            if user is None:
+                return
+            with connect() as database:
+                company = database.execute("SELECT * FROM companies WHERE id = ?", (user["company_id"],)).fetchone()
+                users = database.execute(
+                    "SELECT id, email, name, role, status, login, plan_id, company_id, perfil_id, created_at "
+                    "FROM users WHERE company_id = ?",
+                    (user["company_id"],),
+                ).fetchall()
+                subscriptions = database.execute("SELECT * FROM subscriptions WHERE empresa_id = ?", (user["company_id"],)).fetchall()
+                audit_rows = database.execute(
+                    "SELECT * FROM audit_logs WHERE empresa_id = ? ORDER BY data_hora DESC LIMIT 1000", (user["company_id"],)
+                ).fetchall()
+            self.audit(user["email"], "backup_export", user["company_id"])
+            self.send_json({
+                "exportedAt": local_now(),
+                "company": dict(company) if company else None,
+                "users": [dict(row) for row in users],
+                "subscriptions": [dict(row) for row in subscriptions],
+                "auditLogs": [dict(row) for row in audit_rows],
+            })
+            return
+
+        if path == "/api/modules":
+            user = self.require_user()
+            if user is None:
+                return
+            with connect() as database:
+                rows = database.execute(
+                    "SELECT id, codigo, nome, descricao, rota, icone, ordem, ativo FROM modules WHERE ativo = TRUE ORDER BY ordem"
+                ).fetchall()
+            self.send_json({"modules": [
+                {
+                    "id": row["id"], "codigo": row["codigo"], "nome": row["nome"],
+                    "descricao": row["descricao"] or "", "rota": row["rota"] or "",
+                    "icone": row["icone"] or "", "ordem": row["ordem"],
+                }
+                for row in rows
+            ]})
+            return
+
+        if path == "/api/roles":
+            user = self.require_user()
+            if user is None:
+                return
+            with connect() as database:
+                rows = database.execute("SELECT id, nome, descricao, ativo FROM roles WHERE ativo = TRUE ORDER BY nome").fetchall()
+            self.send_json({"roles": [
+                {"id": row["id"], "nome": row["nome"], "descricao": row["descricao"] or ""} for row in rows
+            ]})
+            return
+
+        if path == "/api/plans":
+            user = self.require_user()
+            if user is None:
+                return
+            with connect() as database:
+                rows = database.execute(
+                    "SELECT id, name, description, monthly_value, annual_value, max_users, trial_days, status FROM access_plans ORDER BY lower(name)"
+                ).fetchall()
+            self.send_json({"plans": [
+                {
+                    "id": row["id"], "nome": row["name"], "descricao": row["description"] or "",
+                    "valorMensal": row["monthly_value"], "valorAnual": row["annual_value"],
+                    "maxUsuarios": row["max_users"], "trialDays": row["trial_days"], "status": row["status"],
+                }
+                for row in rows
+            ]})
+            return
+
+        if path == "/api/companies":
+            user = self.require_role("SUPER_ADMIN")
+            if user is None:
+                return
+            with connect() as database:
+                rows = database.execute(
+                    "SELECT id, razao_social, nome_fantasia, cnpj, email, telefone, status, plano_id, data_inicio, data_vencimento FROM companies ORDER BY lower(razao_social)"
+                ).fetchall()
+            self.send_json({"companies": [dict(row) for row in rows]})
+            return
+
+        if path == "/api/subscriptions":
+            user = self.require_user()
+            if user is None:
+                return
+            super_admin = (user["perfil_nome"] or "") == "SUPER_ADMIN"
+            with connect() as database:
+                rows = database.execute(
+                    """
+                    SELECT s.*, c.razao_social, p.name AS plan_name FROM subscriptions s
+                    JOIN companies c ON c.id = s.empresa_id
+                    JOIN access_plans p ON p.id = s.plano_id
+                    WHERE (? = TRUE) OR s.empresa_id = ?
+                    ORDER BY s.criado_em DESC
+                    """,
+                    (super_admin, user["company_id"]),
+                ).fetchall()
+            self.send_json({"subscriptions": [dict(row) for row in rows]})
+            return
+
+        if path == "/api/users":
+            user = self.require_admin()
+            if user is None:
+                return
+            self.send_json({"users": self.admin_access_payload(user)["users"]})
+            return
+
+        user_permissions_match = re.fullmatch(r"/api/users/([a-f0-9]{32})/permissions", path)
+        if user_permissions_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            target_id = user_permissions_match.group(1)
+            with connect() as database:
+                target = database.execute("SELECT id, perfil_id FROM users WHERE id = ?", (target_id,)).fetchone()
+                if target is None:
+                    self.send_json({"error": "Usuário não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                role_rows = database.execute(
+                    """
+                    SELECT p.codigo FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id
+                    WHERE rp.role_id = ?
+                    """,
+                    (target["perfil_id"],),
+                ).fetchall()
+                exception_rows = database.execute(
+                    """
+                    SELECT p.codigo, up.allowed FROM user_permissions up JOIN permissions p ON p.id = up.permission_id
+                    WHERE up.user_id = ?
+                    """,
+                    (target_id,),
+                ).fetchall()
+            granted = {row["codigo"] for row in role_rows}
+            exceptions = {row["codigo"]: bool(row["allowed"]) for row in exception_rows}
+            for codigo, allowed in exceptions.items():
+                if allowed:
+                    granted.add(codigo)
+                else:
+                    granted.discard(codigo)
+            self.send_json({"permissions": sorted(granted), "exceptions": exceptions})
             return
         if path.startswith("/api/admin/"):
             user = self.require_admin()
@@ -3746,7 +3972,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 users, permission_matrix = [], []
                 if user["role"] == "Administrador":
                     users = [dict(row) for row in database.execute("SELECT email, name, role FROM users WHERE active = 1 ORDER BY name").fetchall()]
-                    permission_rows = database.execute("SELECT email, permission FROM user_permissions WHERE allowed = 1 ORDER BY email, permission").fetchall()
+                    permission_rows = database.execute("SELECT email, permission FROM user_sefaz_permissions WHERE allowed = 1 ORDER BY email, permission").fetchall()
                     grouped: dict[str, list[str]] = {}
                     for row in permission_rows:
                         grouped.setdefault(row["email"], []).append(row["permission"])
@@ -3890,7 +4116,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             with connect() as database:
                 row = database.execute(
-                    "SELECT payload, updated_at, updated_by FROM app_state WHERE id = 1"
+                    "SELECT payload, updated_at, updated_by FROM app_state WHERE company_id = ?",
+                    (user["company_id"],),
                 ).fetchone()
             if row is None:
                 self.send_json({"data": None, "updatedAt": None})
@@ -3908,13 +4135,41 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    # Aliases /api/auth/* (seção 23 da especificação) para as rotas já
+    # existentes, sem duplicar a lógica.
+    AUTH_PATH_ALIASES = {
+        "/api/auth/login": "/api/login",
+        "/api/auth/logout": "/api/logout",
+        "/api/auth/forgot-password": "/api/password-reset/request",
+        "/api/auth/reset-password": "/api/password-reset/confirm",
+    }
+
+    # /api/users (seção 23) é um alias REST para /api/admin/users, exceto o
+    # sufixo /permissions (tratado por rota própria em RBAC granular).
+    @staticmethod
+    def _alias_users_path(path: str) -> str:
+        if path == "/api/users":
+            return "/api/admin/users"
+        match = re.fullmatch(r"/api/users/([a-f0-9]{32})", path)
+        if match:
+            return f"/api/admin/users/{match.group(1)}"
+        return path
+
     def do_POST(self) -> None:
         parsed_url = urlparse(self.path)
-        path = parsed_url.path
+        path = self._alias_users_path(self.AUTH_PATH_ALIASES.get(parsed_url.path, parsed_url.path))
         try:
             payload = self.read_json() if path != "/api/logout" else {}
         except ValueError as error:
             self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/auth/refresh":
+            try:
+                result = self.refresh_session(payload)
+                self.send_json({"ok": True, **result})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNAUTHORIZED)
             return
 
         if path == "/api/password-reset/request":
@@ -3944,7 +4199,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     },
                     HTTPStatus.CREATED,
                 )
-            except (ValueError, sqlite3.IntegrityError) as error:
+            except (ValueError, db.IntegrityError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
@@ -3954,8 +4209,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 user_id = self.save_managed_user(payload, administrator)
-                self.send_json({"ok": True, "id": user_id, "data": self.admin_access_payload()}, HTTPStatus.CREATED)
-            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"ok": True, "id": user_id, "data": self.admin_access_payload(administrator)}, HTTPStatus.CREATED)
+            except (ValueError, db.IntegrityError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
         user_action = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})/action", path)
@@ -3983,10 +4238,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         new_password = str(payload.get("password", ""))
                         if len(new_password) < 8:
                             raise ValueError("A nova senha deve possuir pelo menos 8 caracteres.")
-                        salt = secrets.token_hex(16)
+                        salt, hashed, algo = hash_password(new_password)
                         database.execute(
-                            "UPDATE users SET salt = ?, password_hash = ?, login_attempts = 0, updated_at = ?, updated_by = ? WHERE id = ?",
-                            (salt, password_hash(new_password, salt), local_now(), administrator["email"], user_id),
+                            "UPDATE users SET salt = ?, password_hash = ?, password_algo = ?, login_attempts = 0, "
+                            "updated_at = ?, updated_by = ?, primeiro_acesso = TRUE WHERE id = ?",
+                            (salt, hashed, algo, local_now(), administrator["email"], user_id),
                         )
                         database.execute("DELETE FROM sessions WHERE email = ?", (target["email"],))
                         write_access_audit(database, administrator["email"], target["email"], "Administrador redefiniu senha", "Senha anterior protegida", "Nova senha protegida por hash", self.client_ip())
@@ -4001,7 +4257,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         write_access_audit(database, administrator["email"], target["email"], label, previous, {"status": status, "active": bool(active)}, self.client_ip())
                     else:
                         raise ValueError("Ação administrativa inválida.")
-                self.send_json({"ok": True, "data": self.admin_access_payload()})
+                self.send_json({"ok": True, "data": self.admin_access_payload(administrator)})
             except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
@@ -4011,8 +4267,78 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 plan_id = self.save_access_plan(payload, administrator)
-                self.send_json({"ok": True, "id": plan_id, "data": self.admin_access_payload()}, HTTPStatus.CREATED)
-            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"ok": True, "id": plan_id, "data": self.admin_access_payload(administrator)}, HTTPStatus.CREATED)
+            except (ValueError, db.IntegrityError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/companies":
+            administrator = self.require_role("SUPER_ADMIN")
+            if administrator is None:
+                return
+            try:
+                razao_social = str(payload.get("razaoSocial", "")).strip()
+                if not razao_social:
+                    raise ValueError("Informe a razão social da empresa.")
+                company_id = uuid.uuid4().hex
+                now = local_now()
+                with connect() as database:
+                    database.execute(
+                        """
+                        INSERT INTO companies(id, razao_social, nome_fantasia, cnpj, email, telefone, status, plano_id, data_inicio, data_vencimento, criado_em, atualizado_em)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            company_id, razao_social, str(payload.get("nomeFantasia", "")).strip() or None,
+                            str(payload.get("cnpj", "")).strip() or None, str(payload.get("email", "")).strip() or None,
+                            str(payload.get("telefone", "")).strip() or None, str(payload.get("status", "ATIVA")).strip(),
+                            str(payload.get("planoId", "")).strip() or None, str(payload.get("dataInicio", "")).strip() or None,
+                            str(payload.get("dataVencimento", "")).strip() or None, now, now,
+                        ),
+                    )
+                    database.execute(
+                        "INSERT INTO app_state(company_id, payload, updated_at, updated_by) VALUES (?, ?, ?, ?)",
+                        (company_id, "{}", now, administrator["email"]),
+                    )
+                self.audit(administrator["email"], "company_created", razao_social)
+                self.send_json({"ok": True, "id": company_id}, HTTPStatus.CREATED)
+            except (ValueError, db.IntegrityError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/subscriptions":
+            administrator = self.require_role("SUPER_ADMIN")
+            if administrator is None:
+                return
+            try:
+                empresa_id = str(payload.get("empresaId", "")).strip()
+                plano_id = str(payload.get("planoId", "")).strip()
+                periodicidade = str(payload.get("periodicidade", "MENSAL")).strip()
+                if periodicidade not in {"MENSAL", "ANUAL"}:
+                    raise ValueError("Periodicidade inválida.")
+                now = local_now()
+                start = str(payload.get("dataInicio", "")).strip() or dt.date.today().isoformat()
+                with connect() as database:
+                    if not database.execute("SELECT 1 FROM companies WHERE id = ?", (empresa_id,)).fetchone():
+                        raise ValueError("Empresa não encontrada.")
+                    if not database.execute("SELECT 1 FROM access_plans WHERE id = ?", (plano_id,)).fetchone():
+                        raise ValueError("Plano não encontrado.")
+                    subscription_id = uuid.uuid4().hex
+                    database.execute(
+                        """
+                        INSERT INTO subscriptions(id, empresa_id, plano_id, data_inicio, data_fim, status, periodicidade, criado_em, atualizado_em)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            subscription_id, empresa_id, plano_id, start,
+                            str(payload.get("dataFim", "")).strip() or None,
+                            str(payload.get("status", "ATIVA")).strip(), periodicidade, now, now,
+                        ),
+                    )
+                    database.execute("UPDATE companies SET plano_id = ?, atualizado_em = ? WHERE id = ?", (plano_id, now, empresa_id))
+                self.audit(administrator["email"], "subscription_created", subscription_id)
+                self.send_json({"ok": True, "id": subscription_id}, HTTPStatus.CREATED)
+            except (ValueError, db.IntegrityError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
@@ -4022,14 +4348,15 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             with connect() as database:
                 refresh_expired_subscriptions(database)
                 user = database.execute(
-                    "SELECT id, email, name, role, status, active, plan_id, salt, password_hash, billing_cycle, "
-                    "subscription_value, monitoring_start, monitoring_end, last_login_at, login_attempts "
+                    "SELECT id, email, name, role, status, active, plan_id, salt, password_hash, password_algo, "
+                    "billing_cycle, subscription_value, monitoring_start, monitoring_end, last_login_at, "
+                    "login_attempts, company_id, perfil_id, primeiro_acesso "
                     "FROM users "
                     "WHERE lower(email) = ? OR lower(login) = ?",
                     (login_identifier, login_identifier),
                 ).fetchone()
-                valid = user and hmac.compare_digest(
-                    password_hash(password, user["salt"]), user["password_hash"]
+                valid = user and verify_password(
+                    password, user["salt"], user["password_hash"], user["password_algo"] or "pbkdf2"
                 )
                 if not valid:
                     if user:
@@ -4042,13 +4369,29 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                             write_access_audit(database, "Sistema", user["email"], "Usuário bloqueado após tentativas de login", attempts - 1, attempts, self.client_ip())
                         else:
                             database.execute("UPDATE users SET login_attempts = ? WHERE email = ?", (attempts, user["email"]))
+                    self.write_login_log(
+                        database, login_identifier, False,
+                        user_id=user["id"] if user else None,
+                        company_id=user["company_id"] if user else None,
+                        motivo_falha="Senha incorreta" if user else "Usuário não encontrado",
+                    )
                     self.send_json(
                         {"error": "E-mail ou senha inválidos."}, HTTPStatus.UNAUTHORIZED
                     )
                     return
                 if not user["active"] or user["status"] in {"Inativo", "Bloqueado", "Aguardando ativação"}:
+                    self.write_login_log(
+                        database, user["email"], False, user_id=user["id"],
+                        company_id=user["company_id"], motivo_falha=f"Status: {user['status']}",
+                    )
                     self.send_json({"error": "Acesso indisponível. Consulte o administrador responsável."}, HTTPStatus.FORBIDDEN)
                     return
+                if (user["password_algo"] or "pbkdf2") != "bcrypt":
+                    new_salt, new_hash, new_algo = hash_password(password)
+                    database.execute(
+                        "UPDATE users SET salt = ?, password_hash = ?, password_algo = ? WHERE email = ?",
+                        (new_salt, new_hash, new_algo, user["email"]),
+                    )
                 email = user["email"]
                 token = secrets.token_urlsafe(32)
                 now = int(time.time())
@@ -4063,12 +4406,15 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     "VALUES (?, ?, ?, ?)",
                     (token, email, now, now + SESSION_SECONDS),
                 )
+                refresh_token = self.issue_refresh_token(database, email, token)
                 modules = sorted(modules_for_email(database, email, user["role"], user["status"]))
                 write_access_audit(database, email, email, "Login realizado", "", current_login_at, self.client_ip())
+                self.write_login_log(database, email, True, user_id=user["id"], company_id=user["company_id"])
             self.audit(email, "login")
             self.send_json(
                 {
                     "token": token,
+                    "refreshToken": refresh_token,
                     "user": {
                         "email": user["email"],
                         "id": user["id"],
@@ -4076,6 +4422,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         "role": user["role"],
                         "status": user["status"],
                         "planId": user["plan_id"],
+                        "companyId": user["company_id"],
                         "modules": modules,
                         "active": True,
                         "billingCycle": user["billing_cycle"],
@@ -4084,9 +4431,34 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         "monitoringEnd": user["monitoring_end"],
                         "lastLoginAt": previous_login_at,
                         "currentLoginAt": current_login_at,
+                        "primeiroAcesso": bool(user["primeiro_acesso"]),
                     },
                 }
             )
+            return
+
+        if path == "/api/profile/first-access-password":
+            user = self.require_user()
+            if user is None:
+                return
+            try:
+                new_password = str(payload.get("password", ""))
+                confirmation = str(payload.get("passwordConfirmation", ""))
+                if len(new_password) < 8 or not re.search(r"[A-Za-z]", new_password) or not re.search(r"\d", new_password):
+                    raise ValueError("A nova senha deve possuir ao menos 8 caracteres, com letras e números.")
+                if new_password != confirmation:
+                    raise ValueError("A nova senha e a confirmação não coincidem.")
+                salt, hashed, algo = hash_password(new_password)
+                with connect() as database:
+                    database.execute(
+                        "UPDATE users SET salt = ?, password_hash = ?, password_algo = ?, primeiro_acesso = FALSE, "
+                        "updated_at = ?, updated_by = ? WHERE email = ?",
+                        (salt, hashed, algo, local_now(), user["email"], user["email"]),
+                    )
+                self.audit(user["email"], "first_access_password_set")
+                self.send_json({"ok": True})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
         if path == "/api/profile/photo":
@@ -4299,7 +4671,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         self.send_json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
 
     def do_DELETE(self) -> None:
-        path = urlparse(self.path).path
+        path = self._alias_users_path(urlparse(self.path).path)
         managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
         if managed_user_match:
             administrator = self.require_admin()
@@ -4318,10 +4690,10 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                             raise ValueError("Mantenha pelo menos um administrador ativo.")
                     write_access_audit(database, administrator["email"], target["email"], "Administrador excluiu usuário", dict(target), "Registro excluído", self.client_ip())
                     database.execute("DELETE FROM sessions WHERE email = ?", (target["email"],))
-                    database.execute("DELETE FROM user_permissions WHERE email = ?", (target["email"],))
+                    database.execute("DELETE FROM user_sefaz_permissions WHERE email = ?", (target["email"],))
                     database.execute("DELETE FROM user_modules WHERE email = ?", (target["email"],))
                     database.execute("DELETE FROM users WHERE id = ?", (managed_user_match.group(1),))
-                self.send_json({"ok": True, "data": self.admin_access_payload()})
+                self.send_json({"ok": True, "data": self.admin_access_payload(administrator)})
             except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
@@ -4341,7 +4713,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     write_access_audit(database, administrator["email"], "", "Administrador excluiu plano", dict(plan), "Plano excluído", self.client_ip())
                     database.execute("DELETE FROM plan_modules WHERE plan_id = ?", (plan["id"],))
                     database.execute("DELETE FROM access_plans WHERE id = ?", (plan["id"],))
-                self.send_json({"ok": True, "data": self.admin_access_payload()})
+                self.send_json({"ok": True, "data": self.admin_access_payload(administrator)})
             except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
@@ -4380,7 +4752,94 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": True})
 
     def do_PUT(self) -> None:
-        path = urlparse(self.path).path
+        path = self._alias_users_path(urlparse(self.path).path)
+
+        user_permissions_match = re.fullmatch(r"/api/users/([a-f0-9]{32})/permissions", path)
+        if user_permissions_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            target_id = user_permissions_match.group(1)
+            try:
+                payload = self.read_json()
+                exceptions = payload.get("exceptions", {})
+                if not isinstance(exceptions, dict):
+                    raise ValueError("Envie 'exceptions' como um objeto {codigo_permissao: true|false}.")
+                with connect() as database:
+                    target = database.execute("SELECT id, email FROM users WHERE id = ?", (target_id,)).fetchone()
+                    if target is None:
+                        raise ValueError("Usuário não encontrado.")
+                    database.execute("DELETE FROM user_permissions WHERE user_id = ?", (target_id,))
+                    for codigo, allowed in exceptions.items():
+                        permission = database.execute("SELECT id FROM permissions WHERE codigo = ?", (str(codigo),)).fetchone()
+                        if permission is None:
+                            continue
+                        database.execute(
+                            "INSERT INTO user_permissions(user_id, permission_id, allowed) VALUES (?, ?, ?)",
+                            (target_id, permission["id"], bool(allowed)),
+                        )
+                    write_access_audit(database, administrator["email"], target["email"], "Permissões individuais atualizadas", "", exceptions, self.client_ip())
+                self.audit(administrator["email"], "user_permissions_updated", target["email"])
+                self.send_json({"ok": True})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        companies_match = re.fullmatch(r"/api/companies/([a-f0-9]{32})", path)
+        if companies_match:
+            administrator = self.require_role("SUPER_ADMIN")
+            if administrator is None:
+                return
+            try:
+                payload = self.read_json()
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM companies WHERE id = ?", (companies_match.group(1),)).fetchone()
+                    if existing is None:
+                        raise ValueError("Empresa não encontrada.")
+                    database.execute(
+                        """
+                        UPDATE companies SET razao_social = ?, nome_fantasia = ?, cnpj = ?, email = ?, telefone = ?,
+                          status = ?, plano_id = ?, data_inicio = ?, data_vencimento = ?, atualizado_em = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            str(payload.get("razaoSocial", "")).strip(), str(payload.get("nomeFantasia", "")).strip() or None,
+                            str(payload.get("cnpj", "")).strip() or None, str(payload.get("email", "")).strip() or None,
+                            str(payload.get("telefone", "")).strip() or None, str(payload.get("status", "ATIVA")).strip(),
+                            str(payload.get("planoId", "")).strip() or None, str(payload.get("dataInicio", "")).strip() or None,
+                            str(payload.get("dataVencimento", "")).strip() or None, local_now(), companies_match.group(1),
+                        ),
+                    )
+                self.audit(administrator["email"], "company_updated", companies_match.group(1))
+                self.send_json({"ok": True})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        subscriptions_match = re.fullmatch(r"/api/subscriptions/([a-f0-9]{32})", path)
+        if subscriptions_match:
+            administrator = self.require_role("SUPER_ADMIN")
+            if administrator is None:
+                return
+            try:
+                payload = self.read_json()
+                status = str(payload.get("status", "")).strip()
+                if status not in {"ATIVA", "TESTE", "PENDENTE", "VENCIDA", "CANCELADA", "BLOQUEADA"}:
+                    raise ValueError("Status de assinatura inválido.")
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM subscriptions WHERE id = ?", (subscriptions_match.group(1),)).fetchone()
+                    if existing is None:
+                        raise ValueError("Assinatura não encontrada.")
+                    database.execute(
+                        "UPDATE subscriptions SET status = ?, data_fim = ?, atualizado_em = ? WHERE id = ?",
+                        (status, str(payload.get("dataFim", "")).strip() or None, local_now(), subscriptions_match.group(1)),
+                    )
+                self.audit(administrator["email"], "subscription_updated", subscriptions_match.group(1))
+                self.send_json({"ok": True})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
         if managed_user_match:
             administrator = self.require_admin()
@@ -4389,8 +4848,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             try:
                 payload = self.read_json()
                 user_id = self.save_managed_user(payload, administrator, managed_user_match.group(1))
-                self.send_json({"ok": True, "id": user_id, "data": self.admin_access_payload()})
-            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"ok": True, "id": user_id, "data": self.admin_access_payload(administrator)})
+            except (ValueError, db.IntegrityError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
         managed_plan_match = re.fullmatch(r"/api/admin/plans/([a-z0-9-]{1,64})", path)
@@ -4401,8 +4860,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             try:
                 payload = self.read_json()
                 plan_id = self.save_access_plan(payload, administrator, managed_plan_match.group(1))
-                self.send_json({"ok": True, "id": plan_id, "data": self.admin_access_payload()})
-            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"ok": True, "id": plan_id, "data": self.admin_access_payload(administrator)})
+            except (ValueError, db.IntegrityError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
         if path == "/api/sefaz/permissions":
@@ -4432,9 +4891,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         managed = database.execute("SELECT role FROM users WHERE email = ? AND active = 1", (email,)).fetchone()
                         if managed is None or managed["role"] == "Administrador":
                             raise ValueError(f"Usuário de consulta não encontrado: {email}")
-                        database.execute("DELETE FROM user_permissions WHERE email = ?", (email,))
+                        database.execute("DELETE FROM user_sefaz_permissions WHERE email = ?", (email,))
                         for permission in permissions:
-                            database.execute("INSERT INTO user_permissions(email, permission, allowed) VALUES (?, ?, 1)", (email, permission))
+                            database.execute("INSERT INTO user_sefaz_permissions(email, permission, allowed) VALUES (?, ?, 1)", (email, permission))
                 self.audit(user["email"], "sefaz_permissions_updated", f"{len(normalized)} usuário(s)")
                 self.send_json({"ok": True})
             except ValueError as error:
@@ -4465,14 +4924,14 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         with connect() as database:
             database.execute(
                 """
-                INSERT INTO app_state(id, payload, updated_at, updated_by)
-                VALUES (1, ?, datetime('now'), ?)
-                ON CONFLICT(id) DO UPDATE SET
+                INSERT INTO app_state(company_id, payload, updated_at, updated_by)
+                VALUES (?, ?, now()::text, ?)
+                ON CONFLICT(company_id) DO UPDATE SET
                   payload = excluded.payload,
                   updated_at = excluded.updated_at,
                   updated_by = excluded.updated_by
                 """,
-                (encoded, user["email"]),
+                (user["company_id"], encoded, user["email"]),
             )
         self.audit(
             user["email"], "state_update",
@@ -4492,7 +4951,7 @@ def main() -> None:
     initialize_database()
     server = ThreadingHTTPServer((HOST, PORT), SimplesCalcHandler)
     print(f"ContTech ERP disponível em http://{HOST}:{PORT}")
-    print(f"Banco de dados: {DB_PATH}")
+    print(f"Banco de dados: PostgreSQL ({masked_database_url()})")
     if os.environ.get("GESTAOFISCAL_NO_BROWSER", "0") != "1":
         threading.Timer(0.7, lambda: webbrowser.open(f"http://{HOST}:{PORT}/#sefaz-portal")).start()
     try:

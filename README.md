@@ -4,22 +4,24 @@ Plataforma responsiva de inteligência tributária inspirada fielmente na refer�
 
 ## Início rápido
 
-### Opção 1 — banco SQLite (recomendada)
+### Opção 1 — banco PostgreSQL em nuvem (recomendada)
 
-1. Tenha o Python 3.10 ou mais recente instalado.
-2. No Windows, dê dois cliques em **ABRIR-MODO-SEGURO.cmd** (ou em **iniciar-site.cmd**).
-3. Acesse http://127.0.0.1:4173.
+1. Crie um banco PostgreSQL em um provedor de sua preferência — Supabase, Neon, Railway ou AWS RDS funcionam sem alterações de código.
+2. Copie `.env.example` para `.env` e preencha `DATABASE_URL` com a connection string do banco (use `sslmode=require` em produção).
+3. Tenha o Python 3.10+ instalado e rode:
 
-Também é possível iniciar pelo terminal:
+       python -m pip install -r requirements.txt
+       python server.py
 
-    python -m pip install -r requirements.txt
-    python server.py
+O servidor aplica automaticamente as migrations (`migrations/*.sql`) na primeira execução e cria o usuário administrador definido em `CONTTECH_ADMIN_EMAIL`/`CONTTECH_ADMIN_NAME`/`CONTTECH_ADMIN_PASSWORD` caso o banco esteja vazio. Todos os dados (usuários, empresas, permissões, planos, auditoria, clientes etc.) ficam no PostgreSQL — nada de essencial é armazenado no navegador ou em arquivo local, exceto a chave de criptografia (`GESTAOFISCAL_MASTER_KEY` ou `app/data/.gestao-fiscal.key`) usada para cifrar certificados digitais e documentos fiscais sensíveis.
 
-O banco é criado automaticamente em **data/simplescalc.db**. O inicializador instala o componente `cryptography`, utilizado para validar certificados A1 e cifrar certificados, senhas salvas, XMLs e resultados fiscais.
+**Migrando de uma instalação SQLite anterior:** rode `python3 migrate_sqlite_to_postgres.py caminho/para/simplescalc.db` apontando `DATABASE_URL` para o novo banco. O script aplica as migrations, cria a empresa padrão, copia usuários (preservando os hashes de senha existentes), planos, permissões, certificados e todo o histórico de auditoria, e confere a quantidade de registros migrados ao final. O arquivo `.db` original não é apagado.
+
+O inicializador também instala o componente `cryptography`, utilizado para validar certificados A1 e cifrar certificados, senhas salvas, XMLs e resultados fiscais.
 
 ### Opção 2 — demonstração autocontida
 
-Abra **index.html** diretamente apenas para visualizar a tela inicial. Por segurança, login, usuários, permissões e assinaturas exigem o modo servidor com banco SQLite; senhas nunca são mantidas no navegador.
+Abra **index.html** diretamente apenas para visualizar a tela inicial. Por segurança, login, usuários, permissões e assinaturas exigem o modo servidor com banco PostgreSQL; senhas nunca são mantidas no navegador.
 
 ## Acesso no pacote de hospedagem
 

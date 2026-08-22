@@ -9,12 +9,21 @@ services:
       SIMPLESCALC_PORT: 4173
       GESTAOFISCAL_NO_BROWSER: 1
       CONTTECH_PRODUCTION: 1
+      # PostgreSQL em nuvem (Supabase, Neon, Railway, RDS...). Obrigatório.
+      DATABASE_URL: ${DATABASE_URL:?defina DATABASE_URL com a connection string do seu PostgreSQL em nuvem}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      # Recomendado em produção (disco do container costuma ser efêmero).
+      GESTAOFISCAL_MASTER_KEY: ${GESTAOFISCAL_MASTER_KEY:-}
       SERPRO_CNPJ_CONSUMER_KEY: ${SERPRO_CNPJ_CONSUMER_KEY:-}
       SERPRO_CNPJ_CONSUMER_SECRET: ${SERPRO_CNPJ_CONSUMER_SECRET:-}
       CONTTECH_ADMIN_EMAIL: ${CONTTECH_ADMIN_EMAIL:-}
       CONTTECH_ADMIN_NAME: ${CONTTECH_ADMIN_NAME:-Administrador}
       CONTTECH_ADMIN_PASSWORD: ${CONTTECH_ADMIN_PASSWORD:-}
     volumes:
+      # Mantido apenas para persistir .gestao-fiscal.key entre reinícios
+      # quando GESTAOFISCAL_MASTER_KEY não é definida — os dados do sistema
+      # (usuários, clientes, documentos etc.) já não ficam mais aqui, e sim
+      # no PostgreSQL apontado por DATABASE_URL.
       - ./app/data:/app/data
     expose:
       - "4173"

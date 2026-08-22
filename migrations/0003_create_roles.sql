@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS roles (
+  id TEXT PRIMARY KEY,
+  nome TEXT NOT NULL UNIQUE,
+  descricao TEXT,
+  ativo BOOLEAN NOT NULL DEFAULT TRUE,
+  criado_em TEXT NOT NULL
+);
