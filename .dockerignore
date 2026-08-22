@@ -1,7 +1,11 @@
+.git/
+data/
 app/data/
-app/__pycache__/
-app/*.pyc
+__pycache__/
+*.pyc
 ACESSO-INICIAL-PRIVADO.txt
 .env
 backups/
 *.zip
+*.db
+.gestao-fiscal.key

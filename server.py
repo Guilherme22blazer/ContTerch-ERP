@@ -70,7 +70,10 @@ load_dotenv_file(ROOT / ".env")
 
 DATA_DIR = ROOT / "data"  # usado apenas para a chave Fernet (.gestao-fiscal.key); dados ficam no PostgreSQL.
 HOST = os.environ.get("SIMPLESCALC_HOST", "127.0.0.1")
-PORT = int(os.environ.get("SIMPLESCALC_PORT", "4173"))
+# Plataformas como Railway/Render/Cloud Run definem a porta via a variável
+# padrão PORT; SIMPLESCALC_PORT continua funcionando para quem já a usava
+# (ex.: docker-compose local) e tem prioridade se ambas estiverem definidas.
+PORT = int(os.environ.get("SIMPLESCALC_PORT") or os.environ.get("PORT") or "4173")
 PRODUCTION_MODE = os.environ.get("CONTTECH_PRODUCTION", "0") == "1"
 SESSION_SECONDS = 8 * 60 * 60
 REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60
