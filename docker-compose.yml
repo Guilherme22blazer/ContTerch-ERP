@@ -1,16 +1,41 @@
 services:
+  # PostgreSQL auto-hospedado no próprio VPS — alternativa a um provedor
+  # externo (Supabase/Neon/Railway/RDS). Se preferir um provedor em nuvem,
+  # remova este serviço e aponte DATABASE_URL diretamente para ele no .env.
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: conttech
+      POSTGRES_USER: conttech
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conttech -d conttech"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - conttech
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       SIMPLESCALC_HOST: 0.0.0.0
       SIMPLESCALC_PORT: 4173
       GESTAOFISCAL_NO_BROWSER: 1
       CONTTECH_PRODUCTION: 1
-      # PostgreSQL em nuvem (Supabase, Neon, Railway, RDS...). Obrigatório.
-      DATABASE_URL: ${DATABASE_URL:?defina DATABASE_URL com a connection string do seu PostgreSQL em nuvem}
+      # Por padrão aponta para o PostgreSQL do serviço "postgres" acima.
+      # Para usar um provedor externo, defina DATABASE_URL no .env com a
+      # connection string dele (o valor abaixo deixa de ser usado).
+      DATABASE_URL: ${DATABASE_URL:-postgresql://conttech:${POSTGRES_PASSWORD}@postgres:5432/conttech}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
       # Recomendado em produção (disco do container costuma ser efêmero).
       GESTAOFISCAL_MASTER_KEY: ${GESTAOFISCAL_MASTER_KEY:-}
@@ -23,7 +48,8 @@ services:
       # Mantido apenas para persistir .gestao-fiscal.key entre reinícios
       # quando GESTAOFISCAL_MASTER_KEY não é definida — os dados do sistema
       # (usuários, clientes, documentos etc.) já não ficam mais aqui, e sim
-      # no PostgreSQL apontado por DATABASE_URL.
+      # no PostgreSQL do serviço "postgres" (ou no provedor externo, se
+      # DATABASE_URL apontar para um).
       - ./app/data:/app/data
     expose:
       - "4173"
@@ -61,5 +87,6 @@ networks:
     driver: bridge
 
 volumes:
+  postgres_data:
   caddy_data:
   caddy_config:
