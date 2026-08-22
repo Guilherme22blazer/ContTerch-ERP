@@ -1,0 +1,8 @@
+.env
+ACESSO-INICIAL-PRIVADO.txt
+backups/
+app/data/*.db-wal
+app/data/*.db-shm
+app/data/*.db-journal
+__pycache__/
+*.pyc

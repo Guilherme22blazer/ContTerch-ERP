@@ -1,0 +1,7 @@
+app/data/
+app/__pycache__/
+app/*.pyc
+ACESSO-INICIAL-PRIVADO.txt
+.env
+backups/
+*.zip

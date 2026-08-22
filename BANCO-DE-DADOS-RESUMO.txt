@@ -1,0 +1,26 @@
+CONTTECH ERP — RESUMO DA CÓPIA DO BANCO
+Data do pacote: 21/08/2026
+Banco: SQLite
+Verificação de integridade: OK
+
+Conteúdo preservado:
+- 2 usuários
+- 9 planos de acesso
+- 287 vínculos de módulos por plano
+- 70 permissões de módulos por usuário, incluindo o acesso corrigido à Pensão Alimentícia
+- 2 permissões fiscais por usuário
+- 13 registros de auditoria de acesso
+- 44 registros de auditoria do servidor
+- 11 documentos fiscais distribuídos
+- 1 estado de distribuição fiscal
+- 1 certificado digital cadastrado e cifrado
+- 6 consultas fiscais
+- 1 estado completo da aplicação, incluindo clientes, parâmetros e demais registros persistidos
+
+Preparação para hospedagem:
+- Sessões anteriores removidas: 0 sessões ativas no pacote
+- Códigos de recuperação anteriores removidos
+- Senhas públicas de demonstração substituídas por credenciais temporárias privadas
+- Chave de criptografia preservada em app/data/.gestao-fiscal.key
+
+O banco e a chave devem sempre ser copiados e restaurados juntos.

@@ -1,0 +1,4500 @@
+"""Servidor local do ContTech ERP, com integrações fiscais protegidas."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import base64
+import datetime as dt
+import gzip
+import io
+import json
+import os
+import re
+import secrets
+import socket
+import sqlite3
+import ssl
+import tempfile
+import threading
+import time
+import uuid
+import webbrowser
+import xml.etree.ElementTree as ET
+from decimal import Decimal, InvalidOperation
+import zipfile
+from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, quote, urlparse
+from urllib.request import Request, urlopen
+
+try:
+    from cryptography import x509
+    from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.serialization import pkcs12
+    from cryptography.x509.oid import NameOID
+    CRYPTO_AVAILABLE = True
+except ImportError:
+    CRYPTO_AVAILABLE = False
+
+
+ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "data"
+DB_PATH = DATA_DIR / "simplescalc.db"
+HOST = os.environ.get("SIMPLESCALC_HOST", "127.0.0.1")
+PORT = int(os.environ.get("SIMPLESCALC_PORT", "4173"))
+PRODUCTION_MODE = os.environ.get("CONTTECH_PRODUCTION", "0") == "1"
+SESSION_SECONDS = 8 * 60 * 60
+MASTER_KEY_PATH = DATA_DIR / ".gestao-fiscal.key"
+SESSION_CERT_PASSWORDS: dict[tuple[str, str], str] = {}
+CNPJ_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
+CNPJ_PROFILE_CACHE_SECONDS = 15 * 60
+SERPRO_TOKEN_CACHE: dict[str, object] = {"access_token": "", "expires_at": 0.0}
+MAX_CERTIFICATE_BYTES = 2_500_000
+MAX_PROFILE_PHOTO_BYTES = 2_000_000
+MAX_ATTACHMENT_BYTES = 10_000_000
+MAX_XML_BATCH_DOCUMENTS = 2_000
+MAX_XML_BATCH_SOURCE_BYTES = 75_000_000
+MAX_XML_BATCH_ZIP_BYTES = 45_000_000
+MAX_NFSE_IMPORT_BYTES = 25_000_000
+MAX_NFSE_IMPORT_MEMBER_BYTES = 6_000_000
+SEFAZ_PERMISSIONS = {
+    "consult_documents", "manage_certificates", "view_sensitive", "download_xml",
+    "export_reports", "view_history", "manage_companies",
+}
+ERP_MODULES = {
+    "tab_inicio": "Visão Geral da Carteira",
+    "tab_sefaz_portal": "Consulta SEFAZ e Portal do Contribuinte",
+    "tab_dashboard": "Cálculo DAS",
+    "tab_diagnostico": "Diagnóstico Tributário",
+    "tab_mei": "MEI",
+    "tab_controle_mei": "Controle de MEI",
+    "tab_obrigacoes": "Obrigações Acessórias",
+    "tab_ibs_cbs": "IBS e CBS",
+    "tab_transicao_reforma": "Transição da Reforma Tributária",
+    "tab_lei_complementar": "Lei Complementar Completa",
+    "tab_mei_ibs_cbs": "MEI, IBS e CBS",
+    "tab_parametros_2026": "Parâmetros 2026",
+    "tab_consulta_cnpj": "Consulta CNPJ",
+    "tab_inscricao_estadual": "Inscrição Estadual",
+    "tab_cnae_servicos": "CNAE × Serviços",
+    "tab_ncm_tipi": "NCM / TIPI",
+    "tab_consulta_cest": "Consulta CEST",
+    "tab_cfop": "CFOP",
+    "tab_icms_difal": "ICMS / DIFAL",
+    "tab_aliquotas_beneficios": "Alíquotas e Benefícios",
+    "tab_aliquotas_iss": "Alíquotas do ISS",
+    "tab_simulador_locacao": "Simulador de Locação",
+    "tab_nbs_cclasstrib": "NBS / cClassTrib",
+    "tab_calculadora_tributaria": "Calculadora Tributária",
+    "tab_cnpj_simples": "Consulta CNPJ Simples",
+    "tab_analise_balanco": "Análise de Balanço",
+    "tab_lancamentos_contabeis": "Lançamentos Contábeis",
+    "tab_folha": "Folha de Pagamento",
+    "tab_horas_extras_noturno": "Horas Extras e Trabalho Noturno",
+    "tab_verbas_rescisorias": "Verbas Rescisórias",
+    "tab_seguro_desemprego": "Seguro-Desemprego",
+    "tab_gps_atraso": "GPS — INSS em Atraso",
+    "tab_pro_labore": "Pró-Labore",
+    "tab_irrf_aliquota_efetiva": "Alíquota Efetiva do IRRF",
+    "tab_pensao_alimenticia": "Pensão Alimentícia",
+    "tab_kanban": "Quadro Kanban",
+    "tab_central_formularios": "Central de Formulários",
+    "tab_modelos_contratos": "Modelos e Contratos",
+    "tab_clientes": "Clientes",
+    "tab_gestao_usuarios": "Gestão de Usuários",
+    "tab_configuracoes": "Configurações",
+    "tab_historico": "Histórico de Atualizações",
+}
+FISCAL_TAB_MODULES = {
+    "tab_sefaz_portal", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei",
+    "tab_obrigacoes", "tab_ibs_cbs", "tab_transicao_reforma", "tab_lei_complementar",
+    "tab_mei_ibs_cbs", "tab_parametros_2026", "tab_consulta_cnpj", "tab_inscricao_estadual",
+    "tab_cnae_servicos", "tab_ncm_tipi", "tab_consulta_cest", "tab_cfop", "tab_icms_difal",
+    "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_simulador_locacao",
+    "tab_nbs_cclasstrib", "tab_calculadora_tributaria", "tab_cnpj_simples",
+}
+CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis"}
+TRABALHISTA_TAB_MODULES = {
+    "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
+    "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",
+}
+OUTROS_TAB_MODULES = {
+    "tab_kanban", "tab_central_formularios", "tab_modelos_contratos", "tab_clientes",
+    "tab_gestao_usuarios", "tab_configuracoes", "tab_historico",
+}
+DEFAULT_PLAN_MODULES = {
+    "erp-start": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico"},
+    "erp-profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
+    "erp-business": set(ERP_MODULES) - {"tab_gestao_usuarios", "tab_configuracoes"},
+    "erp-enterprise": set(ERP_MODULES),
+    "basico": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico"},
+    "profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
+    "empresarial": set(ERP_MODULES) - {"tab_gestao_usuarios", "tab_configuracoes"},
+    "completo": set(ERP_MODULES),
+    "personalizado": {"tab_inicio"},
+}
+LEGACY_MODULE_MIGRATIONS = {
+    "dashboard": {"tab_inicio", "tab_dashboard", "tab_kanban"},
+    "fiscal": {"tab_dashboard", "tab_icms_difal", "tab_aliquotas_beneficios", "tab_aliquotas_iss"},
+    "contabil": CONTABIL_TAB_MODULES,
+    "financeiro": TRABALHISTA_TAB_MODULES,
+    "clientes": {"tab_clientes"},
+    "captador_nfe": {"tab_sefaz_portal"},
+    "captador_nfse": {"tab_sefaz_portal"},
+    "captador_cte": {"tab_sefaz_portal"},
+    "consulta_fiscal": {"tab_consulta_cnpj", "tab_inscricao_estadual", "tab_cnae_servicos", "tab_ncm_tipi", "tab_consulta_cest", "tab_cfop", "tab_cnpj_simples"},
+    "consulta_sefaz": {"tab_sefaz_portal"},
+    "portal_contribuinte": {"tab_sefaz_portal"},
+    "obrigacoes_fiscais": {"tab_obrigacoes"},
+    "reforma_tributaria": {"tab_transicao_reforma", "tab_lei_complementar", "tab_simulador_locacao", "tab_nbs_cclasstrib"},
+    "ibs": {"tab_ibs_cbs", "tab_mei_ibs_cbs"},
+    "cbs": {"tab_ibs_cbs", "tab_mei_ibs_cbs"},
+    "mei": {"tab_mei", "tab_controle_mei", "tab_mei_ibs_cbs"},
+    "relatorios": {"tab_historico"},
+    "inteligencia_tributaria": {"tab_diagnostico", "tab_parametros_2026", "tab_calculadora_tributaria"},
+    "gestao_documentos": {"tab_central_formularios", "tab_modelos_contratos"},
+    "administracao": {"tab_gestao_usuarios", "tab_configuracoes"},
+}
+PROTECTED_ROUTE_MODULES = {
+    "/admin": "tab_gestao_usuarios",
+    "/financeiro": "tab_folha",
+    "/fiscal": "tab_dashboard",
+    "/contabil": "tab_analise_balanco",
+    "/relatorios": "tab_historico",
+}
+PERMISSION_MODULES = {
+    "consult_documents": "tab_sefaz_portal",
+    "manage_certificates": "tab_sefaz_portal",
+    "view_sensitive": "tab_sefaz_portal",
+    "download_xml": "tab_sefaz_portal",
+    "export_reports": "tab_sefaz_portal",
+    "view_history": "tab_sefaz_portal",
+    "manage_companies": "tab_clientes",
+}
+OFFICIAL_PORTALS = {
+    "nfe": "https://www.nfe.fazenda.gov.br/portal/consultaRecaptcha.aspx",
+    "cte": "https://www.cte.fazenda.gov.br/portal/consultaRecaptcha.aspx",
+    "mdfe": "https://dfe-portal.svrs.rs.gov.br/MDFE",
+    "nfse": "https://www.nfse.gov.br/consultapublica",
+    "webservices_nfe": "https://www.nfe.fazenda.gov.br/portal/WebServices.aspx",
+}
+UF_NAMES = {
+    "11": "RO", "12": "AC", "13": "AM", "14": "RR", "15": "PA", "16": "AP", "17": "TO",
+    "21": "MA", "22": "PI", "23": "CE", "24": "RN", "25": "PB", "26": "PE", "27": "AL",
+    "28": "SE", "29": "BA", "31": "MG", "32": "ES", "33": "RJ", "35": "SP", "41": "PR",
+    "42": "SC", "43": "RS", "50": "MS", "51": "MT", "52": "GO", "53": "DF",
+}
+NFE_SVRS_UFS = {"11", "12", "14", "16", "17", "22", "24", "25", "27", "28", "32", "33", "42", "53"}
+NFE_SVAN_UFS = {"15", "21"}
+NFE_ENDPOINTS = {
+    "13": {"production": "https://nfe.sefaz.am.gov.br/services2/services/NfeConsulta4", "homologation": "https://homnfe.sefaz.am.gov.br/services2/services/NfeConsulta4"},
+    "23": {"production": "https://nfe.sefaz.ce.gov.br/nfe4/services/NFeConsultaProtocolo4", "homologation": "https://nfeh.sefaz.ce.gov.br/nfe4/services/NFeConsultaProtocolo4"},
+    "26": {"production": "https://nfe.sefaz.pe.gov.br/nfe-service/services/NFeConsultaProtocolo4", "homologation": "https://nfehomolog.sefaz.pe.gov.br/nfe-service/services/NFeConsultaProtocolo4"},
+    "29": {"production": "https://nfe.sefaz.ba.gov.br/webservices/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx", "homologation": "https://hnfe.sefaz.ba.gov.br/webservices/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx"},
+    "31": {"production": "https://nfe.fazenda.mg.gov.br/nfe2/services/NFeConsultaProtocolo4", "homologation": "https://hnfe.fazenda.mg.gov.br/nfe2/services/NFeConsultaProtocolo4"},
+    "35": {"production": "https://nfe.fazenda.sp.gov.br/ws/nfeconsultaprotocolo4.asmx", "homologation": "https://homologacao.nfe.fazenda.sp.gov.br/ws/nfeconsultaprotocolo4.asmx"},
+    "41": {"production": "https://nfe.sefa.pr.gov.br/nfe/NFeConsultaProtocolo4", "homologation": "https://homologacao.nfe.sefa.pr.gov.br/nfe/NFeConsultaProtocolo4"},
+    "43": {"production": "https://nfe.sefazrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx", "homologation": "https://nfe-homologacao.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx"},
+    "50": {"production": "https://nfe.sefaz.ms.gov.br/ws/NFeConsultaProtocolo4", "homologation": "https://homologacao.nfe.sefaz.ms.gov.br/ws/NFeConsultaProtocolo4"},
+    "51": {"production": "https://nfe.sefaz.mt.gov.br/nfews/v2/services/NfeConsulta4", "homologation": "https://homologacao.sefaz.mt.gov.br/nfews/v2/services/NfeConsulta4"},
+    "52": {"production": "https://nfe.sefaz.go.gov.br/nfe/services/NFeConsultaProtocolo4", "homologation": "https://homolog.sefaz.go.gov.br/nfe/services/NFeConsultaProtocolo4"},
+}
+NFE_VIRTUAL_ENDPOINTS = {
+    "svrs": {"production": "https://nfe.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx", "homologation": "https://nfe-homologacao.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx"},
+    "svan": {"production": "https://www.sefazvirtual.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx", "homologation": "https://hom.sefazvirtual.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx"},
+}
+CTE_SVSP_UFS = {"14", "16", "26"}
+CTE_DIRECT_ENDPOINTS = {
+    "31": {"production": "https://cte.fazenda.mg.gov.br/cte/services/CTeConsultaV4", "homologation": "https://hcte.fazenda.mg.gov.br/cte/services/CTeConsultaV4"},
+    "35": {"production": "https://nfe.fazenda.sp.gov.br/CTeWS/WS/CTeConsultaV4.asmx", "homologation": "https://homologacao.nfe.fazenda.sp.gov.br/CTeWS/WS/CTeConsultaV4.asmx"},
+    "41": {"production": "https://cte.fazenda.pr.gov.br/cte4/CTeConsultaV4", "homologation": "https://homologacao.cte.fazenda.pr.gov.br/cte4/CTeConsultaV4"},
+    "43": {"production": "https://cte.sefazrs.rs.gov.br/ws/CTeConsulta/CTeConsultaV4.asmx", "homologation": "https://cte-homologacao.svrs.rs.gov.br/ws/CTeConsulta/CTeConsultaV4.asmx"},
+    "50": {"production": "https://producao.cte.ms.gov.br/ws/CTeConsultaV4", "homologation": "https://homologacao.cte.ms.gov.br/ws/CTeConsultaV4"},
+    "51": {"production": "https://cte.sefaz.mt.gov.br/ctews2/services/CTeConsultaV4", "homologation": "https://homologacao.sefaz.mt.gov.br/ctews2/services/CTeConsultaV4"},
+}
+CTE_VIRTUAL_ENDPOINTS = {
+    "svrs": {"production": "https://cte.svrs.rs.gov.br/ws/CTeConsulta/CTeConsultaV4.asmx", "homologation": "https://cte-homologacao.svrs.rs.gov.br/ws/CTeConsulta/CTeConsultaV4.asmx"},
+    "svsp": {"production": "https://nfe.fazenda.sp.gov.br/CTeWS/WS/CTeConsultaV4.asmx", "homologation": "https://homologacao.nfe.fazenda.sp.gov.br/CTeWS/WS/CTeConsultaV4.asmx"},
+}
+MDFE_ENDPOINTS = {"production": "https://mdfe.svrs.rs.gov.br/ws/MDFeConsulta/MDFeConsulta.asmx", "homologation": "https://mdfe-homologacao.svrs.rs.gov.br/ws/MDFeConsulta/MDFeConsulta.asmx"}
+DISTRIBUTION_ENDPOINTS = {
+    "production": "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx",
+    "homologation": "https://hom1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx",
+}
+DISTRIBUTION_WSDL = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe"
+DISTRIBUTION_PORTAL = "https://www.nfe.fazenda.gov.br/portal/"
+NFSE_ENDPOINTS = {
+    "production": "https://sefin.nfse.gov.br/SefinNacional/nfse/{access_key}",
+    "homologation": "https://sefin.producaorestrita.nfse.gov.br/API/SefinNacional/nfse/{access_key}",
+}
+NFSE_DOCUMENTATION = "https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecnica/documentacao-atual/documentacao-atual"
+NFSE_CONTRIBUTOR_API_DOCUMENTATION = "https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecnica/documentacao-atual/manual-contribuintes-apis-adn-sistema-nacional-nfse.pdf"
+
+
+def connect() -> sqlite3.Connection:
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def password_hash(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), 180_000
+    ).hex()
+
+
+def local_now() -> str:
+    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def normalized_modules(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted({str(item) for item in value if str(item) in ERP_MODULES})
+
+
+def migrate_legacy_modules(database: sqlite3.Connection) -> None:
+    """Converte permissões genéricas antigas nas abas correspondentes do menu atual."""
+    for legacy_key, replacement_keys in LEGACY_MODULE_MIGRATIONS.items():
+        plan_rows = database.execute(
+            "SELECT plan_id FROM plan_modules WHERE module_key = ?", (legacy_key,)
+        ).fetchall()
+        for row in plan_rows:
+            for replacement_key in replacement_keys:
+                database.execute(
+                    "INSERT OR IGNORE INTO plan_modules(plan_id, module_key) VALUES (?, ?)",
+                    (row["plan_id"], replacement_key),
+                )
+        user_rows = database.execute(
+            "SELECT email, allowed FROM user_modules WHERE module_key = ?", (legacy_key,)
+        ).fetchall()
+        for row in user_rows:
+            for replacement_key in replacement_keys:
+                database.execute(
+                    "INSERT OR IGNORE INTO user_modules(email, module_key, allowed) VALUES (?, ?, ?)",
+                    (row["email"], replacement_key, row["allowed"]),
+                )
+    placeholders = ",".join("?" for _ in ERP_MODULES)
+    valid_keys = tuple(ERP_MODULES)
+    database.execute(f"DELETE FROM plan_modules WHERE module_key NOT IN ({placeholders})", valid_keys)
+    database.execute(f"DELETE FROM user_modules WHERE module_key NOT IN ({placeholders})", valid_keys)
+
+
+def apply_feature_access_migrations(database: sqlite3.Connection) -> None:
+    """Libera uma nova aba uma única vez para usuários cujo plano já a inclui."""
+    database.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_migrations (
+          migration_key TEXT PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        )
+        """
+    )
+    migrations = (
+        ("2026-08-22-grant-alimony-by-plan", "tab_pensao_alimenticia"),
+    )
+    for migration_key, module_key in migrations:
+        if database.execute(
+            "SELECT 1 FROM system_migrations WHERE migration_key = ?", (migration_key,)
+        ).fetchone():
+            continue
+        database.execute(
+            """
+            INSERT OR IGNORE INTO user_modules(email, module_key, allowed)
+            SELECT users.email, ?, 1
+            FROM users
+            JOIN plan_modules
+              ON plan_modules.plan_id = users.plan_id
+             AND plan_modules.module_key = ?
+            """,
+            (module_key, module_key),
+        )
+        database.execute(
+            "INSERT INTO system_migrations(migration_key, applied_at) VALUES (?, ?)",
+            (migration_key, local_now()),
+        )
+
+
+def refresh_expired_subscriptions(database: sqlite3.Connection) -> int:
+    today = dt.datetime.now().astimezone().date().isoformat()
+    database.execute(
+        """
+        UPDATE users SET status = 'Aguardando ativação', updated_at = ?
+        WHERE role != 'Administrador' AND monitoring_start IS NOT NULL AND monitoring_start > ?
+          AND status = 'Ativo'
+        """,
+        (local_now(), today),
+    )
+    database.execute(
+        """
+        UPDATE users SET status = 'Ativo', active = 1, updated_at = ?
+        WHERE role != 'Administrador' AND status = 'Aguardando ativação'
+          AND monitoring_start IS NOT NULL AND monitoring_start <= ?
+          AND (monitoring_end IS NULL OR monitoring_end >= ?)
+        """,
+        (local_now(), today, today),
+    )
+    cursor = database.execute(
+        """
+        UPDATE users
+        SET status = 'Assinatura vencida', updated_at = ?
+        WHERE role != 'Administrador'
+          AND monitoring_end IS NOT NULL AND monitoring_end < ?
+          AND status NOT IN ('Inativo', 'Bloqueado', 'Assinatura vencida')
+        """,
+        (local_now(), today),
+    )
+    return int(cursor.rowcount or 0)
+
+
+def modules_for_email(database: sqlite3.Connection, email: str, role: str, status: str) -> set[str]:
+    if role == "Administrador":
+        return set(ERP_MODULES)
+    if status == "Assinatura vencida":
+        return {"tab_inicio"}
+    rows = database.execute(
+        "SELECT module_key FROM user_modules WHERE email = ? AND allowed = 1",
+        (email,),
+    ).fetchall()
+    if rows:
+        return {row["module_key"] for row in rows if row["module_key"] in ERP_MODULES}
+    plan = database.execute("SELECT plan_id FROM users WHERE email = ?", (email,)).fetchone()
+    if plan and plan["plan_id"]:
+        rows = database.execute(
+            "SELECT module_key FROM plan_modules WHERE plan_id = ?", (plan["plan_id"],)
+        ).fetchall()
+        return {row["module_key"] for row in rows if row["module_key"] in ERP_MODULES}
+    return {"tab_inicio"}
+
+
+def write_access_audit(
+    database: sqlite3.Connection,
+    administrator: str,
+    affected_user: str,
+    action: str,
+    previous_value: object = "",
+    new_value: object = "",
+    ip_address: str = "",
+) -> None:
+    def encode(value: object) -> str:
+        if isinstance(value, (dict, list, tuple, set)):
+            return json.dumps(list(value) if isinstance(value, set) else value, ensure_ascii=False, sort_keys=True)[:4000]
+        return str(value or "")[:4000]
+    database.execute(
+        """
+        INSERT INTO access_audit(created_at, administrator_email, affected_email, action,
+                                 previous_value, new_value, ip_address)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (local_now(), administrator, affected_user, action[:160], encode(previous_value), encode(new_value), ip_address[:80]),
+    )
+
+
+def require_crypto() -> None:
+    if not CRYPTO_AVAILABLE:
+        raise RuntimeError(
+            "O componente de segurança não está instalado. Execute: python -m pip install -r requirements.txt"
+        )
+
+
+def get_fernet() -> "Fernet":
+    require_crypto()
+    DATA_DIR.mkdir(exist_ok=True)
+    configured = os.environ.get("GESTAOFISCAL_MASTER_KEY", "").strip().encode("ascii")
+    if configured:
+        key = configured
+    elif MASTER_KEY_PATH.exists():
+        key = MASTER_KEY_PATH.read_bytes().strip()
+    else:
+        key = Fernet.generate_key()
+        MASTER_KEY_PATH.write_bytes(key)
+        try:
+            os.chmod(MASTER_KEY_PATH, 0o600)
+        except OSError:
+            pass
+    try:
+        return Fernet(key)
+    except (ValueError, TypeError) as error:
+        raise RuntimeError("GESTAOFISCAL_MASTER_KEY inválida. Informe uma chave Fernet de 32 bytes.") from error
+
+
+def decode_base64_field(value: str, limit: int, label: str) -> bytes:
+    try:
+        data = base64.b64decode(str(value or ""), validate=True)
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"{label} inválido.") from error
+    if not data or len(data) > limit:
+        raise ValueError(f"{label} vazio ou acima do limite permitido.")
+    return data
+
+
+def digits(value: str) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def clean_cnpj(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def valid_cpf(value: str) -> bool:
+    document = digits(value)
+    if len(document) != 11 or len(set(document)) == 1:
+        return False
+    numbers = [int(character) for character in document]
+    for position in (9, 10):
+        weight = position + 1
+        total = sum(numbers[index] * (weight - index) for index in range(position))
+        check_digit = (total * 10) % 11
+        if check_digit == 10:
+            check_digit = 0
+        if numbers[position] != check_digit:
+            return False
+    return True
+
+
+def valid_cnpj(value: str) -> bool:
+    document = clean_cnpj(value)
+    if len(document) != 14 or not re.fullmatch(r"[A-Z0-9]{12}[0-9]{2}", document):
+        return False
+    if document.isdigit() and len(set(document)) == 1:
+        return False
+    values = [ord(character) - 48 for character in document[:12]]
+
+    def calculate(base: list[int], weights: list[int]) -> int:
+        remainder = sum(number * weight for number, weight in zip(base, weights)) % 11
+        return 0 if remainder < 2 else 11 - remainder
+
+    first = calculate(values, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    second = calculate(values + [first], [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    return document[-2:] == f"{first}{second}"
+
+
+def iso_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for date_format in ("%Y-%m-%d", "%d/%m/%Y", "%Y%m%d", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return dt.datetime.strptime(text[:19], date_format).date().isoformat()
+        except ValueError:
+            continue
+    return text[:10]
+
+
+def joined_address(parts: list[object]) -> str:
+    return ", ".join(str(item).strip() for item in parts if str(item or "").strip())
+
+
+def normalize_cnpj_profile(payload: dict, requested_cnpj: str, source: dict) -> dict:
+    """Converte respostas SERPRO, BrasilAPI, CNPJá e CNPJ.ws em um cadastro único."""
+    if "razao_social" in payload or "cnae_fiscal" in payload:
+        secondary = payload.get("cnaes_secundarios") or []
+        profile = {
+            "cnpj": payload.get("cnpj") or requested_cnpj,
+            "name": payload.get("razao_social") or "",
+            "tradeName": payload.get("nome_fantasia") or "",
+            "registrationStatus": payload.get("descricao_situacao_cadastral") or "",
+            "registrationStatusDate": iso_date(payload.get("data_situacao_cadastral")),
+            "startDate": iso_date(payload.get("data_inicio_atividade")),
+            "cnae": str(payload.get("cnae_fiscal") or ""),
+            "activity": payload.get("cnae_fiscal_descricao") or "",
+            "secondaryCnaes": [
+                {"code": str(item.get("codigo") or item.get("id") or ""), "description": item.get("descricao") or item.get("text") or ""}
+                for item in secondary if isinstance(item, dict)
+            ],
+            "legalNature": payload.get("natureza_juridica") or "",
+            "companySize": payload.get("descricao_porte") or payload.get("porte") or "",
+            "shareCapital": payload.get("capital_social") or 0,
+            "email": payload.get("email") or "",
+            "phone": payload.get("ddd_telefone_1") or payload.get("telefone") or "",
+            "zipCode": payload.get("cep") or "",
+            "city": joined_address([payload.get("municipio"), payload.get("uf")]).replace(", ", " / "),
+            "address": joined_address([
+                payload.get("descricao_tipo_de_logradouro"), payload.get("logradouro"), payload.get("numero"),
+                payload.get("complemento"), payload.get("bairro"), payload.get("municipio"), payload.get("uf"), payload.get("cep"),
+            ]),
+            "isMei": bool(payload.get("opcao_pelo_mei")),
+            "isSimple": bool(payload.get("opcao_pelo_simples")),
+        }
+    elif "company" in payload or "taxId" in payload:
+        company = payload.get("company") or {}
+        address = payload.get("address") or {}
+        status = payload.get("status") or {}
+        main_activity = payload.get("mainActivity") or {}
+        nature = company.get("nature") or {}
+        size = company.get("size") or {}
+        phones = payload.get("phones") or []
+        emails = payload.get("emails") or []
+        phone = phones[0] if phones and isinstance(phones[0], dict) else {}
+        email = emails[0] if emails and isinstance(emails[0], dict) else {}
+        profile = {
+            "cnpj": payload.get("taxId") or requested_cnpj,
+            "name": company.get("name") or payload.get("name") or "",
+            "tradeName": payload.get("alias") or "",
+            "registrationStatus": status.get("text") or status.get("name") or str(status or ""),
+            "registrationStatusDate": iso_date(payload.get("statusDate")),
+            "startDate": iso_date(payload.get("founded")),
+            "cnae": str(main_activity.get("id") or main_activity.get("code") or ""),
+            "activity": main_activity.get("text") or main_activity.get("description") or "",
+            "secondaryCnaes": [
+                {"code": str(item.get("id") or item.get("code") or ""), "description": item.get("text") or item.get("description") or ""}
+                for item in (payload.get("sideActivities") or []) if isinstance(item, dict)
+            ],
+            "legalNature": nature.get("text") or nature.get("description") or "",
+            "companySize": size.get("text") or size.get("acronym") or "",
+            "shareCapital": company.get("equity") or 0,
+            "email": email.get("address") or "",
+            "phone": joined_address([phone.get("area"), phone.get("number")]),
+            "zipCode": address.get("zip") or "",
+            "city": joined_address([address.get("city"), address.get("state")]).replace(", ", " / "),
+            "address": joined_address([
+                address.get("street"), address.get("number"), address.get("details"), address.get("district"),
+                address.get("city"), address.get("state"), address.get("zip"),
+            ]),
+            "isMei": bool(payload.get("isMei")),
+            "isSimple": bool(payload.get("isSimple")),
+        }
+    elif "estabelecimento" in payload:
+        establishment = payload.get("estabelecimento") or {}
+        main_activity = establishment.get("atividade_principal") or {}
+        nature = payload.get("natureza_juridica") or {}
+        size = payload.get("porte") or {}
+        simple = payload.get("simples") or {}
+        state = establishment.get("estado") or {}
+        city = establishment.get("cidade") or {}
+        profile = {
+            "cnpj": establishment.get("cnpj") or requested_cnpj,
+            "name": payload.get("razao_social") or "",
+            "tradeName": establishment.get("nome_fantasia") or "",
+            "registrationStatus": establishment.get("situacao_cadastral") or "",
+            "registrationStatusDate": iso_date(establishment.get("data_situacao_cadastral")),
+            "startDate": iso_date(establishment.get("data_inicio_atividade")),
+            "cnae": str(main_activity.get("id") or main_activity.get("codigo") or ""),
+            "activity": main_activity.get("descricao") or "",
+            "secondaryCnaes": [
+                {"code": str(item.get("id") or item.get("codigo") or ""), "description": item.get("descricao") or ""}
+                for item in (establishment.get("atividades_secundarias") or []) if isinstance(item, dict)
+            ],
+            "legalNature": nature.get("descricao") or "",
+            "companySize": size.get("descricao") or "",
+            "shareCapital": payload.get("capital_social") or 0,
+            "email": establishment.get("email") or "",
+            "phone": joined_address([establishment.get("ddd1"), establishment.get("telefone1")]),
+            "zipCode": establishment.get("cep") or "",
+            "city": joined_address([city.get("nome"), state.get("sigla")]).replace(", ", " / "),
+            "address": joined_address([
+                establishment.get("tipo_logradouro"), establishment.get("logradouro"), establishment.get("numero"),
+                establishment.get("complemento"), establishment.get("bairro"), city.get("nome"), state.get("sigla"), establishment.get("cep"),
+            ]),
+            "isMei": bool(simple.get("mei")),
+            "isSimple": bool(simple.get("simples")),
+        }
+    else:
+        # Formato da API Consulta CNPJ do SERPRO (Consulta Básica/QSA/Empresa).
+        status = payload.get("situacaoCadastral") or {}
+        nature = payload.get("naturezaJuridica") or {}
+        main_activity = payload.get("cnaePrincipal") or payload.get("atividadePrincipal") or {}
+        address = payload.get("endereco") or {}
+        municipality = address.get("municipio") or {}
+        phones = payload.get("telefones") or []
+        phone = phones[0] if phones and isinstance(phones[0], dict) else {}
+        profile = {
+            "cnpj": payload.get("ni") or payload.get("cnpj") or requested_cnpj,
+            "name": payload.get("nomeEmpresarial") or payload.get("razaoSocial") or "",
+            "tradeName": payload.get("nomeFantasia") or "",
+            "registrationStatus": status.get("descricao") or status.get("texto") or str(status or ""),
+            "registrationStatusDate": iso_date(status.get("data") or payload.get("dataSituacaoCadastral")),
+            "startDate": iso_date(payload.get("dataAbertura") or payload.get("dataInicioAtividade")),
+            "cnae": str(main_activity.get("codigo") or main_activity.get("id") or ""),
+            "activity": main_activity.get("descricao") or main_activity.get("texto") or "",
+            "secondaryCnaes": [
+                {"code": str(item.get("codigo") or item.get("id") or ""), "description": item.get("descricao") or item.get("texto") or ""}
+                for item in (payload.get("cnaesSecundarias") or payload.get("atividadesSecundarias") or []) if isinstance(item, dict)
+            ],
+            "legalNature": nature.get("descricao") or nature.get("texto") or str(nature or ""),
+            "companySize": payload.get("porte") or "",
+            "shareCapital": payload.get("capitalSocial") or 0,
+            "email": payload.get("correioEletronico") or payload.get("email") or "",
+            "phone": joined_address([phone.get("ddd"), phone.get("numero")]),
+            "zipCode": address.get("cep") or "",
+            "city": joined_address([municipality.get("descricao") if isinstance(municipality, dict) else municipality, address.get("uf")]).replace(", ", " / "),
+            "address": joined_address([
+                address.get("tipoLogradouro"), address.get("logradouro"), address.get("numero"), address.get("complemento"),
+                address.get("bairro"), municipality.get("descricao") if isinstance(municipality, dict) else municipality, address.get("uf"), address.get("cep"),
+            ]),
+            "isMei": bool(payload.get("opcaoMEI") or payload.get("mei")),
+            "isSimple": bool(payload.get("opcaoSimples") or payload.get("simples")),
+        }
+    profile["cnpj"] = clean_cnpj(profile.get("cnpj") or requested_cnpj)
+    profile["source"] = source
+    profile["consultedAt"] = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    profile["officialVerificationUrl"] = "https://www.gov.br/pt-br/servicos/consultar-cadastro-nacional-de-pessoas-juridicas"
+    return profile
+
+
+def serpro_cnpj_payload(cnpj: str) -> dict:
+    consumer_key = os.environ.get("SERPRO_CNPJ_CONSUMER_KEY", "").strip()
+    consumer_secret = os.environ.get("SERPRO_CNPJ_CONSUMER_SECRET", "").strip()
+    if not consumer_key or not consumer_secret:
+        raise RuntimeError("Credenciais da API Consulta CNPJ do SERPRO não configuradas.")
+    now = time.time()
+    token = str(SERPRO_TOKEN_CACHE.get("access_token") or "")
+    if not token or float(SERPRO_TOKEN_CACHE.get("expires_at") or 0) <= now + 60:
+        basic = base64.b64encode(f"{consumer_key}:{consumer_secret}".encode("utf-8")).decode("ascii")
+        token_request = Request(
+            os.environ.get("SERPRO_CNPJ_TOKEN_URL", "https://gateway.apiserpro.serpro.gov.br/token"),
+            data=b"grant_type=client_credentials",
+            headers={"Authorization": f"Basic {basic}", "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+            method="POST",
+        )
+        with urlopen(token_request, timeout=12) as response:
+            token_payload = json.loads(response.read().decode("utf-8"))
+        token = str(token_payload.get("access_token") or "")
+        if not token:
+            raise RuntimeError("O SERPRO não retornou o token de acesso.")
+        SERPRO_TOKEN_CACHE.update({"access_token": token, "expires_at": now + int(token_payload.get("expires_in") or 3300)})
+    query_template = os.environ.get(
+        "SERPRO_CNPJ_QUERY_URL",
+        "https://gateway.apiserpro.serpro.gov.br/consulta-cnpj-df/v2/basica/{cnpj}",
+    )
+    query_request = Request(
+        query_template.format(cnpj=quote(cnpj, safe="")),
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "ERPGestaoFiscal/1.0"},
+    )
+    with urlopen(query_request, timeout=12) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_cnpj_profile(cnpj: str) -> dict:
+    cached = CNPJ_PROFILE_CACHE.get(cnpj)
+    if cached and time.time() - cached[0] < CNPJ_PROFILE_CACHE_SECONDS:
+        result = dict(cached[1])
+        result["cache"] = True
+        return result
+    attempts: list[str] = []
+    if os.environ.get("SERPRO_CNPJ_CONSUMER_KEY") and os.environ.get("SERPRO_CNPJ_CONSUMER_SECRET"):
+        try:
+            payload = serpro_cnpj_payload(cnpj)
+            result = normalize_cnpj_profile(payload, cnpj, {
+                "name": "API Consulta CNPJ — SERPRO/Receita Federal", "official": True,
+                "url": "https://www.gov.br/pt-br/servicos/obter-solucao-de-consulta-de-dados-do-cadastro-nacional-de-pessoas-juridicas-cnpj",
+            })
+            CNPJ_PROFILE_CACHE[cnpj] = (time.time(), result)
+            return result
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as error:
+            attempts.append(f"SERPRO: {error}")
+    providers = (
+        (f"https://brasilapi.com.br/api/cnpj/v1/{quote(cnpj, safe='')}", "BrasilAPI — dados públicos do CNPJ", "https://brasilapi.com.br/", "brasilapi"),
+        (f"https://open.cnpja.com/office/{quote(cnpj, safe='')}", "CNPJá — dados públicos do CNPJ", "https://cnpja.com/", "cnpja"),
+        (f"https://publica.cnpj.ws/cnpj/{quote(cnpj, safe='')}", "CNPJ.ws — dados públicos do CNPJ", "https://cnpj.ws/", "cnpjws"),
+    )
+    for url, name, source_url, provider_id in providers:
+        try:
+            request = Request(url, headers={"Accept": "application/json", "User-Agent": "ERPGestaoFiscal/1.0"})
+            with urlopen(request, timeout=12) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            result = normalize_cnpj_profile(payload, cnpj, {"name": name, "official": False, "url": source_url, "provider": provider_id})
+            CNPJ_PROFILE_CACHE[cnpj] = (time.time(), result)
+            return result
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
+            attempts.append(f"{name}: {error}")
+    raise RuntimeError("Nenhuma fonte cadastral respondeu. " + " | ".join(attempts[:2]))
+
+
+def valid_access_key(value: str) -> bool:
+    key = digits(value)
+    if len(key) != 44 or len(set(key)) == 1:
+        return False
+    weight = 2
+    total = 0
+    for character in reversed(key[:43]):
+        total += int(character) * weight
+        weight = 2 if weight == 9 else weight + 1
+    remainder = total % 11
+    verifier = 0 if remainder in (0, 1) else 11 - remainder
+    return verifier == int(key[43])
+
+
+def valid_nfse_key(value: str) -> bool:
+    key = digits(value)
+    return len(key) == 50 and len(set(key)) > 1
+
+
+def document_model(key: str) -> tuple[str, str]:
+    code = key[20:22]
+    return code, {"55": "NF-e", "65": "NFC-e", "57": "CT-e", "67": "CT-e OS", "58": "MDF-e"}.get(code, "Documento não suportado")
+
+
+def certificate_metadata(pfx_data: bytes, password: str) -> dict:
+    require_crypto()
+    try:
+        private_key, certificate, chain = pkcs12.load_key_and_certificates(
+            pfx_data, password.encode("utf-8") if password else None
+        )
+    except (ValueError, TypeError) as error:
+        raise ValueError("Senha incorreta ou certificado A1 inválido.") from error
+    if certificate is None or private_key is None:
+        raise ValueError("O arquivo não contém certificado e chave privada utilizáveis.")
+    subject = certificate.subject.rfc4514_string()
+    issuer = certificate.issuer.rfc4514_string()
+    common_names = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    holder = common_names[0].value if common_names else subject
+    candidates = re.findall(r"(?<!\d)(\d{14}|\d{11})(?!\d)", subject)
+    document = candidates[0] if candidates else ""
+    not_before = getattr(certificate, "not_valid_before_utc", certificate.not_valid_before.replace(tzinfo=dt.timezone.utc))
+    not_after = getattr(certificate, "not_valid_after_utc", certificate.not_valid_after.replace(tzinfo=dt.timezone.utc))
+    return {
+        "holder": holder,
+        "document": document,
+        "issuer": issuer,
+        "serial": format(certificate.serial_number, "X"),
+        "not_before": not_before.isoformat(),
+        "not_after": not_after.isoformat(),
+        "private_key": private_key,
+        "certificate": certificate,
+        "chain": chain or [],
+    }
+
+
+def certificate_status(not_after: str) -> str:
+    expiry = dt.datetime.fromisoformat(not_after.replace("Z", "+00:00"))
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=dt.timezone.utc)
+    remaining = (expiry - dt.datetime.now(dt.timezone.utc)).days
+    if remaining < 0:
+        return "Vencido"
+    if remaining <= 30:
+        return "Próximo do vencimento"
+    return "Válido"
+
+
+def service_configuration(access_key: str, environment: str) -> dict:
+    model_code, model = document_model(access_key)
+    uf_code = access_key[:2]
+    if uf_code not in UF_NAMES:
+        raise ValueError("Código da UF presente na chave de acesso é inválido.")
+    if model_code in {"55", "65"}:
+        if uf_code in NFE_ENDPOINTS:
+            endpoint = NFE_ENDPOINTS[uf_code][environment]
+        elif uf_code in NFE_SVAN_UFS:
+            endpoint = NFE_VIRTUAL_ENDPOINTS["svan"][environment]
+        else:
+            endpoint = NFE_VIRTUAL_ENDPOINTS["svrs"][environment]
+        return {
+            "model": model, "endpoint": endpoint, "root": "consSitNFe", "key_tag": "chNFe",
+            "namespace": "http://www.portalfiscal.inf.br/nfe", "wsdl": "http://www.portalfiscal.inf.br/nfe/wsdl/NFeConsultaProtocolo4",
+            "method": "nfeConsultaNF", "message_tag": "nfeDadosMsg", "version": "4.00", "portal": OFFICIAL_PORTALS["nfe"], "source": f"SEFAZ {UF_NAMES[uf_code]} / Portal NF-e",
+        }
+    if model_code in {"57", "67"}:
+        if uf_code in CTE_DIRECT_ENDPOINTS:
+            endpoint = CTE_DIRECT_ENDPOINTS[uf_code][environment]
+        elif uf_code in CTE_SVSP_UFS:
+            endpoint = CTE_VIRTUAL_ENDPOINTS["svsp"][environment]
+        else:
+            endpoint = CTE_VIRTUAL_ENDPOINTS["svrs"][environment]
+        return {
+            "model": model, "endpoint": endpoint, "root": "consSitCTe", "key_tag": "chCTe",
+            "namespace": "http://www.portalfiscal.inf.br/cte", "wsdl": "http://www.portalfiscal.inf.br/cte/wsdl/CTeConsultaV4",
+            "method": "cteConsultaCT", "message_tag": "cteDadosMsg", "version": "4.00", "portal": OFFICIAL_PORTALS["cte"], "source": f"Autorizador CT-e {UF_NAMES[uf_code]} / Portal CT-e",
+        }
+    if model_code == "58":
+        return {
+            "model": model, "endpoint": MDFE_ENDPOINTS[environment], "root": "consSitMDFe", "key_tag": "chMDFe",
+            "namespace": "http://www.portalfiscal.inf.br/mdfe", "wsdl": "http://www.portalfiscal.inf.br/mdfe/wsdl/MDFeConsulta",
+            "method": "mdfeConsultaMDF", "message_tag": "mdfeDadosMsg", "version": "3.00", "portal": OFFICIAL_PORTALS["mdfe"], "source": "SEFAZ Virtual RS / Portal MDF-e",
+        }
+    raise ValueError("Modelo não suportado pela consulta automática. Utilize o portal oficial correspondente.")
+
+
+def certificate_pem_files(pfx_data: bytes, password: str, directory: Path) -> tuple[Path, Path]:
+    metadata = certificate_metadata(pfx_data, password)
+    cert_pem = metadata["certificate"].public_bytes(serialization.Encoding.PEM)
+    for item in metadata["chain"]:
+        cert_pem += item.public_bytes(serialization.Encoding.PEM)
+    key_pem = metadata["private_key"].private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    cert_path, key_path = directory / "certificate.pem", directory / "private-key.pem"
+    cert_path.write_bytes(cert_pem)
+    key_path.write_bytes(key_pem)
+    return cert_path, key_path
+
+
+def soap_query(access_key: str, environment: str, pfx_data: bytes, password: str) -> dict:
+    config = service_configuration(access_key, environment)
+    tp_amb = "1" if environment == "production" else "2"
+    message = (
+        f'<{config["root"]} xmlns="{config["namespace"]}" versao="{config["version"]}">'
+        f"<tpAmb>{tp_amb}</tpAmb><xServ>CONSULTAR</xServ>"
+        f'<{config["key_tag"]}>{access_key}</{config["key_tag"]}></{config["root"]}>'
+    )
+    envelope = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">'
+        f'<soap12:Body><{config["message_tag"]} xmlns="{config["wsdl"]}">'
+        f'{message}</{config["message_tag"]}></soap12:Body></soap12:Envelope>'
+    ).encode("utf-8")
+    with tempfile.TemporaryDirectory(prefix="gestao-fiscal-sefaz-") as temporary:
+        directory = Path(temporary)
+        cert_path, key_path = certificate_pem_files(pfx_data, password, directory)
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(str(cert_path), str(key_path))
+        request = Request(
+            config["endpoint"], data=envelope, method="POST",
+            headers={
+                "Accept": "application/soap+xml, text/xml",
+                "Content-Type": f'application/soap+xml; charset=utf-8; action="{config["wsdl"]}/{config["method"]}"',
+                "User-Agent": "ContTechERP/1.0",
+            },
+        )
+        try:
+            with urlopen(request, context=context, timeout=25) as response:
+                raw = response.read(3_000_000)
+        except HTTPError as error:
+            detail = error.read(1200).decode("utf-8", errors="replace")
+            raise RuntimeError(f"SEFAZ rejeitou a comunicação HTTP ({error.code}). {re.sub('<[^>]+>', ' ', detail)[:220]}") from error
+        except (URLError, TimeoutError, socket.timeout, ssl.SSLError) as error:
+            raise RuntimeError("Serviço oficial indisponível, certificado rejeitado ou tempo de resposta excedido.") from error
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as error:
+        raise RuntimeError("A SEFAZ respondeu em formato inesperado.") from error
+    if not any(node.tag.rsplit("}", 1)[-1] == "cStat" for node in root.iter()):
+        for response_node in root.iter():
+            nested = (response_node.text or "").strip()
+            if nested.startswith("<") and "cStat" in nested:
+                try:
+                    root = ET.fromstring(nested)
+                    break
+                except ET.ParseError:
+                    continue
+    def first_text(name: str) -> str:
+        for node in root.iter():
+            if node.tag.rsplit("}", 1)[-1] == name and node.text:
+                return node.text.strip()
+        return ""
+    official_code = first_text("cStat")
+    motive = first_text("xMotivo") or "Resposta recebida do serviço oficial."
+    protocol = first_text("nProt")
+    received = first_text("dhRecbto") or first_text("dhRegEvento")
+    events = []
+    for event_node in root.iter():
+        if event_node.tag.rsplit("}", 1)[-1] in {"infEvento", "infProt"}:
+            values = {child.tag.rsplit("}", 1)[-1]: (child.text or "").strip() for child in event_node.iter()}
+            if values.get("tpEvento") or values.get("xEvento"):
+                events.append({"type": values.get("xEvento") or values.get("tpEvento"), "date": values.get("dhRegEvento", ""), "protocol": values.get("nProt", ""), "description": values.get("xMotivo", "")})
+    return {"config": config, "official_code": official_code, "motive": motive, "protocol": protocol, "received": received, "events": events}
+
+
+def soap_distribution(
+    state_code: str,
+    document: str,
+    environment: str,
+    pfx_data: bytes,
+    password: str,
+    last_nsu: str,
+) -> dict:
+    if state_code not in UF_NAMES:
+        raise ValueError("Selecione a UF vinculada ao certificado.")
+    holder_tag = "CNPJ" if len(document) == 14 else "CPF" if len(document) == 11 else ""
+    if not holder_tag:
+        raise ValueError("O certificado precisa identificar um CNPJ ou CPF válido.")
+    if environment not in DISTRIBUTION_ENDPOINTS:
+        raise ValueError("Ambiente fiscal inválido.")
+    normalized_nsu = digits(last_nsu).zfill(15)[-15:]
+    endpoint = DISTRIBUTION_ENDPOINTS[environment]
+    envelope = f'''<?xml version="1.0" encoding="utf-8"?>
+<soap12:Envelope xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
+  <soap12:Body>
+    <nfeDistDFeInteresse xmlns="{DISTRIBUTION_WSDL}">
+      <nfeDadosMsg>
+        <distDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01">
+          <tpAmb>{'1' if environment == 'production' else '2'}</tpAmb>
+          <cUFAutor>{state_code}</cUFAutor>
+          <{holder_tag}>{document}</{holder_tag}>
+          <distNSU><ultNSU>{normalized_nsu}</ultNSU></distNSU>
+        </distDFeInt>
+      </nfeDadosMsg>
+    </nfeDistDFeInteresse>
+  </soap12:Body>
+</soap12:Envelope>'''.encode("utf-8")
+    with tempfile.TemporaryDirectory(prefix="gestao-fiscal-dist-") as temporary:
+        cert_path, key_path = certificate_pem_files(pfx_data, password, Path(temporary))
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(str(cert_path), str(key_path))
+        request = Request(
+            endpoint,
+            data=envelope,
+            method="POST",
+            headers={
+                "Accept": "application/soap+xml, text/xml",
+                "Content-Type": f'application/soap+xml; charset=utf-8; action="{DISTRIBUTION_WSDL}/nfeDistDFeInteresse"',
+                "User-Agent": "ContTechERP/1.2",
+            },
+        )
+        try:
+            with urlopen(request, context=context, timeout=35) as response:
+                raw = response.read(12_000_000)
+        except HTTPError as error:
+            detail = error.read(1600).decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Ambiente Nacional rejeitou a comunicação HTTP ({error.code}). "
+                f"{re.sub('<[^>]+>', ' ', detail)[:240]}"
+            ) from error
+        except (URLError, TimeoutError, socket.timeout, ssl.SSLError) as error:
+            raise RuntimeError(
+                "O Ambiente Nacional da NF-e não respondeu, recusou o certificado ou excedeu o tempo limite."
+            ) from error
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as error:
+        raise RuntimeError("O Ambiente Nacional respondeu em formato inesperado.") from error
+    response_root = root
+    if not any(node.tag.rsplit("}", 1)[-1] == "retDistDFeInt" for node in root.iter()):
+        for node in root.iter():
+            nested = (node.text or "").strip()
+            if nested.startswith("<") and "retDistDFeInt" in nested:
+                try:
+                    response_root = ET.fromstring(nested)
+                    break
+                except ET.ParseError:
+                    continue
+    def response_text(name: str) -> str:
+        for node in response_root.iter():
+            if node.tag.rsplit("}", 1)[-1] == name and node.text:
+                return node.text.strip()
+        return ""
+    documents = []
+    expanded_total = 0
+    for node in response_root.iter():
+        if node.tag.rsplit("}", 1)[-1] != "docZip" or not (node.text or "").strip():
+            continue
+        try:
+            compressed = base64.b64decode(re.sub(r"\s+", "", node.text or ""), validate=True)
+            xml_data = gzip.decompress(compressed)
+        except (ValueError, OSError) as error:
+            raise RuntimeError("Um documento retornado pelo Ambiente Nacional não pôde ser descompactado.") from error
+        expanded_total += len(xml_data)
+        if len(xml_data) > 5_000_000 or expanded_total > 30_000_000:
+            raise RuntimeError("O lote oficial descompactado ultrapassou o limite seguro de processamento.")
+        documents.append({"nsu": str(node.attrib.get("NSU", "")).zfill(15)[-15:], "schema": str(node.attrib.get("schema", ""))[:120], "xml": xml_data})
+    return {
+        "official_code": response_text("cStat"),
+        "motive": response_text("xMotivo") or "Resposta recebida do Ambiente Nacional.",
+        "last_nsu": (response_text("ultNSU") or normalized_nsu).zfill(15)[-15:],
+        "max_nsu": (response_text("maxNSU") or normalized_nsu).zfill(15)[-15:],
+        "received": response_text("dhResp"),
+        "documents": documents,
+        "endpoint": endpoint,
+    }
+
+
+def parse_distributed_document(xml_data: bytes, schema_name: str, holder_document: str, nsu: str) -> dict:
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError as error:
+        raise ValueError("O documento distribuído possui XML inválido.") from error
+    root_name = root.tag.rsplit("}", 1)[-1]
+    access_key = ""
+    for tag in ("chNFe", "chCTe", "chMDFe"):
+        candidate = xml_text(root, tag)
+        if len(digits(candidate)) == 44:
+            access_key = digits(candidate)
+            break
+    if not access_key:
+        for node in root.iter():
+            identifier = str(node.attrib.get("Id", ""))
+            match = re.search(r"(\d{44})", identifier)
+            if match:
+                access_key = match.group(1)
+                break
+    model_code, model = document_model(access_key) if access_key else ("", "Evento fiscal")
+    inf = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] in {"infNFe", "infCte", "infCTe", "infMDFe"}), None)
+    emit = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "emit"), None)
+    dest = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] in {"dest", "rem"}), None)
+    issuer_document = xml_text(emit, "CNPJ") or xml_text(emit, "CPF")
+    issuer_name = xml_text(emit, "xNome")
+    recipient_document = xml_text(dest, "CNPJ") or xml_text(dest, "CPF")
+    recipient_name = xml_text(dest, "xNome")
+    if root_name in {"resNFe", "resCTe", "resMDFe"}:
+        issuer_document = xml_text(root, "CNPJ") or xml_text(root, "CPF")
+        issuer_name = xml_text(root, "xNome")
+    if issuer_document and digits(issuer_document) == holder_document:
+        direction = "Emitida"
+    elif recipient_document and digits(recipient_document) == holder_document:
+        direction = "Recebida"
+    elif root_name.startswith("res") and issuer_document:
+        direction = "Recebida"
+    else:
+        direction = "Relacionada"
+    motive = xml_text(root, "xMotivo") or xml_text(root, "xEvento")
+    official_code = xml_text(root, "cStat") or xml_text(root, "cSitNFe")
+    situation_code = xml_text(root, "cSitNFe")
+    if situation_code == "1":
+        status, risk = "Autorizada", "Regular"
+    elif situation_code == "2":
+        status, risk = "Denegada", "Divergência"
+    elif situation_code == "3":
+        status, risk = "Cancelada", "Atenção"
+    elif "cancel" in (motive or "").lower():
+        status, risk = "Cancelada", "Atenção"
+    elif official_code:
+        status, risk = status_from_official(official_code, motive)
+    else:
+        status, risk = "Documento localizado", "Regular"
+    details = {}
+    if inf is not None and access_key:
+        try:
+            details = parse_fiscal_xml(xml_data, access_key)
+        except ValueError:
+            details = {}
+    issued_at = (
+        (details.get("summary") or {}).get("issuedAt")
+        or xml_text(root, "dhEmi") or xml_text(root, "dEmi") or xml_text(root, "dhEvento")
+    )
+    value = xml_text(root, "vNF") or xml_text(root, "vTPrest") or xml_text(root, "vCarga")
+    event = []
+    event_name = xml_text(root, "xEvento") or (motive if "Evento" in root_name else "")
+    if event_name:
+        event.append({"type": event_name, "date": xml_text(root, "dhEvento") or xml_text(root, "dhRegEvento"), "protocol": xml_text(root, "nProt"), "description": motive})
+    now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    return {
+        "id": uuid.uuid4().hex,
+        "accessKey": access_key,
+        "model": model,
+        "modelCode": model_code,
+        "status": status,
+        "riskLevel": risk,
+        "officialCode": official_code or "138",
+        "officialMessage": motive or "Documento localizado pela Distribuição DF-e.",
+        "protocol": xml_text(root, "nProt"),
+        "sourceName": "Ambiente Nacional da NF-e — Distribuição DF-e",
+        "sourceUrl": DISTRIBUTION_PORTAL,
+        "consultedAt": now,
+        "summary": details.get("summary", {"number": access_key[25:34] if access_key else "", "series": access_key[22:25] if access_key else "", "issuedAt": issued_at, "nature": xml_text(root, "natOp")}),
+        "issuer": details.get("issuer", {"name": issuer_name, "document": issuer_document, "stateRegistration": xml_text(root, "IE"), "address": "", "city": ""}),
+        "recipient": details.get("recipient", {"name": recipient_name, "document": recipient_document, "stateRegistration": "", "address": "", "city": ""}),
+        "items": details.get("items", []),
+        "taxes": details.get("taxes", {"Total do documento": money_text(value)} if value else {}),
+        "billing": details.get("billing", {}),
+        "events": event,
+        "analysis": [{"level": "Regular", "title": "Documento localizado no Ambiente Nacional", "message": f"NSU {nsu} · esquema {schema_name or root_name}.", "source": "Webservice oficial NFeDistribuicaoDFe"}],
+        "hasXml": True,
+        "distributionNsu": nsu,
+        "schemaName": schema_name or root_name,
+        "direction": direction,
+        "documentType": root_name,
+        "value": money_text(value),
+    }
+
+
+def status_from_official(code: str, motive: str) -> tuple[str, str]:
+    normalized = (motive or "").lower()
+    if code == "100" or "autorizado" in normalized:
+        return "Autorizada", "Regular"
+    if code in {"101", "151", "155"} or "cancelad" in normalized:
+        return "Cancelada", "Atenção"
+    if code in {"110", "301", "302"} or "denegad" in normalized:
+        return "Denegada", "Divergência"
+    if code in {"132"} or "encerrado" in normalized:
+        return "Encerrado", "Regular"
+    if code in {"217", "216"} or "não consta" in normalized or "inexist" in normalized:
+        return "Inexistente", "Erro crítico"
+    if code in {"135", "136"}:
+        return "Evento registrado", "Atenção"
+    return motive or "Pendente", "Atenção"
+
+
+def xml_text(node: ET.Element | None, name: str) -> str:
+    if node is None:
+        return ""
+    for child in node.iter():
+        if child.tag.rsplit("}", 1)[-1] == name and child.text:
+            return child.text.strip()
+    return ""
+
+
+def money_text(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except ValueError:
+        return value
+
+
+def _decode_nfse_document(value: str) -> bytes | None:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    if candidate.startswith("<"):
+        return candidate.encode("utf-8")
+    try:
+        padding = "=" * (-len(candidate) % 4)
+        decoded = base64.b64decode(candidate + padding, validate=False)
+    except (ValueError, TypeError):
+        return None
+    if decoded.startswith(b"\x1f\x8b"):
+        try:
+            decoded = gzip.decompress(decoded)
+        except OSError:
+            return None
+    return decoded if decoded.lstrip().startswith(b"<") else None
+
+
+def extract_nfse_xml(raw: bytes, content_type: str = "") -> tuple[bytes, dict]:
+    if raw.startswith(b"\x1f\x8b"):
+        try:
+            raw = gzip.decompress(raw)
+        except OSError as error:
+            raise RuntimeError("A NFS-e retornada pelo serviço oficial não pôde ser descompactada.") from error
+    if raw.lstrip().startswith(b"<"):
+        return raw, {}
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"A SEFIN Nacional respondeu em formato inesperado ({content_type or 'tipo não informado'})."
+        ) from error
+
+    preferred: list[str] = []
+    fallback: list[str] = []
+    messages: list[str] = []
+
+    def collect(value: object, name: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                collect(item, str(key))
+            return
+        if isinstance(value, list):
+            for item in value:
+                collect(item, name)
+            return
+        if not isinstance(value, str):
+            return
+        normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+        if any(token in normalized for token in ("mensagem", "message", "motivo", "descricao", "detail", "erro")):
+            messages.append(value.strip())
+        if "xml" in normalized and any(token in normalized for token in ("nfse", "gzip", "document")):
+            preferred.append(value)
+        elif "xml" in normalized or value.lstrip().startswith("<"):
+            fallback.append(value)
+
+    collect(payload)
+    for candidate in preferred + fallback:
+        document = _decode_nfse_document(candidate)
+        if document:
+            return document, payload if isinstance(payload, dict) else {}
+    message = next((item for item in messages if item), "")
+    raise RuntimeError(message[:300] or "A resposta oficial não trouxe o XML da NFS-e consultada.")
+
+
+def nfse_api_query(
+    access_key: str,
+    environment: str,
+    pfx_data: bytes,
+    password: str,
+) -> dict:
+    if environment not in NFSE_ENDPOINTS:
+        raise ValueError("Ambiente fiscal inválido.")
+    endpoint = NFSE_ENDPOINTS[environment].format(access_key=quote(access_key, safe=""))
+    with tempfile.TemporaryDirectory(prefix="gestao-fiscal-nfse-") as temporary:
+        cert_path, key_path = certificate_pem_files(pfx_data, password, Path(temporary))
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(str(cert_path), str(key_path))
+        request = Request(
+            endpoint,
+            method="GET",
+            headers={
+                "Accept": "application/json, application/xml, text/xml, application/octet-stream",
+                "User-Agent": "ContTechERP/1.3",
+            },
+        )
+        try:
+            with urlopen(request, context=context, timeout=30) as response:
+                content_type = response.headers.get("Content-Type", "")
+                raw = response.read(MAX_ATTACHMENT_BYTES + 1)
+                if len(raw) > MAX_ATTACHMENT_BYTES:
+                    raise RuntimeError("A resposta oficial ultrapassou o limite seguro de 10 MB.")
+                xml_data, payload = extract_nfse_xml(raw, content_type)
+                return {
+                    "xml": xml_data,
+                    "payload": payload,
+                    "endpoint": endpoint,
+                    "http_code": str(getattr(response, "status", 200)),
+                }
+        except HTTPError as error:
+            try:
+                detail = error.read(16_384).decode("utf-8", errors="replace")
+                parsed = json.loads(detail)
+                detail = str(parsed.get("mensagem") or parsed.get("message") or parsed.get("detail") or detail)
+            except (json.JSONDecodeError, AttributeError):
+                detail = re.sub(r"<[^>]+>", " ", detail if "detail" in locals() else "")
+            if error.code == 404:
+                raise ValueError("NFS-e não encontrada na SEFIN Nacional para a chave informada.") from error
+            if error.code in {401, 403}:
+                raise ValueError("O certificado não possui autorização para consultar esta NFS-e.") from error
+            raise RuntimeError(f"A SEFIN Nacional recusou a consulta HTTP {error.code}. {detail[:260]}") from error
+        except (URLError, TimeoutError, ssl.SSLError, OSError) as error:
+            raise RuntimeError("A SEFIN Nacional está indisponível ou recusou a conexão com o certificado A1.") from error
+
+
+def parse_nfse_xml(xml_data: bytes, access_key: str) -> dict:
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError as error:
+        raise ValueError("O XML recebido não é uma NFS-e válida.") from error
+    inf = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "infNFSe"), None)
+    if inf is None:
+        raise ValueError("O XML não contém a estrutura infNFSe do padrão nacional.")
+    xml_id = inf.attrib.get("Id", "")
+    xml_key_match = re.search(r"(\d{50})", xml_id) or re.search(r"(\d{50})", xml_text(inf, "chNFSe"))
+    xml_key = xml_key_match.group(1) if xml_key_match else ""
+
+    def first_node(names: set[str]) -> ET.Element | None:
+        return next((node for node in inf.iter() if node.tag.rsplit("}", 1)[-1] in names), None)
+
+    def party(node: ET.Element | None) -> dict:
+        address = next((item for item in node.iter() if item.tag.rsplit("}", 1)[-1] in {"end", "endNac", "enderNac", "endExt"}), None) if node is not None else None
+        street = " ".join(part for part in [xml_text(address, "xLgr"), xml_text(address, "nro"), xml_text(address, "xBairro")] if part)
+        city = " / ".join(part for part in [xml_text(address, "xMun"), xml_text(address, "UF") or xml_text(address, "cPais")] if part)
+        return {
+            "name": xml_text(node, "xNome"),
+            "document": xml_text(node, "CNPJ") or xml_text(node, "CPF"),
+            "foreignId": xml_text(node, "NIF"),
+            "stateRegistration": xml_text(node, "IM"),
+            "address": street,
+            "city": city,
+            "zipCode": xml_text(address, "CEP"),
+            "email": xml_text(node, "email"),
+            "phone": xml_text(node, "fone"),
+        }
+
+    dps = first_node({"infDPS", "DPS"})
+    provider = first_node({"prest", "prestador", "emit"})
+    taker = first_node({"toma", "tomador", "dest"})
+    service = first_node({"serv", "servico"})
+    if service is None:
+        service = inf
+    service_description = xml_text(service, "xDescServ") or xml_text(service, "xDesc")
+    service_code = xml_text(service, "cTribNac") or xml_text(service, "cServ")
+    service_value = xml_text(inf, "vServPrest") or xml_text(dps, "vServ") or xml_text(inf, "vServ")
+    items = [{
+        "code": service_code,
+        "description": service_description or "Serviço constante da NFS-e",
+        "ncm": "—", "cfop": "—",
+        "cst": xml_text(service, "cTribMun") or "—",
+        "quantity": "1",
+        "unitValue": money_text(service_value),
+        "totalValue": money_text(service_value),
+    }]
+    taxes = {}
+    for tag, label in {
+        "vBC": "Base de cálculo", "vISSQN": "ISSQN", "vISS": "ISSQN",
+        "vIRRF": "IRRF", "vINSS": "INSS", "vPIS": "PIS", "vCOFINS": "COFINS",
+        "vCSLL": "CSLL", "vIBS": "IBS", "vCBS": "CBS",
+        "vServPrest": "Total dos serviços", "vLiq": "Valor líquido",
+    }.items():
+        value = xml_text(inf, tag)
+        if value:
+            taxes[label] = money_text(value)
+    aliquot = xml_text(inf, "pAliq") or xml_text(inf, "pAliqAplic")
+    if aliquot:
+        taxes["Alíquota ISSQN"] = aliquot.replace(".", ",") + "%"
+    analysis = []
+    if xml_key and xml_key != access_key:
+        analysis.append({"level": "Erro crítico", "title": "XML pertence a outra NFS-e", "message": "A chave presente no XML diverge da chave consultada.", "source": "Validação estrutural interna do XML"})
+
+    def amount(value: str) -> str:
+        return money_text(value) if value else ""
+
+    def percentage(value: str) -> str:
+        return value.replace(".", ",") + "%" if value else ""
+
+    def descendant(node: ET.Element | None, names: set[str]) -> ET.Element | None:
+        if node is None:
+            return None
+        return next((item for item in node.iter() if item.tag.rsplit("}", 1)[-1] in names), None)
+
+    def sum_amounts(*values: str) -> str:
+        present = [value for value in values if value]
+        if not present:
+            return ""
+        try:
+            return money_text(str(sum((Decimal(value) for value in present), Decimal("0"))))
+        except InvalidOperation:
+            return ""
+
+    ibs_cbs = first_node({"IBSCBS"})
+    ibs_state = descendant(ibs_cbs, {"gIBSUF"})
+    ibs_city = descendant(ibs_cbs, {"gIBSMun"})
+    ibs_total = descendant(ibs_cbs, {"gIBS"})
+    if ibs_total is None:
+        ibs_total = ibs_cbs
+    cbs_total = descendant(ibs_cbs, {"gCBS"})
+    identification = {
+        "Número da NFS-e": xml_text(inf, "nNFSe"),
+        "Data e hora da emissão da NFS-e": xml_text(inf, "dhProc") or xml_text(inf, "dhEmi"),
+        "Competência da NFS-e": xml_text(dps, "dCompet") or xml_text(inf, "dCompet"),
+        "Número da DPS": xml_text(dps, "nDPS"),
+        "Série da DPS": xml_text(dps, "serie"),
+        "Data e hora da emissão da DPS": xml_text(dps, "dhEmi"),
+        "Município emissor": xml_text(inf, "xLocEmi") or xml_text(inf, "cLocEmi"),
+        "Tipo de emissão": xml_text(dps, "tpEmit"),
+    }
+    service_panel = {
+        "Local da prestação": xml_text(service, "xLocPrestacao") or xml_text(service, "cLocPrestacao") or xml_text(service, "cLocPrest"),
+        "País da prestação": xml_text(service, "xPaisPrestacao") or xml_text(service, "cPaisPrestacao"),
+        "Código de tributação nacional": xml_text(service, "cTribNac"),
+        "Descrição da tributação nacional": xml_text(service, "xTribNac"),
+        "Código de tributação municipal": xml_text(service, "cTribMun"),
+        "Descrição da tributação municipal": xml_text(service, "xTribMun"),
+        "Código NBS": xml_text(service, "cNBS"),
+        "Descrição do serviço": service_description,
+    }
+    municipal_tax = {
+        "Opção pelo Simples Nacional (código)": xml_text(dps, "opSimpNac"),
+        "Regime especial de tributação (código)": xml_text(dps, "regEspTrib"),
+        "Tributação do ISSQN (código)": xml_text(inf, "tribISSQN"),
+        "Município de incidência do ISSQN": xml_text(inf, "xLocIncid") or xml_text(inf, "cLocIncid"),
+        "Suspensão da exigibilidade": xml_text(inf, "tpSusp"),
+        "Número do processo de suspensão": xml_text(inf, "nProcesso"),
+        "Benefício municipal": xml_text(inf, "nBM"),
+        "Valor do serviço": amount(service_value),
+        "Desconto incondicionado": amount(xml_text(inf, "vDescIncond")),
+        "Deduções / reduções": amount(xml_text(inf, "vDedRed")),
+        "Base de cálculo do ISSQN": amount(xml_text(inf, "vBC")),
+        "Alíquota aplicada": percentage(xml_text(inf, "pAliqAplic")),
+        "ISSQN apurado": amount(xml_text(inf, "vISSQN") or xml_text(inf, "vISS")),
+        "ISSQN retido": amount(xml_text(inf, "vISSQNRet") or xml_text(inf, "vISSRet")),
+    }
+    federal_tax = {
+        "IRRF retido": amount(xml_text(inf, "vIRRF")),
+        "Contribuição previdenciária retida": amount(xml_text(inf, "vINSS") or xml_text(inf, "vCP")),
+        "CSLL retida": amount(xml_text(inf, "vCSLL")),
+        "PIS retido": amount(xml_text(inf, "vPIS")),
+        "COFINS retida": amount(xml_text(inf, "vCOFINS")),
+        "Total das retenções federais": amount(xml_text(inf, "vTotalRetFed")),
+    }
+    ibs_cbs_panel = {
+        "Alíquota IBS Estadual": percentage(xml_text(ibs_state, "pIBSUF")),
+        "Alíquota efetiva IBS Estadual": percentage(xml_text(ibs_state, "pAliqEfet")),
+        "Valor IBS Estadual": amount(xml_text(ibs_state, "vIBSUF")),
+        "Alíquota IBS Municipal": percentage(xml_text(ibs_city, "pIBSMun")),
+        "Alíquota efetiva IBS Municipal": percentage(xml_text(ibs_city, "pAliqEfet")),
+        "Valor IBS Municipal": amount(xml_text(ibs_city, "vIBSMun")),
+        "Valor total do IBS": amount(xml_text(ibs_total, "vIBSTot")),
+        "Alíquota CBS": percentage(xml_text(cbs_total, "pCBS")),
+        "Alíquota efetiva CBS": percentage(xml_text(cbs_total, "pAliqEfet")),
+        "Valor total da CBS": amount(xml_text(cbs_total, "vCBS")),
+    }
+    total_panel = {
+        "Valor da operação / serviço": amount(service_value),
+        "Desconto incondicionado": amount(xml_text(inf, "vDescIncond")),
+        "Desconto condicionado": amount(xml_text(inf, "vDescCond")),
+        "Total das retenções": amount(xml_text(inf, "vTotalRet") or xml_text(inf, "vTotalRetFed")),
+        "Valor líquido da NFS-e": amount(xml_text(inf, "vLiq") or service_value),
+        "Total do IBS/CBS": sum_amounts(xml_text(ibs_total, "vIBSTot"), xml_text(cbs_total, "vCBS")),
+        "Valor líquido da NFS-e + IBS/CBS": amount(xml_text(ibs_cbs, "vTotNF")),
+    }
+    additional = {
+        "Informações complementares": xml_text(service, "xInfComp") or xml_text(inf, "xOutInf"),
+        "NFS-e substituída": xml_text(inf, "chSubstda"),
+        "Documento referenciado": xml_text(service, "docRef"),
+        "Código da obra": xml_text(service, "cObra"),
+        "Inscrição imobiliária fiscal": xml_text(inf, "inscImobFisc"),
+        "Código do evento/atividade": xml_text(service, "idAtvEvt"),
+        "Número do pedido": xml_text(service, "xPed"),
+        "Item do pedido": xml_text(service, "xItemPed"),
+    }
+    return {
+        "summary": {
+            "number": xml_text(inf, "nNFSe"),
+            "series": xml_text(inf, "serie") or xml_text(inf, "serieDPS"),
+            "issuedAt": xml_text(inf, "dhProc") or xml_text(inf, "dhEmi") or xml_text(inf, "dCompet"),
+            "competence": xml_text(dps, "dCompet") or xml_text(inf, "dCompet"),
+            "nature": service_description or xml_text(inf, "xLocEmi") or "Prestação de serviço",
+        },
+        "issuer": party(provider), "recipient": party(taker), "items": items,
+        "taxes": taxes,
+        "billing": {"invoice": xml_text(inf, "nNFSe"), "originalValue": money_text(service_value), "discount": money_text(xml_text(inf, "vDescIncond")), "netValue": money_text(xml_text(inf, "vLiq") or service_value), "installments": ""},
+        "analysis": analysis,
+        "xml_key": xml_key,
+        "protocol": xml_text(inf, "nDFSe") or xml_text(inf, "nProt"),
+        "nationalPanel": {
+            "identification": identification,
+            "service": service_panel,
+            "municipalTax": municipal_tax,
+            "federalTax": federal_tax,
+            "ibsCbs": ibs_cbs_panel,
+            "totals": total_panel,
+            "additional": additional,
+        },
+    }
+
+
+def fiscal_month(value: str) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"(20\d{2})[-/](0[1-9]|1[0-2])", text)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}"
+    match = re.search(r"(?:^|\D)(0[1-9]|1[0-2])/(20\d{2})(?:\D|$)", text)
+    return f"{match.group(2)}-{match.group(1)}" if match else ""
+
+
+def same_taxpayer(holder_document: str, participant_document: str) -> bool:
+    holder = digits(holder_document)
+    participant = digits(participant_document)
+    if not holder or not participant:
+        return False
+    if len(holder) == 14 and len(participant) == 14:
+        return holder[:8] == participant[:8]
+    return holder == participant
+
+
+def extract_nfse_key(root: ET.Element) -> str:
+    candidates: list[str] = []
+    for tag in ("chNFSe", "chaveAcesso", "chave"):
+        value = xml_text(root, tag)
+        if value:
+            candidates.append(value)
+    for node in root.iter():
+        candidates.extend(str(value) for value in node.attrib.values())
+    for candidate in candidates:
+        match = re.search(r"(?<!\d)(\d{50})(?!\d)", candidate)
+        if match and valid_nfse_key(match.group(1)):
+            return match.group(1)
+    return ""
+
+
+def nfse_import_result(xml_data: bytes, holder_document: str, environment: str) -> dict:
+    if b"<!DOCTYPE" in xml_data.upper() or b"<!ENTITY" in xml_data.upper():
+        raise ValueError("XML com declaração de entidade não é aceito por segurança.")
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError as error:
+        raise ValueError("XML inválido ou incompleto.") from error
+    access_key = extract_nfse_key(root)
+    if not access_key:
+        raise LookupError("O XML não é uma NFS-e nem um evento nacional reconhecido.")
+    reported_environment = xml_text(root, "tpAmb")
+    expected_environment = "1" if environment == "production" else "2"
+    if reported_environment in {"1", "2"} and reported_environment != expected_environment:
+        raise ValueError("O ambiente indicado no XML não corresponde ao ambiente selecionado.")
+
+    root_name = root.tag.rsplit("}", 1)[-1]
+    inf_nfse = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "infNFSe"), None)
+    participant_documents = {
+        digits(node.text or "")
+        for node in root.iter()
+        if node.tag.rsplit("}", 1)[-1] in {"CNPJ", "CPF"} and digits(node.text or "")
+    }
+    now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    if inf_nfse is not None:
+        details = parse_nfse_xml(xml_data, access_key)
+        issuer = details.get("issuer", {})
+        recipient = details.get("recipient", {})
+        issuer_document = digits(issuer.get("document", ""))
+        recipient_document = digits(recipient.get("document", ""))
+        if issuer_document:
+            participant_documents.add(issuer_document)
+        if recipient_document:
+            participant_documents.add(recipient_document)
+        direction = "Emitida" if same_taxpayer(holder_document, issuer_document) else "Recebida" if same_taxpayer(holder_document, recipient_document) else "Relacionada"
+        searchable = xml_data.decode("utf-8", errors="ignore").casefold()
+        cancelled = "cancel" in searchable and ("evento" in searchable or "situação" in searchable or "situacao" in searchable)
+        status = "Cancelada" if cancelled else "Autorizada"
+        risk = "Atenção" if cancelled else "Regular"
+        summary = details.get("summary", {})
+        result = {
+            "id": uuid.uuid4().hex, "accessKey": access_key, "model": "NFS-e", "modelCode": "NFSE",
+            "status": status, "riskLevel": risk, "officialCode": "ARQUIVO_OFICIAL",
+            "officialMessage": "XML importado do pacote oficial mensal da NFS-e.",
+            "protocol": details.get("protocol", ""), "environment": environment,
+            "environmentLabel": "Produção" if environment == "production" else "Homologação",
+            "sourceName": "Pacote oficial do Portal Nacional da NFS-e", "sourceUrl": OFFICIAL_PORTALS["nfse"],
+            "documentationUrl": NFSE_DOCUMENTATION, "consultedAt": now,
+            "summary": summary, "issuer": issuer, "recipient": recipient,
+            "items": details.get("items", []), "taxes": details.get("taxes", {}),
+            "billing": details.get("billing", {}), "events": [],
+            "analysis": [{"level": risk, "title": "Documento do pacote mensal", "message": "XML nacional validado estruturalmente e vinculado ao certificado selecionado.", "source": "Arquivo oficial importado pelo usuário"}],
+            "hasXml": True, "documentStandard": "Sistema Nacional NFS-e",
+            "nationalPanel": details.get("nationalPanel", {}), "direction": direction,
+            "documentType": root_name, "recordOrigin": "official_monthly_import",
+        }
+        return {
+            "result": result, "month": fiscal_month(summary.get("competence") or summary.get("issuedAt")),
+            "isEvent": False, "cancelled": cancelled, "participants": participant_documents,
+        }
+
+    event_description = (
+        xml_text(root, "xDesc") or xml_text(root, "xEvento") or xml_text(root, "xMotivo")
+        or xml_text(root, "descEvento") or root_name
+    )
+    event_code = xml_text(root, "tpEvento") or xml_text(root, "cEvento")
+    event_date = xml_text(root, "dhEvento") or xml_text(root, "dhRegEvento") or xml_text(root, "dhProc")
+    searchable = (event_description + " " + event_code + " " + xml_data.decode("utf-8", errors="ignore")).casefold()
+    cancelled = "cancel" in searchable
+    status = "Cancelada" if cancelled else "Evento registrado"
+    risk = "Atenção" if cancelled else "Regular"
+    holder = digits(holder_document)
+    result = {
+        "id": uuid.uuid4().hex, "accessKey": access_key, "model": "NFS-e", "modelCode": "NFSE",
+        "status": status, "riskLevel": risk, "officialCode": xml_text(root, "cStat") or "EVENTO_IMPORTADO",
+        "officialMessage": event_description, "protocol": xml_text(root, "nProt"),
+        "environment": environment, "environmentLabel": "Produção" if environment == "production" else "Homologação",
+        "sourceName": "Evento do pacote oficial do Portal Nacional da NFS-e", "sourceUrl": OFFICIAL_PORTALS["nfse"],
+        "documentationUrl": NFSE_DOCUMENTATION, "consultedAt": now,
+        "summary": {"number": "", "series": "", "issuedAt": event_date, "competence": "", "nature": event_description},
+        "issuer": {"name": "", "document": holder, "stateRegistration": "", "address": "", "city": ""},
+        "recipient": {}, "items": [], "taxes": {}, "billing": {},
+        "events": [{"type": event_description, "date": event_date, "protocol": xml_text(root, "nProt"), "description": event_description}],
+        "analysis": [{"level": risk, "title": "Evento oficial importado", "message": f"Evento {event_code or event_description} vinculado à NFS-e.", "source": "Pacote oficial importado pelo usuário"}],
+        "hasXml": True, "documentStandard": "Sistema Nacional NFS-e", "nationalPanel": {},
+        "direction": "Emitida", "documentType": root_name, "recordOrigin": "official_monthly_import",
+    }
+    return {
+        "result": result, "month": fiscal_month(event_date), "isEvent": True,
+        "cancelled": cancelled, "participants": participant_documents,
+    }
+
+
+def imported_nfse_xml_members(filename: str, package_data: bytes) -> list[tuple[str, bytes]]:
+    if filename.lower().endswith(".xml"):
+        if len(package_data) > MAX_NFSE_IMPORT_MEMBER_BYTES:
+            raise ValueError("O XML ultrapassa o limite seguro de 6 MB.")
+        return [(Path(filename).name or "nfse.xml", package_data)]
+    if not filename.lower().endswith(".zip"):
+        raise ValueError("Envie o pacote mensal em formato ZIP ou um XML da NFS-e.")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(package_data))
+    except zipfile.BadZipFile as error:
+        raise ValueError("O arquivo ZIP está inválido ou corrompido.") from error
+    members: list[tuple[str, bytes]] = []
+    expanded_total = 0
+    with archive:
+        xml_entries = [item for item in archive.infolist() if not item.is_dir() and item.filename.lower().endswith(".xml")]
+        if not xml_entries:
+            raise ValueError("O pacote não contém arquivos XML.")
+        if len(xml_entries) > MAX_XML_BATCH_DOCUMENTS:
+            raise ValueError("O pacote ultrapassa o limite de 2.000 XMLs por processamento.")
+        for item in xml_entries:
+            if item.flag_bits & 0x1:
+                raise ValueError("ZIP protegido por senha não pode ser validado.")
+            if item.file_size <= 0 or item.file_size > MAX_NFSE_IMPORT_MEMBER_BYTES:
+                raise ValueError(f"O XML {Path(item.filename).name} ultrapassa o limite seguro.")
+            expanded_total += item.file_size
+            if expanded_total > MAX_XML_BATCH_SOURCE_BYTES:
+                raise ValueError("O conteúdo descompactado ultrapassa o limite seguro de 75 MB.")
+            if item.compress_size and item.file_size / item.compress_size > 250:
+                raise ValueError("O pacote possui taxa de compressão insegura.")
+            members.append((Path(item.filename).name, archive.read(item)))
+    return members
+
+
+def parse_fiscal_xml(xml_data: bytes, access_key: str) -> dict:
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError as error:
+        raise ValueError("O XML anexado não é um documento fiscal válido.") from error
+    inf = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] in {"infNFe", "infCte", "infCTe", "infMDFe"}), None)
+    if inf is None:
+        raise ValueError("O XML não contém uma estrutura NF-e, CT-e ou MDF-e reconhecida.")
+    xml_id = inf.attrib.get("Id", "")
+    xml_key_match = re.search(r"(\d{44})", xml_id)
+    xml_key = xml_key_match.group(1) if xml_key_match else ""
+    emit = next((node for node in inf.iter() if node.tag.rsplit("}", 1)[-1] == "emit"), None)
+    dest = next((node for node in inf.iter() if node.tag.rsplit("}", 1)[-1] in {"dest", "rem"}), None)
+    ide = next((node for node in inf.iter() if node.tag.rsplit("}", 1)[-1] == "ide"), None)
+    def party(node: ET.Element | None, address_tag: str) -> dict:
+        address = next((item for item in node.iter() if item.tag.rsplit("}", 1)[-1] == address_tag), None) if node is not None else None
+        street = " ".join(part for part in [xml_text(address, "xLgr"), xml_text(address, "nro"), xml_text(address, "xBairro")] if part)
+        city = " / ".join(part for part in [xml_text(address, "xMun"), xml_text(address, "UF")] if part)
+        return {"name": xml_text(node, "xNome"), "document": xml_text(node, "CNPJ") or xml_text(node, "CPF"), "stateRegistration": xml_text(node, "IE"), "address": street, "city": city}
+    items = []
+    for detail in [node for node in inf.iter() if node.tag.rsplit("}", 1)[-1] == "det"]:
+        product = next((node for node in detail if node.tag.rsplit("}", 1)[-1] in {"prod", "infQ"}), detail)
+        cst = ""
+        for candidate in detail.iter():
+            if candidate.tag.rsplit("}", 1)[-1] in {"CST", "CSOSN"} and candidate.text:
+                cst = candidate.text.strip()
+                break
+        items.append({
+            "code": xml_text(product, "cProd"), "description": xml_text(product, "xProd") or xml_text(product, "xNome"),
+            "ncm": xml_text(product, "NCM"), "cfop": xml_text(product, "CFOP"), "cst": cst,
+            "quantity": xml_text(product, "qCom"), "unitValue": money_text(xml_text(product, "vUnCom")), "totalValue": money_text(xml_text(product, "vProd")),
+        })
+    taxes = {}
+    tax_tags = {"vBC": "Base de cálculo", "vICMS": "ICMS", "vICMSST": "ICMS-ST", "vFCP": "FCP", "vIPI": "IPI", "vPIS": "PIS", "vCOFINS": "COFINS", "vISS": "ISS", "vNF": "Total do documento"}
+    total_node = next((node for node in inf.iter() if node.tag.rsplit("}", 1)[-1] in {"ICMSTot", "ISSQNtot", "vPrest"}), inf)
+    for tag, label in tax_tags.items():
+        value = xml_text(total_node, tag)
+        if value:
+            taxes[label] = money_text(value)
+    invoice = next((node for node in inf.iter() if node.tag.rsplit("}", 1)[-1] == "fat"), None)
+    duplicates = [xml_text(node, "nDup") + " " + money_text(xml_text(node, "vDup")) for node in inf.iter() if node.tag.rsplit("}", 1)[-1] == "dup"]
+    analysis = []
+    if xml_key and xml_key != access_key:
+        analysis.append({"level": "Erro crítico", "title": "XML pertence a outra chave", "message": "A chave do XML diverge da chave consultada.", "source": "Validação estrutural interna do XML"})
+    issuer_document = xml_text(emit, "CNPJ") or xml_text(emit, "CPF")
+    if len(issuer_document) == 14 and issuer_document != access_key[6:20]:
+        analysis.append({"level": "Divergência", "title": "CNPJ do emitente divergente", "message": "O CNPJ do XML não coincide com o segmento do emitente na chave de acesso.", "source": "Validação estrutural interna da chave e do XML"})
+    if not items and document_model(access_key)[0] in {"55", "65"}:
+        analysis.append({"level": "Atenção", "title": "Itens ausentes", "message": "Não foram encontrados itens de produtos ou serviços no XML anexado.", "source": "Validação estrutural interna do XML"})
+    return {
+        "summary": {"number": xml_text(ide, "nNF") or xml_text(ide, "nCT") or xml_text(ide, "nMDF"), "series": xml_text(ide, "serie"), "issuedAt": xml_text(ide, "dhEmi") or xml_text(ide, "dEmi"), "nature": xml_text(ide, "natOp")},
+        "issuer": party(emit, "enderEmit"), "recipient": party(dest, "enderDest"), "items": items, "taxes": taxes,
+        "billing": {"invoice": xml_text(invoice, "nFat"), "originalValue": money_text(xml_text(invoice, "vOrig")), "discount": money_text(xml_text(invoice, "vDesc")), "netValue": money_text(xml_text(invoice, "vLiq")), "installments": "; ".join(duplicates)},
+        "analysis": analysis, "xml_key": xml_key,
+    }
+
+
+def initialize_database() -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    with connect() as database:
+        database.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+              email TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              role TEXT NOT NULL,
+              salt TEXT NOT NULL,
+              password_hash TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1,
+              billing_cycle TEXT,
+              subscription_value REAL NOT NULL DEFAULT 0,
+              monitoring_start TEXT,
+              monitoring_end TEXT,
+              last_login_at TEXT,
+              previous_login_at TEXT,
+              profile_photo_encrypted BLOB,
+              profile_photo_mime TEXT,
+              profile_photo_updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+              token TEXT PRIMARY KEY,
+              email TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              expires_at INTEGER NOT NULL,
+              FOREIGN KEY(email) REFERENCES users(email)
+            );
+            CREATE TABLE IF NOT EXISTS app_state (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              payload TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              updated_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS server_audit (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              email TEXT NOT NULL,
+              action TEXT NOT NULL,
+              detail TEXT
+            );
+            CREATE TABLE IF NOT EXISTS fiscal_certificates (
+              id TEXT PRIMARY KEY,
+              company TEXT NOT NULL,
+              branch TEXT,
+              document TEXT,
+              holder TEXT NOT NULL,
+              issuer TEXT NOT NULL,
+              serial TEXT NOT NULL,
+              valid_from TEXT NOT NULL,
+              valid_until TEXT NOT NULL,
+              environment TEXT NOT NULL,
+              state_code TEXT,
+              pfx_encrypted BLOB NOT NULL,
+              password_encrypted BLOB,
+              save_password INTEGER NOT NULL DEFAULT 0,
+              created_by TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS fiscal_queries (
+              id TEXT PRIMARY KEY,
+              access_key TEXT NOT NULL,
+              model TEXT NOT NULL,
+              company TEXT,
+              certificate_id TEXT,
+              environment TEXT NOT NULL,
+              status TEXT NOT NULL,
+              risk_level TEXT NOT NULL,
+              official_code TEXT,
+              source_name TEXT NOT NULL,
+              source_url TEXT NOT NULL,
+              result_encrypted BLOB NOT NULL,
+              xml_encrypted BLOB,
+              xml_filename TEXT,
+              xml_sha256 TEXT,
+              record_origin TEXT NOT NULL DEFAULT 'official_query',
+              import_batch_id TEXT,
+              consulted_by TEXT NOT NULL,
+              consulted_at TEXT NOT NULL,
+              FOREIGN KEY(certificate_id) REFERENCES fiscal_certificates(id)
+            );
+            CREATE TABLE IF NOT EXISTS user_permissions (
+              email TEXT NOT NULL,
+              permission TEXT NOT NULL,
+              allowed INTEGER NOT NULL DEFAULT 1,
+              PRIMARY KEY(email, permission),
+              FOREIGN KEY(email) REFERENCES users(email)
+            );
+            CREATE TABLE IF NOT EXISTS access_plans (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL UNIQUE,
+              description TEXT,
+              monthly_value REAL NOT NULL DEFAULT 0,
+              annual_value REAL NOT NULL DEFAULT 0,
+              max_users INTEGER NOT NULL DEFAULT 1,
+              trial_days INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'Ativo',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS plan_modules (
+              plan_id TEXT NOT NULL,
+              module_key TEXT NOT NULL,
+              PRIMARY KEY(plan_id, module_key),
+              FOREIGN KEY(plan_id) REFERENCES access_plans(id)
+            );
+            CREATE TABLE IF NOT EXISTS user_modules (
+              email TEXT NOT NULL,
+              module_key TEXT NOT NULL,
+              allowed INTEGER NOT NULL DEFAULT 1,
+              PRIMARY KEY(email, module_key),
+              FOREIGN KEY(email) REFERENCES users(email)
+            );
+            CREATE TABLE IF NOT EXISTS access_audit (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              administrator_email TEXT NOT NULL,
+              affected_email TEXT,
+              action TEXT NOT NULL,
+              previous_value TEXT,
+              new_value TEXT,
+              ip_address TEXT
+            );
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+              id TEXT PRIMARY KEY,
+              email TEXT NOT NULL,
+              token_hash TEXT NOT NULL UNIQUE,
+              created_at INTEGER NOT NULL,
+              expires_at INTEGER NOT NULL,
+              used_at INTEGER,
+              ip_address TEXT,
+              FOREIGN KEY(email) REFERENCES users(email)
+            );
+            CREATE TABLE IF NOT EXISTS password_reset_attempts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              email TEXT NOT NULL,
+              ip_address TEXT,
+              attempted_at INTEGER NOT NULL,
+              successful INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS distributed_documents (
+              id TEXT PRIMARY KEY,
+              certificate_id TEXT NOT NULL,
+              environment TEXT NOT NULL,
+              state_code TEXT NOT NULL,
+              nsu TEXT NOT NULL,
+              schema_name TEXT,
+              document_type TEXT,
+              access_key TEXT,
+              direction TEXT,
+              status TEXT,
+              result_encrypted BLOB NOT NULL,
+              xml_encrypted BLOB NOT NULL,
+              synced_by TEXT NOT NULL,
+              received_at TEXT NOT NULL,
+              FOREIGN KEY(certificate_id) REFERENCES fiscal_certificates(id),
+              UNIQUE(certificate_id, environment, nsu)
+            );
+            CREATE TABLE IF NOT EXISTS distribution_state (
+              certificate_id TEXT NOT NULL,
+              environment TEXT NOT NULL,
+              state_code TEXT NOT NULL,
+              last_nsu TEXT NOT NULL DEFAULT '000000000000000',
+              max_nsu TEXT NOT NULL DEFAULT '000000000000000',
+              official_code TEXT,
+              motive TEXT,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(certificate_id, environment, state_code),
+              FOREIGN KEY(certificate_id) REFERENCES fiscal_certificates(id)
+            );
+            CREATE TABLE IF NOT EXISTS nfse_monthly_imports (
+              id TEXT PRIMARY KEY,
+              certificate_id TEXT NOT NULL,
+              environment TEXT NOT NULL,
+              month TEXT NOT NULL,
+              source_filename TEXT NOT NULL,
+              source_sha256 TEXT NOT NULL,
+              source_documents INTEGER NOT NULL,
+              imported_documents INTEGER NOT NULL,
+              duplicate_documents INTEGER NOT NULL,
+              cancellation_events INTEGER NOT NULL,
+              ignored_documents INTEGER NOT NULL,
+              error_count INTEGER NOT NULL,
+              is_complete INTEGER NOT NULL DEFAULT 0,
+              imported_by TEXT NOT NULL,
+              imported_at TEXT NOT NULL,
+              FOREIGN KEY(certificate_id) REFERENCES fiscal_certificates(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fiscal_queries_date ON fiscal_queries(consulted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_fiscal_queries_key ON fiscal_queries(access_key);
+            CREATE INDEX IF NOT EXISTS idx_distributed_documents_date ON distributed_documents(received_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_distributed_documents_key ON distributed_documents(access_key);
+            CREATE INDEX IF NOT EXISTS idx_nfse_monthly_imports_lookup ON nfse_monthly_imports(certificate_id, environment, month, imported_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_password_reset_token_hash ON password_reset_tokens(token_hash);
+            CREATE INDEX IF NOT EXISTS idx_password_reset_email_expiry ON password_reset_tokens(email, expires_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_password_reset_attempt_email_time ON password_reset_attempts(email, attempted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_password_reset_attempt_ip_time ON password_reset_attempts(ip_address, attempted_at DESC);
+            """
+        )
+        existing_columns = {
+            row["name"] for row in database.execute("PRAGMA table_info(users)").fetchall()
+        }
+        user_columns = {
+            "id": "TEXT",
+            "document": "TEXT",
+            "phone": "TEXT",
+            "company": "TEXT",
+            "company_document": "TEXT",
+            "job_title": "TEXT",
+            "department": "TEXT",
+            "login": "TEXT",
+            "status": "TEXT NOT NULL DEFAULT 'Ativo'",
+            "plan_id": "TEXT",
+            "notes": "TEXT",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+            "created_by": "TEXT",
+            "updated_by": "TEXT",
+            "last_login_ip": "TEXT",
+            "login_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "blocked_at": "TEXT",
+            "billing_cycle": "TEXT",
+            "subscription_value": "REAL NOT NULL DEFAULT 0",
+            "monitoring_start": "TEXT",
+            "monitoring_end": "TEXT",
+            "last_login_at": "TEXT",
+            "previous_login_at": "TEXT",
+            "profile_photo_encrypted": "BLOB",
+            "profile_photo_mime": "TEXT",
+            "profile_photo_updated_at": "TEXT",
+        }
+        for column, definition in user_columns.items():
+            if column not in existing_columns:
+                database.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+        database.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_id ON users(id) WHERE id IS NOT NULL")
+        database.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login ON users(login) WHERE login IS NOT NULL AND login != ''")
+        database.execute("DROP INDEX IF EXISTS idx_users_document")
+        database.execute("DROP INDEX IF EXISTS idx_users_company_document")
+        database.execute("CREATE INDEX IF NOT EXISTS idx_users_document_lookup ON users(document)")
+        database.execute("CREATE INDEX IF NOT EXISTS idx_users_company_document_lookup ON users(company_document)")
+        database.execute("CREATE INDEX IF NOT EXISTS idx_users_status_end ON users(status, monitoring_end)")
+        database.execute("CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan_id)")
+        database.execute("CREATE INDEX IF NOT EXISTS idx_access_audit_user_date ON access_audit(affected_email, created_at DESC)")
+        certificate_columns = {
+            row["name"] for row in database.execute("PRAGMA table_info(fiscal_certificates)").fetchall()
+        }
+        if "state_code" not in certificate_columns:
+            database.execute("ALTER TABLE fiscal_certificates ADD COLUMN state_code TEXT")
+        query_columns = {
+            row["name"] for row in database.execute("PRAGMA table_info(fiscal_queries)").fetchall()
+        }
+        query_column_definitions = {
+            "xml_sha256": "TEXT",
+            "record_origin": "TEXT NOT NULL DEFAULT 'official_query'",
+            "import_batch_id": "TEXT",
+        }
+        for column, definition in query_column_definitions.items():
+            if column not in query_columns:
+                database.execute(f"ALTER TABLE fiscal_queries ADD COLUMN {column} {definition}")
+        database.execute("CREATE INDEX IF NOT EXISTS idx_fiscal_queries_xml_sha ON fiscal_queries(xml_sha256)")
+        user_total = int(database.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"])
+        users = []
+        if user_total == 0:
+            admin_email = os.environ.get("CONTTECH_ADMIN_EMAIL", "").strip().lower()
+            admin_name = os.environ.get("CONTTECH_ADMIN_NAME", "Administrador").strip() or "Administrador"
+            admin_password = os.environ.get("CONTTECH_ADMIN_PASSWORD", "")
+            if "@" not in admin_email or len(admin_password) < 12:
+                raise RuntimeError(
+                    "Base sem usuários. Defina CONTTECH_ADMIN_EMAIL e uma "
+                    "CONTTECH_ADMIN_PASSWORD com pelo menos 12 caracteres."
+                )
+            users = [
+                (
+                    admin_email, admin_name, "Administrador", secrets.token_hex(16),
+                    admin_password, "Anual", 0, dt.date.today().isoformat(),
+                    (dt.date.today() + dt.timedelta(days=365)).isoformat(),
+                )
+            ]
+        for email, name, role, salt, password, cycle, value, start, end in users:
+            database.execute(
+                """
+                INSERT OR IGNORE INTO users
+                (email, name, role, salt, password_hash, active, billing_cycle,
+                 subscription_value, monitoring_start, monitoring_end)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                """,
+                (email, name, role, salt, password_hash(password, salt), cycle, value, start, end),
+            )
+            database.execute(
+                """
+                UPDATE users SET
+                  billing_cycle = COALESCE(billing_cycle, ?),
+                  subscription_value = CASE WHEN subscription_value = 0 THEN ? ELSE subscription_value END,
+                  monitoring_start = COALESCE(monitoring_start, ?),
+                  monitoring_end = COALESCE(monitoring_end, ?)
+                WHERE email = ?
+                """,
+                (cycle, value, start, end, email),
+            )
+        now = local_now()
+        plan_rows = [
+            ("erp-start", "ERP Start", "Recursos essenciais para iniciar a gestão fiscal com segurança.", 197.00, 1970.00, 3, 7, "Ativo"),
+            ("erp-profissional", "ERP Profissional ⭐", "Plano recomendado para escritórios que precisam de rotinas fiscais, contábeis e consultas integradas.", 397.00, 3970.00, 10, 14, "Ativo"),
+            ("erp-business", "ERP Business", "Gestão avançada, documentos e automações para equipes em crescimento.", 697.00, 6970.00, 30, 14, "Ativo"),
+            ("erp-enterprise", "ERP Enterprise", "Acesso completo à plataforma, incluindo administração e controle ampliado de usuários.", 1297.00, 12970.00, 100, 30, "Ativo"),
+            ("basico", "Plano Básico", "Recursos essenciais para rotinas iniciais.", 79.90, 799.00, 3, 7, "Ativo"),
+            ("profissional", "Plano Profissional", "Módulos fiscais, consultas e relatórios para escritórios.", 149.90, 1499.00, 10, 14, "Ativo"),
+            ("empresarial", "Plano Empresarial", "Operação avançada com gestão integrada e documentos.", 299.90, 2999.00, 30, 14, "Ativo"),
+            ("completo", "Plano Completo", "Todos os módulos, incluindo administração.", 499.90, 4999.00, 100, 30, "Ativo"),
+            ("personalizado", "Plano Personalizado", "Permissões definidas individualmente pelo administrador.", 0, 0, 1, 0, "Ativo"),
+        ]
+        for plan in plan_rows:
+            database.execute(
+                """
+                INSERT OR IGNORE INTO access_plans
+                (id, name, description, monthly_value, annual_value, max_users, trial_days, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (*plan, now, now),
+            )
+        for plan_id, modules in DEFAULT_PLAN_MODULES.items():
+            for module_key in modules:
+                database.execute(
+                    "INSERT OR IGNORE INTO plan_modules(plan_id, module_key) VALUES (?, ?)",
+                    (plan_id, module_key),
+                )
+        migrate_legacy_modules(database)
+        database.execute(
+            """
+            UPDATE users SET
+              id = COALESCE(NULLIF(id, ''), lower(hex(randomblob(16)))),
+              login = COALESCE(NULLIF(login, ''), lower(substr(email, 1, instr(email, '@') - 1))),
+              status = CASE WHEN active = 1 THEN COALESCE(NULLIF(status, ''), 'Ativo') ELSE 'Inativo' END,
+              plan_id = COALESCE(NULLIF(plan_id, ''), CASE WHEN role = 'Administrador' THEN 'completo' ELSE 'profissional' END),
+              created_at = COALESCE(NULLIF(created_at, ''), ?),
+              updated_at = COALESCE(NULLIF(updated_at, ''), ?),
+              created_by = COALESCE(NULLIF(created_by, ''), 'system'),
+              updated_by = COALESCE(NULLIF(updated_by, ''), 'system')
+            """,
+            (now, now),
+        )
+        apply_feature_access_migrations(database)
+        for email, _, role, *_ in users:
+            plan_id = "completo" if role == "Administrador" else "profissional"
+            existing_user_modules = database.execute(
+                "SELECT COUNT(*) AS total FROM user_modules WHERE email = ?", (email,)
+            ).fetchone()["total"]
+            if not existing_user_modules:
+                for module_key in DEFAULT_PLAN_MODULES[plan_id]:
+                    database.execute(
+                        "INSERT OR IGNORE INTO user_modules(email, module_key, allowed) VALUES (?, ?, 1)",
+                        (email, module_key),
+                    )
+        if database.execute(
+            "SELECT 1 FROM users WHERE email = ?", ("usuario@simplescalc.pro",)
+        ).fetchone():
+            for permission in ("consult_documents", "view_history"):
+                database.execute(
+                    "INSERT OR IGNORE INTO user_permissions(email, permission, allowed) VALUES (?, ?, 1)",
+                    ("usuario@simplescalc.pro", permission),
+                )
+        refresh_expired_subscriptions(database)
+        database.execute("DELETE FROM sessions WHERE expires_at < ?", (int(time.time()),))
+        database.execute("DELETE FROM password_reset_tokens WHERE expires_at < ? OR used_at IS NOT NULL", (int(time.time()) - 86400,))
+        database.execute("DELETE FROM password_reset_attempts WHERE attempted_at < ?", (int(time.time()) - 86400,))
+        database.execute("PRAGMA optimize")
+
+
+class SimplesCalcHandler(SimpleHTTPRequestHandler):
+    server_version = "ContTechERP/1.4"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def log_message(self, format_string: str, *args) -> None:
+        print("[%s] %s" % (self.log_date_time_string(), format_string % args))
+
+    def end_headers(self) -> None:
+        path = urlparse(self.path).path
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        if not path.startswith("/api/"):
+            if path.endswith((".png", ".jpg", ".jpeg", ".webp", ".svg", ".mp4")):
+                self.send_header("Cache-Control", "public, max-age=604800")
+            elif path.endswith((".css", ".js")):
+                self.send_header("Cache-Control", "public, max-age=3600, must-revalidate")
+        if path == "/gestao-fiscal-consultas.html":
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src 'self' data: https://fonts.gstatic.com; "
+                "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+                "img-src 'self' data: https:; connect-src 'self' https://brasilapi.com.br https://open.cnpja.com "
+                "https://publica.cnpj.ws https://api.cnpja.com https://api.infosimples.com https://www.sintegraws.com.br; "
+                "object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
+            )
+        else:
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "script-src 'self'; img-src 'self' data:; connect-src 'self'; "
+                "frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+            )
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        super().end_headers()
+
+    def send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def read_json(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 38_000_000:
+                raise ValueError("Tamanho de requisição inválido.")
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ValueError("JSON inválido.") from error
+
+    def authenticated_user(self) -> sqlite3.Row | None:
+        authorization = self.headers.get("Authorization", "")
+        if not authorization.startswith("Bearer "):
+            return None
+        token = authorization.removeprefix("Bearer ").strip()
+        with connect() as database:
+            refresh_expired_subscriptions(database)
+            user = database.execute(
+                """
+                SELECT u.id, u.email, u.name, u.role, u.status, u.plan_id,
+                       u.monitoring_start, u.monitoring_end, s.token
+                FROM sessions s
+                JOIN users u ON u.email = s.email
+                WHERE s.token = ? AND s.expires_at >= ? AND u.active = 1
+                  AND u.status NOT IN ('Inativo', 'Bloqueado', 'Aguardando ativação')
+                """,
+                (token, int(time.time())),
+            ).fetchone()
+        if user is None:
+            for password_key in [item for item in SESSION_CERT_PASSWORDS if item[0] == token]:
+                SESSION_CERT_PASSWORDS.pop(password_key, None)
+        return user
+
+    def require_user(self) -> sqlite3.Row | None:
+        user = self.authenticated_user()
+        if user is None:
+            self.send_json({"error": "Sessão inválida ou expirada."}, HTTPStatus.UNAUTHORIZED)
+        return user
+
+    def audit(self, email: str, action: str, detail: str = "") -> None:
+        with connect() as database:
+            database.execute(
+                "INSERT INTO server_audit(created_at, email, action, detail) "
+                "VALUES (datetime('now'), ?, ?, ?)",
+                (email, action, detail[:500]),
+            )
+
+    def session_token(self) -> str:
+        return self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+    def permissions_for(self, user: sqlite3.Row) -> set[str]:
+        if user["role"] == "Administrador":
+            return set(SEFAZ_PERMISSIONS)
+        with connect() as database:
+            rows = database.execute(
+                "SELECT permission FROM user_permissions WHERE email = ? AND allowed = 1",
+                (user["email"],),
+            ).fetchall()
+        return {row["permission"] for row in rows if row["permission"] in SEFAZ_PERMISSIONS}
+
+    def require_permission(self, user: sqlite3.Row, permission: str) -> bool:
+        required_module = PERMISSION_MODULES.get(permission)
+        if required_module and required_module not in self.modules_for_user(user):
+            self.send_json(
+                {"error": "Acesso não autorizado. Seu usuário não possui permissão para acessar este módulo."},
+                HTTPStatus.FORBIDDEN,
+            )
+            return False
+        if permission in self.permissions_for(user):
+            return True
+        self.send_json({"error": "Seu usuário não possui permissão para esta operação."}, HTTPStatus.FORBIDDEN)
+        return False
+
+    def require_admin(self) -> sqlite3.Row | None:
+        user = self.require_user()
+        if user is None:
+            return None
+        if user["role"] != "Administrador":
+            self.send_json(
+                {"error": "Acesso não autorizado. Esta área é exclusiva do Administrador."},
+                HTTPStatus.FORBIDDEN,
+            )
+            return None
+        return user
+
+    def client_ip(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        return forwarded or (self.client_address[0] if self.client_address else "")
+
+    def modules_for_user(self, user: sqlite3.Row) -> set[str]:
+        with connect() as database:
+            return modules_for_email(database, user["email"], user["role"], user["status"])
+
+    def require_module_access(self, user: sqlite3.Row, module_key: str) -> bool:
+        if module_key in self.modules_for_user(user):
+            return True
+        self.send_json(
+            {"error": "Acesso não autorizado. Seu usuário não possui permissão para acessar este módulo."},
+            HTTPStatus.FORBIDDEN,
+        )
+        return False
+
+    def admin_access_payload(self) -> dict:
+        with connect() as database:
+            expired_now = refresh_expired_subscriptions(database)
+            if expired_now:
+                write_access_audit(database, "Sistema", "", "Assinaturas vencidas automaticamente", "", expired_now)
+            plan_rows = database.execute(
+                """
+                SELECT * FROM access_plans
+                ORDER BY
+                  CASE id
+                    WHEN 'erp-start' THEN 0
+                    WHEN 'erp-profissional' THEN 1
+                    WHEN 'erp-business' THEN 2
+                    WHEN 'erp-enterprise' THEN 3
+                    ELSE 10
+                  END,
+                  name
+                """
+            ).fetchall()
+            plan_module_rows = database.execute("SELECT plan_id, module_key FROM plan_modules ORDER BY module_key").fetchall()
+            plan_modules: dict[str, list[str]] = {}
+            for row in plan_module_rows:
+                plan_modules.setdefault(row["plan_id"], []).append(row["module_key"])
+            plans = [
+                {
+                    "id": row["id"], "name": row["name"], "description": row["description"] or "",
+                    "monthlyValue": row["monthly_value"], "annualValue": row["annual_value"],
+                    "maxUsers": row["max_users"], "trialDays": row["trial_days"],
+                    "status": row["status"], "modules": plan_modules.get(row["id"], []),
+                    "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+                }
+                for row in plan_rows
+            ]
+            module_rows = database.execute("SELECT email, module_key FROM user_modules WHERE allowed = 1 ORDER BY module_key").fetchall()
+            user_modules: dict[str, list[str]] = {}
+            for row in module_rows:
+                user_modules.setdefault(row["email"], []).append(row["module_key"])
+            users = []
+            user_rows = database.execute(
+                """
+                SELECT u.*, p.name AS plan_name
+                FROM users u LEFT JOIN access_plans p ON p.id = u.plan_id
+                ORDER BY u.name COLLATE NOCASE
+                """
+            ).fetchall()
+            today = dt.datetime.now().astimezone().date()
+            for row in user_rows:
+                end_date = None
+                days_remaining = None
+                try:
+                    end_date = dt.date.fromisoformat((row["monitoring_end"] or "")[:10])
+                    days_remaining = (end_date - today).days
+                except ValueError:
+                    pass
+                users.append({
+                    "id": row["id"], "name": row["name"], "email": row["email"],
+                    "document": row["document"] or "", "phone": row["phone"] or "",
+                    "company": row["company"] or "", "companyDocument": row["company_document"] or "",
+                    "jobTitle": row["job_title"] or "", "department": row["department"] or "",
+                    "login": row["login"] or "", "role": row["role"], "status": row["status"],
+                    "active": bool(row["active"]), "planId": row["plan_id"] or "",
+                    "planName": row["plan_name"] or "Sem plano", "billingCycle": row["billing_cycle"] or "Mensal",
+                    "subscriptionValue": row["subscription_value"], "monitoringStart": row["monitoring_start"] or "",
+                    "monitoringEnd": row["monitoring_end"] or "", "daysRemaining": days_remaining,
+                    "notes": row["notes"] or "", "modules": user_modules.get(row["email"], []),
+                    "createdAt": row["created_at"] or "", "updatedAt": row["updated_at"] or "",
+                    "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+                    "lastLoginAt": row["last_login_at"] or "", "previousLoginAt": row["previous_login_at"] or "",
+                    "lastLoginIp": row["last_login_ip"] or "", "loginAttempts": row["login_attempts"] or 0,
+                    "blockedAt": row["blocked_at"] or "",
+                })
+            audit_rows = database.execute(
+                "SELECT * FROM access_audit ORDER BY id DESC LIMIT 300"
+            ).fetchall()
+            audit = [dict(row) for row in audit_rows]
+        return {
+            "users": users,
+            "plans": plans,
+            "modules": [{"key": key, "label": label} for key, label in ERP_MODULES.items()],
+            "audit": audit,
+            "generatedAt": local_now(),
+        }
+
+    def register_public_user(self, payload: dict) -> dict:
+        responsible = str(payload.get("responsibleName", "")).strip()
+        company = str(payload.get("companyName", "")).strip()
+        email = str(payload.get("email", "")).strip().lower()
+        phone = digits(payload.get("phone", ""))
+        document_type = str(payload.get("documentType", "CNPJ")).strip().upper()
+        raw_document = str(payload.get("document", "")).strip()
+        document = clean_cnpj(raw_document) if document_type == "CNPJ" else digits(raw_document)
+        segment = str(payload.get("segment", "")).strip()
+        activity = str(payload.get("primaryActivity", "")).strip()
+        plan_id = str(payload.get("planId", "")).strip()
+        billing_cycle = str(payload.get("billingCycle", "Mensal")).strip()
+        password = str(payload.get("password", ""))
+        password_confirmation = str(payload.get("passwordConfirmation", ""))
+        coupon_code = str(payload.get("couponCode", "")).strip()[:80]
+        partner_code = str(payload.get("partnerCode", "")).strip()[:80]
+        if not responsible or len(responsible) < 3 or len(responsible) > 160:
+            raise ValueError("Informe o nome completo do responsável.")
+        if not company or len(company) < 2 or len(company) > 180:
+            raise ValueError("Informe a razão social ou o nome da atividade.")
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email) > 180:
+            raise ValueError("Informe um e-mail válido.")
+        if len(phone) not in {10, 11}:
+            raise ValueError("Informe um telefone ou WhatsApp com DDD.")
+        if document_type == "CPF":
+            if not valid_cpf(document):
+                raise ValueError("CPF inválido. Confira os números informados.")
+        elif document_type == "CNPJ":
+            if not valid_cnpj(document):
+                raise ValueError("CNPJ inválido. O cadastro aceita também o novo formato alfanumérico.")
+        else:
+            raise ValueError("Selecione CPF ou CNPJ.")
+        if not segment or not activity:
+            raise ValueError("Selecione o segmento e a atividade principal.")
+        if billing_cycle not in {"Mensal", "Trimestral", "Anual"}:
+            raise ValueError("Periodicidade de cobrança inválida.")
+        if len(password) < 8 or not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
+            raise ValueError("A senha deve possuir ao menos 8 caracteres, com letras e números.")
+        if password != password_confirmation:
+            raise ValueError("A senha e a confirmação não coincidem.")
+        if payload.get("acceptedTerms") is not True:
+            raise ValueError("Leia e aceite os termos e a política de privacidade.")
+
+        now = local_now()
+        start_date = dt.datetime.now().astimezone().date()
+        with connect() as database:
+            plan = database.execute(
+                """
+                SELECT id, name, monthly_value, annual_value, trial_days
+                FROM access_plans
+                WHERE id = ? AND status = 'Ativo'
+                  AND id IN ('erp-start', 'erp-profissional', 'erp-business', 'erp-enterprise')
+                """,
+                (plan_id,),
+            ).fetchone()
+            if plan is None:
+                raise ValueError("Selecione um plano disponível.")
+            duplicate = database.execute(
+                """
+                SELECT email FROM users WHERE email = ?
+                UNION ALL
+                SELECT email FROM users WHERE company_document = ?
+                UNION ALL
+                SELECT email FROM users WHERE document = ?
+                LIMIT 1
+                """,
+                (email, document, document),
+            ).fetchone()
+            if duplicate:
+                raise ValueError("Já existe uma conta com este e-mail, CPF ou CNPJ.")
+            subscription_value = float(plan["monthly_value"] or 0)
+            if billing_cycle == "Trimestral":
+                subscription_value *= 3
+            elif billing_cycle == "Anual":
+                subscription_value = float(plan["annual_value"] or 0)
+            trial_days = max(1, int(plan["trial_days"] or 7))
+            end_date = start_date + dt.timedelta(days=trial_days)
+            user_id = uuid.uuid4().hex
+            salt = secrets.token_hex(16)
+            notes = " · ".join(
+                item for item in (
+                    f"Cupom: {coupon_code}" if coupon_code else "",
+                    f"Parceiro: {partner_code}" if partner_code else "",
+                    f"Termos aceitos em {now}",
+                ) if item
+            )
+            database.execute(
+                """
+                INSERT INTO users(
+                  id, email, name, role, salt, password_hash, active, document, phone, company,
+                  company_document, job_title, department, login, status, plan_id, notes,
+                  billing_cycle, subscription_value, monitoring_start, monitoring_end,
+                  created_at, updated_at, created_by, updated_by
+                ) VALUES (?, ?, ?, 'Usuário', ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'Ativo', ?, ?, ?, ?, ?, ?, ?, ?, 'Cadastro público', 'Cadastro público')
+                """,
+                (
+                    user_id, email, responsible, salt, password_hash(password, salt), document, phone,
+                    company, document if document_type == "CNPJ" else "", activity, segment, email,
+                    plan["id"], notes, billing_cycle, subscription_value, start_date.isoformat(),
+                    end_date.isoformat(), now, now,
+                ),
+            )
+            module_rows = database.execute(
+                "SELECT module_key FROM plan_modules WHERE plan_id = ?", (plan["id"],)
+            ).fetchall()
+            for module_row in module_rows:
+                database.execute(
+                    "INSERT INTO user_modules(email, module_key, allowed) VALUES (?, ?, 1)",
+                    (email, module_row["module_key"]),
+                )
+            for permission in ("consult_documents", "view_history"):
+                database.execute(
+                    "INSERT OR IGNORE INTO user_permissions(email, permission, allowed) VALUES (?, ?, 1)",
+                    (email, permission),
+                )
+            write_access_audit(
+                database, email, email, "Usuário realizou autocadastro", "",
+                {"planId": plan["id"], "billingCycle": billing_cycle, "trialEndsAt": end_date.isoformat()},
+                self.client_ip(),
+            )
+        return {
+            "id": user_id, "email": email, "name": responsible, "planId": plan["id"],
+            "planName": plan["name"], "billingCycle": billing_cycle,
+            "subscriptionValue": subscription_value, "monitoringStart": start_date.isoformat(),
+            "monitoringEnd": end_date.isoformat(), "trialDays": trial_days,
+        }
+
+    def request_password_reset(self, payload: dict) -> dict:
+        email = str(payload.get("email", "")).strip().lower()
+        document = clean_cnpj(payload.get("document", ""))
+        phone = digits(payload.get("phone", ""))
+        now = int(time.time())
+        ip_address = self.client_ip()
+        if not email or not document or not phone:
+            raise ValueError("Informe o e-mail, CPF/CNPJ e WhatsApp cadastrados.")
+        with connect() as database:
+            recent_email_attempts = database.execute(
+                "SELECT COUNT(1) FROM password_reset_attempts WHERE email = ? AND attempted_at >= ?",
+                (email, now - 900),
+            ).fetchone()[0]
+            recent_ip_attempts = database.execute(
+                "SELECT COUNT(1) FROM password_reset_attempts WHERE ip_address = ? AND attempted_at >= ?",
+                (ip_address, now - 900),
+            ).fetchone()[0]
+            if recent_email_attempts >= 5 or recent_ip_attempts >= 10:
+                raise ValueError("Muitas tentativas de recuperação. Aguarde 15 minutos e tente novamente.")
+            user = database.execute(
+                "SELECT email, name, document, company_document, phone, status FROM users WHERE email = ?",
+                (email,),
+            ).fetchone()
+            stored_documents = set()
+            if user:
+                stored_documents = {
+                    clean_cnpj(user["document"]), clean_cnpj(user["company_document"])
+                } - {""}
+            identity_matches = bool(
+                user and document in stored_documents and phone == digits(user["phone"])
+            )
+            database.execute(
+                "INSERT INTO password_reset_attempts(email, ip_address, attempted_at, successful) VALUES (?, ?, ?, ?)",
+                (email, ip_address, now, 1 if identity_matches else 0),
+            )
+            if not identity_matches:
+                database.commit()
+                raise ValueError("Os dados não correspondem ao cadastro. Confira e tente novamente.")
+            database.execute(
+                "UPDATE password_reset_tokens SET used_at = ? WHERE email = ? AND used_at IS NULL",
+                (now, email),
+            )
+            reset_token = secrets.token_urlsafe(36)
+            token_hash = hashlib.sha256(reset_token.encode("utf-8")).hexdigest()
+            expires_at = now + 10 * 60
+            database.execute(
+                """
+                INSERT INTO password_reset_tokens(id, email, token_hash, created_at, expires_at, ip_address)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (uuid.uuid4().hex, email, token_hash, now, expires_at, ip_address),
+            )
+            write_access_audit(
+                database, email, email, "Identidade confirmada para redefinição de senha", "", "Autorização temporária de 10 minutos", ip_address
+            )
+        return {"resetToken": reset_token, "expiresIn": 600, "name": user["name"]}
+
+    def confirm_password_reset(self, payload: dict) -> dict:
+        reset_token = str(payload.get("resetToken", "")).strip()
+        password = str(payload.get("password", ""))
+        password_confirmation = str(payload.get("passwordConfirmation", ""))
+        if len(reset_token) < 24:
+            raise ValueError("Autorização de recuperação inválida. Inicie novamente.")
+        if len(password) < 8 or not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
+            raise ValueError("A nova senha deve possuir ao menos 8 caracteres, com letras e números.")
+        if password != password_confirmation:
+            raise ValueError("A nova senha e a confirmação não coincidem.")
+        now = int(time.time())
+        token_hash = hashlib.sha256(reset_token.encode("utf-8")).hexdigest()
+        with connect() as database:
+            reset_record = database.execute(
+                """
+                SELECT id, email FROM password_reset_tokens
+                WHERE token_hash = ? AND used_at IS NULL AND expires_at >= ?
+                """,
+                (token_hash, now),
+            ).fetchone()
+            if reset_record is None:
+                raise ValueError("A autorização expirou ou já foi utilizada. Inicie a recuperação novamente.")
+            user = database.execute(
+                "SELECT email, status FROM users WHERE email = ?", (reset_record["email"],)
+            ).fetchone()
+            if user is None:
+                raise ValueError("Conta não encontrada.")
+            salt = secrets.token_hex(16)
+            new_status = "Ativo" if user["status"] == "Bloqueado" else user["status"]
+            database.execute(
+                """
+                UPDATE users SET salt = ?, password_hash = ?, login_attempts = 0, blocked_at = NULL,
+                  status = ?, updated_at = ?, updated_by = ?
+                WHERE email = ?
+                """,
+                (salt, password_hash(password, salt), new_status, local_now(), user["email"], user["email"]),
+            )
+            database.execute("DELETE FROM sessions WHERE email = ?", (user["email"],))
+            database.execute("UPDATE password_reset_tokens SET used_at = ? WHERE id = ?", (now, reset_record["id"]))
+            write_access_audit(
+                database, user["email"], user["email"], "Usuário redefiniu a própria senha", "Senha anterior protegida", "Nova senha protegida por hash", self.client_ip()
+            )
+        return {"email": user["email"]}
+
+    def save_managed_user(self, payload: dict, administrator: sqlite3.Row, user_id: str = "") -> str:
+        name = str(payload.get("name", "")).strip()
+        email = str(payload.get("email", "")).strip().lower()
+        login = str(payload.get("login", "")).strip().lower() or email.split("@", 1)[0]
+        role = str(payload.get("role", "Usuário")).strip()
+        status = str(payload.get("status", "Ativo")).strip()
+        plan_id = str(payload.get("planId", "")).strip()
+        password = str(payload.get("password", ""))
+        start = str(payload.get("monitoringStart", "")).strip() or None
+        end = str(payload.get("monitoringEnd", "")).strip() or None
+        allowed_statuses = {"Ativo", "Inativo", "Bloqueado", "Assinatura vencida", "Aguardando ativação"}
+        if not name or not email or "@" not in email:
+            raise ValueError("Nome completo e e-mail válido são obrigatórios.")
+        if not re.fullmatch(r"[a-z0-9._-]{3,80}", login):
+            raise ValueError("O login deve possuir de 3 a 80 caracteres, usando letras, números, ponto, hífen ou sublinhado.")
+        if role not in {"Administrador", "Usuário"}:
+            raise ValueError("Perfil de acesso inválido.")
+        if status not in allowed_statuses:
+            raise ValueError("Status de usuário inválido.")
+        if start and end:
+            try:
+                if dt.date.fromisoformat(end[:10]) < dt.date.fromisoformat(start[:10]):
+                    raise ValueError("A data final não pode ser anterior à data inicial.")
+            except ValueError as error:
+                if "anterior" in str(error):
+                    raise
+                raise ValueError("Datas da assinatura inválidas.") from error
+        modules = normalized_modules(payload.get("modules", []))
+        now = local_now()
+        with connect() as database:
+            plan = database.execute("SELECT id, max_users FROM access_plans WHERE id = ? AND status = 'Ativo'", (plan_id,)).fetchone()
+            if plan is None:
+                raise ValueError("Selecione um plano de assinatura ativo.")
+            existing = database.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone() if user_id else None
+            assigned_to_plan = database.execute(
+                "SELECT COUNT(*) AS total FROM users WHERE plan_id = ? AND (? = '' OR id != ?)",
+                (plan_id, user_id, user_id),
+            ).fetchone()["total"]
+            if assigned_to_plan >= int(plan["max_users"] or 1):
+                raise ValueError("O plano selecionado atingiu a quantidade máxima de usuários.")
+            duplicate = database.execute(
+                "SELECT id FROM users WHERE (lower(email) = ? OR lower(login) = ?) AND (? = '' OR id != ?)",
+                (email, login, user_id, user_id),
+            ).fetchone()
+            if duplicate:
+                raise ValueError("Já existe um usuário com este e-mail ou login.")
+            if existing is None and user_id:
+                raise ValueError("Usuário não encontrado.")
+            if existing is None and len(password) < 8:
+                raise ValueError("A senha inicial deve possuir pelo menos 8 caracteres.")
+            if existing and existing["email"] == administrator["email"] and (role != "Administrador" or status != "Ativo"):
+                raise ValueError("O administrador da sessão não pode remover o próprio acesso administrativo.")
+            if existing and existing["role"] == "Administrador" and role != "Administrador":
+                active_admins = database.execute("SELECT COUNT(*) AS total FROM users WHERE role = 'Administrador' AND active = 1 AND status = 'Ativo'").fetchone()["total"]
+                if active_admins <= 1:
+                    raise ValueError("Mantenha pelo menos um administrador ativo.")
+            previous = dict(existing) if existing else {}
+            active = 0 if status == "Inativo" else 1
+            if existing is None:
+                user_id = uuid.uuid4().hex
+                salt = secrets.token_hex(16)
+                database.execute(
+                    """
+                    INSERT INTO users(
+                      id, email, name, role, salt, password_hash, active, document, phone, company,
+                      company_document, job_title, department, login, status, plan_id, notes,
+                      billing_cycle, subscription_value, monitoring_start, monitoring_end,
+                      created_at, updated_at, created_by, updated_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id, email, name, role, salt, password_hash(password, salt), active,
+                        str(payload.get("document", "")).strip(), str(payload.get("phone", "")).strip(),
+                        str(payload.get("company", "")).strip(), str(payload.get("companyDocument", "")).strip(),
+                        str(payload.get("jobTitle", "")).strip(), str(payload.get("department", "")).strip(),
+                        login, status, plan_id, str(payload.get("notes", "")).strip(),
+                        str(payload.get("billingCycle", "Mensal")), float(payload.get("subscriptionValue", 0) or 0),
+                        start, end, now, now, administrator["email"], administrator["email"],
+                    ),
+                )
+                action = "Administrador criou usuário"
+            else:
+                old_email = existing["email"]
+                database.execute(
+                    """
+                    UPDATE users SET email = ?, name = ?, role = ?, active = ?, document = ?, phone = ?,
+                      company = ?, company_document = ?, job_title = ?, department = ?, login = ?, status = ?,
+                      plan_id = ?, notes = ?, billing_cycle = ?, subscription_value = ?, monitoring_start = ?,
+                      monitoring_end = ?, updated_at = ?, updated_by = ?, blocked_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        email, name, role, active, str(payload.get("document", "")).strip(),
+                        str(payload.get("phone", "")).strip(), str(payload.get("company", "")).strip(),
+                        str(payload.get("companyDocument", "")).strip(), str(payload.get("jobTitle", "")).strip(),
+                        str(payload.get("department", "")).strip(), login, status, plan_id,
+                        str(payload.get("notes", "")).strip(), str(payload.get("billingCycle", "Mensal")),
+                        float(payload.get("subscriptionValue", 0) or 0), start, end, now, administrator["email"],
+                        now if status == "Bloqueado" else None, user_id,
+                    ),
+                )
+                if old_email != email:
+                    for table, column in (("sessions", "email"), ("user_permissions", "email"), ("user_modules", "email")):
+                        database.execute(f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (email, old_email))
+                if password:
+                    if len(password) < 8:
+                        raise ValueError("A nova senha deve possuir pelo menos 8 caracteres.")
+                    salt = secrets.token_hex(16)
+                    database.execute("UPDATE users SET salt = ?, password_hash = ? WHERE id = ?", (salt, password_hash(password, salt), user_id))
+                action = "Administrador alterou usuário"
+            if not modules:
+                modules = [row["module_key"] for row in database.execute("SELECT module_key FROM plan_modules WHERE plan_id = ?", (plan_id,)).fetchall()]
+            database.execute("DELETE FROM user_modules WHERE email = ?", (email,))
+            for module_key in modules:
+                database.execute("INSERT INTO user_modules(email, module_key, allowed) VALUES (?, ?, 1)", (email, module_key))
+            write_access_audit(database, administrator["email"], email, action, previous, {"name": name, "role": role, "status": status, "planId": plan_id, "modules": modules}, self.client_ip())
+        return user_id
+
+    def save_access_plan(self, payload: dict, administrator: sqlite3.Row, plan_id: str = "") -> str:
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            raise ValueError("Informe o nome do plano.")
+        modules = normalized_modules(payload.get("modules", []))
+        now = local_now()
+        with connect() as database:
+            if plan_id:
+                existing = database.execute("SELECT * FROM access_plans WHERE id = ?", (plan_id,)).fetchone()
+                if not existing:
+                    raise ValueError("Plano não encontrado.")
+            else:
+                existing = None
+                plan_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or uuid.uuid4().hex
+                if database.execute("SELECT 1 FROM access_plans WHERE id = ? OR lower(name) = lower(?)", (plan_id, name)).fetchone():
+                    plan_id = uuid.uuid4().hex
+            values = (
+                name, str(payload.get("description", "")).strip(), float(payload.get("monthlyValue", 0) or 0),
+                float(payload.get("annualValue", 0) or 0), max(1, int(payload.get("maxUsers", 1) or 1)),
+                max(0, int(payload.get("trialDays", 0) or 0)),
+                "Inativo" if str(payload.get("status")) == "Inativo" else "Ativo", now,
+            )
+            if existing:
+                database.execute(
+                    "UPDATE access_plans SET name = ?, description = ?, monthly_value = ?, annual_value = ?, max_users = ?, trial_days = ?, status = ?, updated_at = ? WHERE id = ?",
+                    (*values, plan_id),
+                )
+                action = "Administrador alterou plano"
+            else:
+                database.execute(
+                    "INSERT INTO access_plans(id, name, description, monthly_value, annual_value, max_users, trial_days, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (plan_id, *values[:-1], now, now),
+                )
+                action = "Administrador criou plano"
+            database.execute("DELETE FROM plan_modules WHERE plan_id = ?", (plan_id,))
+            for module_key in modules:
+                database.execute("INSERT INTO plan_modules(plan_id, module_key) VALUES (?, ?)", (plan_id, module_key))
+            write_access_audit(database, administrator["email"], "", action, dict(existing) if existing else {}, {"id": plan_id, "name": name, "modules": modules}, self.client_ip())
+        return plan_id
+
+    def certificate_row(self, certificate_id: str) -> sqlite3.Row | None:
+        with connect() as database:
+            return database.execute(
+                "SELECT * FROM fiscal_certificates WHERE id = ? AND active = 1",
+                (certificate_id,),
+            ).fetchone()
+
+    def certificate_summary(self, row: sqlite3.Row) -> dict:
+        valid_until = dt.datetime.fromisoformat(row["valid_until"].replace("Z", "+00:00"))
+        return {
+            "id": row["id"], "company": row["company"], "branch": row["branch"],
+            "document": row["document"], "holder": row["holder"], "issuer": row["issuer"],
+            "serial": row["serial"], "validFrom": row["valid_from"],
+            "validUntil": valid_until.astimezone().strftime("%d/%m/%Y"),
+            "environment": row["environment"],
+            "environmentLabel": "Produção" if row["environment"] == "production" else "Homologação",
+            "stateCode": row["state_code"] or "",
+            "state": UF_NAMES.get(row["state_code"] or "", ""),
+            "status": certificate_status(row["valid_until"]), "passwordStored": bool(row["save_password"]),
+        }
+
+    def certificate_credentials(self, row: sqlite3.Row, supplied_password: str = "") -> tuple[bytes, str]:
+        fernet = get_fernet()
+        try:
+            pfx_data = fernet.decrypt(row["pfx_encrypted"])
+        except InvalidToken as error:
+            raise RuntimeError("Não foi possível decifrar o certificado. Confira a chave mestra do servidor.") from error
+        password = supplied_password or SESSION_CERT_PASSWORDS.get((self.session_token(), row["id"]), "")
+        if not password and row["password_encrypted"]:
+            try:
+                password = fernet.decrypt(row["password_encrypted"]).decode("utf-8")
+            except (InvalidToken, UnicodeDecodeError) as error:
+                raise RuntimeError("Não foi possível decifrar a senha do certificado.") from error
+        if not password:
+            raise ValueError("Informe a senha do certificado para esta sessão.")
+        certificate_metadata(pfx_data, password)
+        SESSION_CERT_PASSWORDS[(self.session_token(), row["id"])] = password
+        return pfx_data, password
+
+    def redact_result(self, result: dict, user: sqlite3.Row) -> dict:
+        if "view_sensitive" in self.permissions_for(user):
+            return result
+        redacted = json.loads(json.dumps(result, ensure_ascii=False))
+        for party_name in ("issuer", "recipient"):
+            party = redacted.get(party_name) or {}
+            document = digits(party.get("document", ""))
+            if document:
+                party["document"] = "*" * max(0, len(document) - 4) + document[-4:]
+            if party.get("name"):
+                party["name"] = "Dados protegidos — permissão necessária"
+            party["address"] = "Dados protegidos"
+            for field in ("foreignId", "stateRegistration", "zipCode", "email", "phone"):
+                if party.get(field):
+                    party[field] = "Dados protegidos"
+        redacted["items"] = []
+        redacted["taxes"] = {}
+        redacted["billing"] = {}
+        national_panel = redacted.get("nationalPanel") or {}
+        if national_panel:
+            service = national_panel.get("service") or {}
+            if service.get("Descrição do serviço"):
+                service["Descrição do serviço"] = "Dados protegidos — permissão necessária"
+            national_panel["additional"] = {}
+        return redacted
+
+    def store_fiscal_result(
+        self,
+        result: dict,
+        certificate: sqlite3.Row,
+        user: sqlite3.Row,
+        xml_data: bytes | None,
+        xml_filename: str,
+        record_origin: str = "official_query",
+        import_batch_id: str = "",
+    ) -> None:
+        fernet = get_fernet()
+        encoded_result = fernet.encrypt(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        encrypted_xml = fernet.encrypt(xml_data) if xml_data else None
+        xml_sha256 = hashlib.sha256(xml_data).hexdigest() if xml_data else None
+        with connect() as database:
+            database.execute(
+                """
+                INSERT INTO fiscal_queries(
+                  id, access_key, model, company, certificate_id, environment, status,
+                  risk_level, official_code, source_name, source_url, result_encrypted,
+                  xml_encrypted, xml_filename, xml_sha256, record_origin, import_batch_id,
+                  consulted_by, consulted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result["id"], result["accessKey"], result["model"], certificate["company"],
+                    certificate["id"], result["environment"], result["status"], result["riskLevel"],
+                    result.get("officialCode", ""), result["sourceName"], result["sourceUrl"], encoded_result,
+                    encrypted_xml, xml_filename or None, xml_sha256, record_origin, import_batch_id or None,
+                    user["email"], result["consultedAt"],
+                ),
+            )
+
+    def import_nfse_monthly_package(self, payload: dict, user: sqlite3.Row) -> dict:
+        month = str(payload.get("month", "")).strip()
+        if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", month):
+            raise ValueError("Selecione o mês do pacote oficial da NFS-e.")
+        certificate = self.certificate_row(str(payload.get("certificateId", "")).strip())
+        if certificate is None:
+            raise ValueError("Selecione o certificado da empresa antes da importação.")
+        environment = str(payload.get("environment") or certificate["environment"] or "production")
+        if environment not in {"production", "homologation"}:
+            raise ValueError("Ambiente fiscal inválido.")
+        source_declared_complete = bool(payload.get("confirmComplete"))
+        raw_files = payload.get("files")
+        packages: list[tuple[str, bytes]] = []
+        if isinstance(raw_files, list) and raw_files:
+            if len(raw_files) > MAX_XML_BATCH_DOCUMENTS:
+                raise ValueError("A seleção ultrapassa o limite de 2.000 arquivos.")
+            total_package_bytes = 0
+            for position, raw_file in enumerate(raw_files, start=1):
+                if not isinstance(raw_file, dict):
+                    raise ValueError("A lista de arquivos possui uma estrutura inválida.")
+                item_name = Path(str(raw_file.get("filename", "")).strip()).name[:180]
+                if not item_name or not re.search(r"\.(zip|xml)$", item_name, re.IGNORECASE):
+                    raise ValueError(f"O arquivo {position} deve estar em formato ZIP ou XML.")
+                item_data = decode_base64_field(raw_file.get("dataBase64", ""), MAX_NFSE_IMPORT_BYTES, f"Arquivo {position}")
+                total_package_bytes += len(item_data)
+                if total_package_bytes > MAX_NFSE_IMPORT_BYTES:
+                    raise ValueError("A seleção ultrapassa o limite seguro de 25 MB.")
+                packages.append((item_name, item_data))
+            filename = f"{len(packages)}-arquivos-oficiais-{month}.xml"
+        else:
+            filename = Path(str(payload.get("filename", "")).strip()).name[:180]
+            if not filename or not re.search(r"\.(zip|xml)$", filename, re.IGNORECASE):
+                raise ValueError("Selecione um ou vários XMLs oficiais ou um pacote ZIP.")
+            packages.append((filename, decode_base64_field(payload.get("dataBase64", ""), MAX_NFSE_IMPORT_BYTES, "Pacote mensal")))
+        members: list[tuple[str, bytes]] = []
+        source_hasher = hashlib.sha256()
+        for package_name, package_data in packages:
+            source_hasher.update(package_name.encode("utf-8", errors="ignore"))
+            source_hasher.update(package_data)
+            members.extend(imported_nfse_xml_members(package_name, package_data))
+        if len(members) > MAX_XML_BATCH_DOCUMENTS:
+            raise ValueError("A seleção ultrapassa o limite de 2.000 XMLs por processamento.")
+        holder_document = digits(certificate["document"])
+        if len(holder_document) not in {11, 14}:
+            raise ValueError("O certificado não possui CPF/CNPJ identificável para validar o pacote.")
+
+        fernet = get_fernet()
+        existing_by_key: dict[str, dict] = {}
+        existing_hashes: set[str] = set()
+        with connect() as database:
+            existing_rows = database.execute(
+                "SELECT access_key, result_encrypted, xml_encrypted, xml_sha256 FROM fiscal_queries "
+                "WHERE certificate_id = ? AND environment = ? AND xml_encrypted IS NOT NULL",
+                (certificate["id"], environment),
+            ).fetchall()
+        for row in existing_rows:
+            try:
+                digest = row["xml_sha256"] or hashlib.sha256(fernet.decrypt(row["xml_encrypted"])).hexdigest()
+                existing_hashes.add(digest)
+                result = json.loads(fernet.decrypt(row["result_encrypted"]).decode("utf-8"))
+                summary = result.get("summary") or {}
+                key = digits(result.get("accessKey") or row["access_key"] or "")
+                if key:
+                    existing_by_key[key] = {
+                        "month": fiscal_month(summary.get("competence") or summary.get("issuedAt")),
+                        "direction": result.get("direction") or "",
+                    }
+            except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+                continue
+
+        parsed: list[dict] = []
+        errors: list[str] = []
+        ignored_unrecognized = 0
+        for member_name, xml_data in members:
+            try:
+                item = nfse_import_result(xml_data, holder_document, environment)
+                item["filename"] = member_name
+                item["xml"] = xml_data
+                item["sha256"] = hashlib.sha256(xml_data).hexdigest()
+                parsed.append(item)
+            except LookupError:
+                ignored_unrecognized += 1
+            except ValueError as error:
+                errors.append(f"{member_name}: {error}")
+
+        main_references: dict[str, dict] = dict(existing_by_key)
+        for item in parsed:
+            if item["isEvent"]:
+                continue
+            result = item["result"]
+            main_references[result["accessKey"]] = {
+                "month": item["month"], "direction": result.get("direction") or "Relacionada",
+            }
+
+        selected: list[dict] = []
+        ignored_other_month = 0
+        authorization_errors = 0
+        for item in parsed:
+            result = item["result"]
+            reference = main_references.get(result["accessKey"], {})
+            effective_month = reference.get("month") or item["month"]
+            authorized_participant = any(same_taxpayer(holder_document, value) for value in item["participants"])
+            if not authorized_participant and not reference:
+                authorization_errors += 1
+                errors.append(f"{item['filename']}: CPF/CNPJ não pertence ao certificado selecionado.")
+                continue
+            if effective_month != month:
+                ignored_other_month += 1
+                continue
+            if item["isEvent"] and reference.get("direction"):
+                result["direction"] = reference["direction"]
+            selected.append(item)
+
+        if not selected:
+            detail = errors[0] if errors else "Nenhuma NFS-e ou evento do mês selecionado foi localizado no pacote."
+            raise ValueError(detail)
+
+        batch_id = uuid.uuid4().hex
+        now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        imported = 0
+        duplicates = 0
+        cancellations = 0
+        recognized_notes = 0
+        source_hash = source_hasher.hexdigest()
+        with connect() as database:
+            for item in selected:
+                result = item["result"]
+                if not item["isEvent"]:
+                    recognized_notes += 1
+                if item["cancelled"]:
+                    cancellations += 1
+                if item["sha256"] in existing_hashes:
+                    duplicates += 1
+                    continue
+                existing_hashes.add(item["sha256"])
+                result["id"] = uuid.uuid4().hex
+                result["consultedAt"] = now
+                result["consultedBy"] = user["email"]
+                result["company"] = certificate["company"]
+                result["importBatchId"] = batch_id
+                encoded_result = fernet.encrypt(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+                encrypted_xml = fernet.encrypt(item["xml"])
+                database.execute(
+                    """
+                    INSERT INTO fiscal_queries(
+                      id, access_key, model, company, certificate_id, environment, status,
+                      risk_level, official_code, source_name, source_url, result_encrypted,
+                      xml_encrypted, xml_filename, xml_sha256, record_origin, import_batch_id,
+                      consulted_by, consulted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        result["id"], result["accessKey"], "NFS-e", certificate["company"], certificate["id"],
+                        environment, result["status"], result["riskLevel"], result["officialCode"],
+                        result["sourceName"], result["sourceUrl"], encoded_result, encrypted_xml,
+                        item["filename"], item["sha256"], "official_monthly_import", batch_id,
+                        user["email"], now,
+                    ),
+                )
+                imported += 1
+            ignored = ignored_unrecognized + ignored_other_month
+            complete = bool(recognized_notes) and not errors and not authorization_errors and source_declared_complete
+            database.execute(
+                """
+                INSERT INTO nfse_monthly_imports(
+                  id, certificate_id, environment, month, source_filename, source_sha256,
+                  source_documents, imported_documents, duplicate_documents, cancellation_events,
+                  ignored_documents, error_count, is_complete, imported_by, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    batch_id, certificate["id"], environment, month, filename, source_hash,
+                    len(members), imported, duplicates, cancellations, ignored, len(errors),
+                    1 if complete else 0, user["email"], now,
+                ),
+            )
+        self.audit(
+            user["email"], "nfse_monthly_package_import",
+            f"{certificate['company']} · {month} · {imported} importado(s) · {duplicates} repetido(s) · {len(errors)} erro(s)",
+        )
+        return {
+            "ok": True, "batchId": batch_id, "month": month, "company": certificate["company"],
+            "sourceDocuments": len(members), "imported": imported, "duplicates": duplicates,
+            "cancellations": cancellations, "ignored": ignored_unrecognized + ignored_other_month,
+            "errors": errors[:8], "isComplete": bool(recognized_notes) and not errors and not authorization_errors and source_declared_complete,
+            "message": "Pacote mensal validado e incorporado ao arquivo seguro.",
+        }
+
+    def store_distributed_document(
+        self,
+        certificate: sqlite3.Row,
+        user: sqlite3.Row,
+        environment: str,
+        state_code: str,
+        nsu: str,
+        schema_name: str,
+        xml_data: bytes,
+    ) -> tuple[dict, bool]:
+        holder_document = digits(certificate["document"])
+        result = parse_distributed_document(xml_data, schema_name, holder_document, nsu)
+        result["environment"] = environment
+        result["environmentLabel"] = "Produção" if environment == "production" else "Homologação"
+        result["company"] = certificate["company"]
+        result["consultedBy"] = user["email"]
+        fernet = get_fernet()
+        encoded_result = fernet.encrypt(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        encrypted_xml = fernet.encrypt(xml_data)
+        with connect() as database:
+            existing = database.execute(
+                "SELECT id FROM distributed_documents WHERE certificate_id = ? AND environment = ? AND nsu = ?",
+                (certificate["id"], environment, nsu),
+            ).fetchone()
+            if existing:
+                result["id"] = existing["id"]
+                return result, False
+            database.execute(
+                """
+                INSERT INTO distributed_documents(
+                  id, certificate_id, environment, state_code, nsu, schema_name,
+                  document_type, access_key, direction, status, result_encrypted,
+                  xml_encrypted, synced_by, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result["id"], certificate["id"], environment, state_code, nsu,
+                    schema_name, result.get("model", ""), result.get("accessKey", ""),
+                    result.get("direction", "Relacionada"), result.get("status", "Documento localizado"),
+                    encoded_result, encrypted_xml, user["email"], result["consultedAt"],
+                ),
+            )
+        return result, True
+
+    def build_monthly_xml_batch(self, payload: dict, user: sqlite3.Row) -> dict:
+        month = str(payload.get("month", "")).strip()
+        if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", month):
+            raise ValueError("Selecione um mês válido para gerar o lote de XML.")
+        certificate_id = str(payload.get("certificateId", "")).strip()
+        certificate = self.certificate_row(certificate_id)
+        if certificate is None:
+            raise ValueError("Selecione um certificado ativo para identificar a empresa do lote.")
+        environment = str(payload.get("environment") or certificate["environment"] or "production")
+        if environment not in {"production", "homologation"}:
+            raise ValueError("Ambiente fiscal inválido.")
+        document_kind = str(payload.get("documentKind", "all")).lower()
+        movement = str(payload.get("movement", "issued")).lower()
+        situation = str(payload.get("situation", "all")).lower()
+        completeness_mode = str(payload.get("completenessMode", "complete")).lower()
+        if document_kind not in {"all", "nfe", "nfce", "cte", "mdfe", "nfse"}:
+            raise ValueError("Tipo de documento inválido para o lote.")
+        if movement not in {"all", "issued", "received"}:
+            raise ValueError("Movimento inválido para o lote.")
+        if situation not in {"all", "authorized", "cancelled"}:
+            raise ValueError("Situação inválida para o lote.")
+        if completeness_mode not in {"complete", "archive"}:
+            raise ValueError("Modo de cobertura mensal inválido.")
+
+        query_where = ["certificate_id = ?", "environment = ?", "xml_encrypted IS NOT NULL"]
+        query_values: list[str] = [certificate_id, environment]
+        distributed_where = ["certificate_id = ?", "environment = ?"]
+        distributed_values: list[str] = [certificate_id, environment]
+        if user["role"] != "Administrador":
+            query_where.append("consulted_by = ?")
+            query_values.append(user["email"])
+            distributed_where.append("synced_by = ?")
+            distributed_values.append(user["email"])
+        with connect() as database:
+            query_rows = database.execute(
+                f"SELECT * FROM fiscal_queries WHERE {' AND '.join(query_where)} ORDER BY consulted_at DESC LIMIT 5000",
+                query_values,
+            ).fetchall()
+            distributed_rows = database.execute(
+                f"SELECT * FROM distributed_documents WHERE {' AND '.join(distributed_where)} ORDER BY received_at DESC LIMIT 5000",
+                distributed_values,
+            ).fetchall()
+            nfse_import = database.execute(
+                """
+                SELECT id, source_filename, source_documents, imported_documents,
+                       duplicate_documents, cancellation_events, error_count, is_complete,
+                       imported_by, imported_at
+                FROM nfse_monthly_imports
+                WHERE certificate_id = ? AND environment = ? AND month = ? AND is_complete = 1
+                ORDER BY imported_at DESC LIMIT 1
+                """,
+                (certificate_id, environment, month),
+            ).fetchone()
+
+        requires_nfse_month = (
+            completeness_mode == "complete"
+            and document_kind in {"all", "nfse"}
+            and movement in {"all", "issued"}
+        )
+        if requires_nfse_month and (nfse_import is None or not bool(nfse_import["is_complete"])):
+            raise ValueError(
+                "Para gerar o mês completo de NFS-e emitidas, importe primeiro o ZIP/XML oficial do mês "
+                "exportado pelo Portal Nacional. Se desejar apenas o que já está arquivado, desmarque a "
+                "opção de cobertura completa."
+            )
+
+        fernet = get_fernet()
+        holder_document = digits(certificate["document"])
+        records: list[dict] = []
+        unreadable = 0
+
+        def record_from_row(row: sqlite3.Row, source: str) -> dict | None:
+            nonlocal unreadable
+            try:
+                result = json.loads(fernet.decrypt(row["result_encrypted"]).decode("utf-8"))
+                xml_data = fernet.decrypt(row["xml_encrypted"])
+            except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+                unreadable += 1
+                return None
+            issuer_document = digits((result.get("issuer") or {}).get("document", ""))
+            recipient_document = digits((result.get("recipient") or {}).get("document", ""))
+            direction = str(result.get("direction") or (row["direction"] if source == "distribution" else "") or "Relacionada")
+            if holder_document and issuer_document == holder_document:
+                direction = "Emitida"
+            elif holder_document and recipient_document == holder_document:
+                direction = "Recebida"
+            key = digits(result.get("accessKey") or row["access_key"] or "")
+            model = str(result.get("model") or (row["document_type"] if source == "distribution" else row["model"]) or "Documento fiscal")
+            if model == "Evento fiscal" and len(key) == 44:
+                model = document_model(key)[1]
+            elif len(key) == 50:
+                model = "NFS-e"
+            status = str(result.get("status") or row["status"] or "Documento localizado")
+            summary = result.get("summary") or {}
+            events = result.get("events") or []
+            event_date = next((str(item.get("date", "")) for item in events if item.get("date")), "")
+            issued_at = str(summary.get("issuedAt") or event_date or "")
+            decoded_xml = xml_data.decode("utf-8", errors="ignore").casefold()
+            cancellation = (
+                "cancel" in status.casefold()
+                or "cancel" in str(result.get("officialMessage", "")).casefold()
+                or "cancel" in str(row["schema_name"] if source == "distribution" else "").casefold()
+                or "cancel" in decoded_xml
+                or "110111" in decoded_xml
+            )
+            return {
+                "source": source, "row": row, "result": result, "xml": xml_data,
+                "key": key, "model": model, "status": status, "direction": direction,
+                "issuedAt": issued_at, "cancelled": cancellation,
+            }
+
+        for row in query_rows:
+            record = record_from_row(row, "query")
+            if record:
+                records.append(record)
+        for row in distributed_rows:
+            record = record_from_row(row, "distribution")
+            if record:
+                records.append(record)
+
+        def value_month(value: str) -> str:
+            return fiscal_month(value)
+
+        issued_reference: dict[str, dict] = {}
+        for record in records:
+            if record["key"] and not record["cancelled"] and not (record["result"].get("events") or []):
+                candidate_month = value_month(record["issuedAt"])
+                if candidate_month:
+                    issued_reference[record["key"]] = {"month": candidate_month, "direction": record["direction"]}
+
+        model_codes = {"NF-e": "nfe", "NFC-e": "nfce", "CT-e": "cte", "MDF-e": "mdfe", "NFS-e": "nfse"}
+        selected: list[dict] = []
+        skipped_missing_date = 0
+        for record in records:
+            inherited = issued_reference.get(record["key"], {})
+            effective_direction = inherited.get("direction") if record["cancelled"] else record["direction"]
+            effective_direction = effective_direction or record["direction"]
+            effective_month = inherited.get("month") if record["cancelled"] else value_month(record["issuedAt"])
+            effective_month = effective_month or value_month(record["issuedAt"])
+            if not effective_month:
+                skipped_missing_date += 1
+                continue
+            if effective_month != month:
+                continue
+            record_kind = model_codes.get(record["model"], "")
+            if document_kind != "all" and record_kind != document_kind:
+                continue
+            if movement == "issued" and effective_direction != "Emitida":
+                continue
+            if movement == "received" and effective_direction != "Recebida":
+                continue
+            normalized_status = record["status"].casefold()
+            authorized = any(token in normalized_status for token in ("autoriz", "encerrado", "documento localizado", "regular"))
+            if situation == "authorized" and (record["cancelled"] or not authorized):
+                continue
+            if situation == "cancelled" and not record["cancelled"]:
+                continue
+            if situation == "all" and not (record["cancelled"] or authorized):
+                continue
+            record["effectiveDirection"] = effective_direction
+            record["effectiveMonth"] = effective_month
+            selected.append(record)
+
+        if not selected:
+            raise ValueError(
+                "Nenhum XML foi encontrado no arquivo seguro para os filtros selecionados. "
+                "Sincronize as notas vinculadas ao certificado ou consulte a NFS-e pela chave e tente novamente."
+            )
+
+        archive = io.BytesIO()
+        hashes: set[str] = set()
+        counters = {"total": 0, "issued": 0, "received": 0, "related": 0, "authorized": 0, "cancelled": 0, "duplicates": 0}
+        source_bytes = 0
+        company_slug = re.sub(r"[^A-Za-z0-9]+", "-", str(certificate["company"] or "empresa")).strip("-")[:42] or "empresa"
+        root_folder = f"Gestao-Fiscal-Pro-{company_slug}-{month}"
+        manifest_documents: list[dict] = []
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=8) as zipped:
+            for record in selected:
+                xml_data = record["xml"]
+                digest = hashlib.sha256(xml_data).hexdigest()
+                if digest in hashes:
+                    counters["duplicates"] += 1
+                    continue
+                hashes.add(digest)
+                source_bytes += len(xml_data)
+                if len(hashes) > MAX_XML_BATCH_DOCUMENTS or source_bytes > MAX_XML_BATCH_SOURCE_BYTES:
+                    raise ValueError("O lote ultrapassou o limite seguro. Divida a exportação por tipo ou situação.")
+                direction = record["effectiveDirection"]
+                if record["cancelled"]:
+                    folder, status_slug = "canceladas", "cancelamento"
+                    counters["cancelled"] += 1
+                elif direction == "Emitida":
+                    folder, status_slug = "emitidas", "autorizada"
+                    counters["issued"] += 1
+                    counters["authorized"] += 1
+                elif direction == "Recebida":
+                    folder, status_slug = "recebidas", "autorizada"
+                    counters["received"] += 1
+                    counters["authorized"] += 1
+                else:
+                    folder, status_slug = "relacionadas", "autorizada"
+                    counters["related"] += 1
+                    counters["authorized"] += 1
+                if record["cancelled"] and direction == "Emitida":
+                    counters["issued"] += 1
+                elif record["cancelled"] and direction == "Recebida":
+                    counters["received"] += 1
+                model_slug = model_codes.get(record["model"], "dfe")
+                identifier = record["key"] or (f"NSU-{record['row']['nsu']}" if record["source"] == "distribution" else record["row"]["id"])
+                suffix = f"-NSU-{record['row']['nsu']}" if record["source"] == "distribution" else ""
+                filename = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{model_slug}-{identifier}-{status_slug}{suffix}.xml")[:220]
+                zipped.writestr(f"{root_folder}/{folder}/{filename}", xml_data)
+                counters["total"] += 1
+                manifest_documents.append({
+                    "model": record["model"], "movement": direction,
+                    "situation": "Cancelada" if record["cancelled"] else "Autorizada",
+                    "issuedAt": record["issuedAt"], "folder": folder, "filename": filename,
+                    "sha256": digest,
+                })
+            manifest = {
+                "schema": "gestao-fiscal-pro.xml-batch.v1",
+                "generatedAt": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+                "company": certificate["company"], "branch": certificate["branch"],
+                "month": month, "environment": environment,
+                "filters": {"documentKind": document_kind, "movement": movement, "situation": situation},
+                "counts": counters, "documents": manifest_documents,
+                "coverage": {
+                    "mode": completeness_mode,
+                    "nfseMonthlyPackageValidated": bool(nfse_import and nfse_import["is_complete"]),
+                    "sourceFilename": nfse_import["source_filename"] if nfse_import else "",
+                    "sourceDocuments": nfse_import["source_documents"] if nfse_import else 0,
+                    "importedAt": nfse_import["imported_at"] if nfse_import else "",
+                },
+                "officialSources": {
+                    "dfeDistribution": DISTRIBUTION_PORTAL,
+                    "nfseDocumentation": NFSE_DOCUMENTATION,
+                },
+                "notes": [
+                    "O lote contém somente XMLs reais já consultados ou sincronizados e guardados no arquivo seguro.",
+                    "O mês é determinado pela emissão/competência; eventos de cancelamento usam a data da nota original quando ela está disponível.",
+                    "A disponibilidade dos documentos depende das autorizações e regras dos serviços fiscais oficiais.",
+                    "Para NFS-e emitidas, a cobertura completa é confirmada pelo pacote mensal oficial importado pelo usuário.",
+                ],
+            }
+            zipped.writestr(
+                f"{root_folder}/manifesto.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+        archive_data = archive.getvalue()
+        if len(archive_data) > MAX_XML_BATCH_ZIP_BYTES:
+            raise ValueError("O arquivo ZIP ultrapassou o limite seguro. Divida a exportação por tipo ou situação.")
+        warnings = []
+        if unreadable:
+            warnings.append(f"{unreadable} arquivo(s) protegido(s) não puderam ser lidos.")
+        if skipped_missing_date:
+            warnings.append(f"{skipped_missing_date} XML(s) sem data de emissão/competência ficaram fora do lote mensal.")
+        if document_kind in {"all", "nfse"} and movement in {"all", "issued"}:
+            if nfse_import and nfse_import["is_complete"]:
+                warnings.append(f"Cobertura de NFS-e baseada no pacote oficial {nfse_import['source_filename']} importado em {nfse_import['imported_at']}.")
+            else:
+                warnings.append("Este arquivo contém somente as NFS-e já arquivadas; não há pacote mensal oficial validado para confirmar a cobertura completa.")
+        warnings.append("Para documentos estaduais novos, execute a sincronização DF-e antes de gerar outro lote.")
+        self.audit(user["email"], "monthly_xml_batch", f"{month} · {counters['total']} XML(s) · {certificate['company']}")
+        return {
+            "filename": f"lote-xml-{company_slug}-{month}.zip",
+            "dataBase64": base64.b64encode(archive_data).decode("ascii"),
+            "counts": counters, "warnings": warnings,
+            "month": month, "company": certificate["company"],
+            "coverage": manifest["coverage"],
+        }
+
+    def perform_distribution_sync(self, payload: dict, user: sqlite3.Row) -> dict:
+        certificate = self.certificate_row(str(payload.get("certificateId", "")))
+        if certificate is None:
+            raise ValueError("Certificado não encontrado ou removido.")
+        if certificate_status(certificate["valid_until"]) == "Vencido":
+            raise ValueError("O certificado selecionado está vencido.")
+        environment = str(payload.get("environment") or certificate["environment"] or "production")
+        if environment not in DISTRIBUTION_ENDPOINTS:
+            raise ValueError("Ambiente fiscal inválido.")
+        state_code = digits(payload.get("stateCode") or certificate["state_code"] or "")
+        if state_code not in UF_NAMES:
+            raise ValueError("Informe a UF do estabelecimento vinculada ao certificado.")
+        holder_document = digits(certificate["document"])
+        if len(holder_document) not in {11, 14}:
+            raise ValueError("O certificado não possui CPF/CNPJ identificável para a Distribuição DF-e.")
+        with connect() as database:
+            state = database.execute(
+                "SELECT last_nsu, max_nsu FROM distribution_state WHERE certificate_id = ? AND environment = ? AND state_code = ?",
+                (certificate["id"], environment, state_code),
+            ).fetchone()
+        last_nsu = state["last_nsu"] if state else "000000000000000"
+        pfx_data, password = self.certificate_credentials(certificate, str(payload.get("sessionPassword", "")))
+        official = soap_distribution(state_code, holder_document, environment, pfx_data, password, last_nsu)
+        added = 0
+        documents = []
+        for item in official["documents"]:
+            result, created = self.store_distributed_document(
+                certificate, user, environment, state_code, item["nsu"], item["schema"], item["xml"]
+            )
+            added += 1 if created else 0
+            documents.append({
+                "id": result["id"], "nsu": item["nsu"], "accessKey": result.get("accessKey", ""),
+                "model": result.get("model", ""), "direction": result.get("direction", ""),
+                "status": result.get("status", ""), "issuedAt": (result.get("summary") or {}).get("issuedAt", ""),
+            })
+        now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        with connect() as database:
+            database.execute(
+                """
+                INSERT INTO distribution_state(
+                  certificate_id, environment, state_code, last_nsu, max_nsu,
+                  official_code, motive, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(certificate_id, environment, state_code) DO UPDATE SET
+                  last_nsu = excluded.last_nsu, max_nsu = excluded.max_nsu,
+                  official_code = excluded.official_code, motive = excluded.motive,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    certificate["id"], environment, state_code, official["last_nsu"],
+                    official["max_nsu"], official["official_code"], official["motive"], now,
+                ),
+            )
+        self.audit(
+            user["email"], "dfe_distribution_sync",
+            f"{certificate['company']} · NSU {last_nsu}>{official['last_nsu']} · {added} novo(s) · {official['official_code']}",
+        )
+        return {
+            "ok": official["official_code"] in {"137", "138"},
+            "officialCode": official["official_code"], "message": official["motive"],
+            "lastNsu": official["last_nsu"], "maxNsu": official["max_nsu"],
+            "received": len(official["documents"]), "added": added,
+            "hasMore": int(official["last_nsu"] or 0) < int(official["max_nsu"] or 0),
+            "documents": documents, "sourceUrl": DISTRIBUTION_PORTAL,
+        }
+
+    def perform_fiscal_query(self, payload: dict, user: sqlite3.Row) -> dict:
+        access_key = digits(payload.get("accessKey", ""))
+        if not valid_access_key(access_key):
+            raise ValueError("Chave de acesso inválida. Informe 44 dígitos com dígito verificador correto.")
+        environment = str(payload.get("environment", "production"))
+        if environment not in {"production", "homologation"}:
+            raise ValueError("Ambiente fiscal inválido.")
+        certificate = self.certificate_row(str(payload.get("certificateId", "")))
+        if certificate is None:
+            raise ValueError("Certificado não encontrado ou removido.")
+        if certificate_status(certificate["valid_until"]) == "Vencido":
+            raise ValueError("O certificado selecionado está vencido.")
+        pfx_data, password = self.certificate_credentials(certificate, str(payload.get("sessionPassword", "")))
+        config = service_configuration(access_key, environment)
+        attachment_name = str(payload.get("attachmentName", ""))[:180]
+        attachment_data: bytes | None = None
+        xml_data: bytes | None = None
+        xml_details: dict = {}
+        attachment_value = str(payload.get("attachmentBase64", ""))
+        if attachment_value:
+            attachment_data = decode_base64_field(attachment_value, MAX_ATTACHMENT_BYTES, "Anexo")
+            if attachment_name.lower().endswith(".xml"):
+                xml_data = attachment_data
+                xml_details = parse_fiscal_xml(xml_data, access_key)
+            elif not attachment_name.lower().endswith(".pdf"):
+                raise ValueError("O anexo deve estar no formato XML ou PDF.")
+        try:
+            official = soap_query(access_key, environment, pfx_data, password)
+            status, risk_level = status_from_official(official["official_code"], official["motive"])
+            official_code = official["official_code"]
+            official_message = official["motive"]
+            protocol = official["protocol"]
+            events = official["events"]
+        except RuntimeError as error:
+            status, risk_level = "Erro crítico", "Erro crítico"
+            official_code, official_message, protocol, events = "COMMUNICATION_ERROR", str(error), "", []
+        analysis = list(xml_details.get("analysis", []))
+        analysis.insert(0, {
+            "level": risk_level, "title": "Retorno do serviço oficial" if official_code != "COMMUNICATION_ERROR" else "Comunicação não concluída",
+            "message": official_message,
+            "source": config["source"] + " — código " + official_code,
+        })
+        certificate_document = digits(certificate["document"])
+        issuer_document = access_key[6:20]
+        if len(certificate_document) == 14 and certificate_document != issuer_document:
+            analysis.append({"level": "Atenção", "title": "Certificado pertence a outro CNPJ", "message": "O certificado selecionado não coincide com o CNPJ emitente presente na chave. A consulta pode ser válida se o titular for parte autorizada.", "source": "Comparação interna entre certificado e chave de acesso"})
+        if attachment_data and attachment_name.lower().endswith(".pdf"):
+            analysis.append({"level": "Atenção", "title": "PDF recebido", "message": "O PDF foi aceito como apoio, mas somente o XML estruturado é usado para validar campos fiscais.", "source": "Validação interna do anexo"})
+        now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        model_code, model = document_model(access_key)
+        result = {
+            "id": uuid.uuid4().hex, "accessKey": access_key, "model": model, "modelCode": model_code,
+            "status": status, "riskLevel": risk_level, "officialCode": official_code,
+            "officialMessage": official_message, "protocol": protocol,
+            "environment": environment, "environmentLabel": "Produção" if environment == "production" else "Homologação",
+            "sourceName": config["source"], "sourceUrl": config["portal"], "serviceEndpoint": config["endpoint"],
+            "consultedAt": now, "consultedBy": user["email"], "company": certificate["company"],
+            "summary": xml_details.get("summary", {"number": access_key[25:34], "series": access_key[22:25], "issuedAt": "", "nature": ""}),
+            "issuer": xml_details.get("issuer", {"name": "", "document": issuer_document, "stateRegistration": "", "address": "", "city": ""}),
+            "recipient": xml_details.get("recipient", {}), "items": xml_details.get("items", []),
+            "taxes": xml_details.get("taxes", {}), "billing": xml_details.get("billing", {}),
+            "events": events, "analysis": analysis, "hasXml": bool(xml_data),
+        }
+        self.store_fiscal_result(result, certificate, user, xml_data, attachment_name if xml_data else "")
+        self.audit(user["email"], "sefaz_query", f"{model} {access_key[-8:]} · {status} · {official_code}")
+        return self.redact_result(result, user)
+
+    def perform_nfse_query(self, payload: dict, user: sqlite3.Row) -> dict:
+        access_key = digits(payload.get("accessKey", ""))
+        if not valid_nfse_key(access_key):
+            raise ValueError("Chave da NFS-e inválida. Informe os 50 dígitos do padrão nacional.")
+        environment = str(payload.get("environment", "production"))
+        if environment not in NFSE_ENDPOINTS:
+            raise ValueError("Ambiente fiscal inválido.")
+        certificate = self.certificate_row(str(payload.get("certificateId", "")))
+        if certificate is None:
+            raise ValueError("Certificado não encontrado ou removido.")
+        if certificate_status(certificate["valid_until"]) == "Vencido":
+            raise ValueError("O certificado selecionado está vencido.")
+        pfx_data, password = self.certificate_credentials(certificate, str(payload.get("sessionPassword", "")))
+        attachment_name = str(payload.get("attachmentName", ""))[:180]
+        attachment_value = str(payload.get("attachmentBase64", ""))
+        attachment_data: bytes | None = None
+        xml_data: bytes | None = None
+        xml_details: dict = {}
+        if attachment_value:
+            attachment_data = decode_base64_field(attachment_value, MAX_ATTACHMENT_BYTES, "Anexo")
+            if attachment_name.lower().endswith(".xml"):
+                xml_data = attachment_data
+                xml_details = parse_nfse_xml(xml_data, access_key)
+            elif not attachment_name.lower().endswith(".pdf"):
+                raise ValueError("O anexo deve estar no formato XML ou PDF.")
+
+        endpoint = NFSE_ENDPOINTS[environment].format(access_key=access_key)
+        official_code = ""
+        official_message = ""
+        status, risk_level = "Pendente", "Atenção"
+        try:
+            official = nfse_api_query(access_key, environment, pfx_data, password)
+            xml_data = official["xml"]
+            xml_details = parse_nfse_xml(xml_data, access_key)
+            endpoint = official["endpoint"]
+            official_code = official["http_code"]
+            official_message = "NFS-e localizada e autenticada pela SEFIN Nacional."
+            status, risk_level = "Autorizada", "Regular"
+        except ValueError:
+            raise
+        except RuntimeError as error:
+            official_code = "COMMUNICATION_ERROR"
+            official_message = str(error)
+            status, risk_level = "Erro crítico", "Erro crítico"
+
+        analysis = list(xml_details.get("analysis", []))
+        analysis.insert(0, {
+            "level": risk_level,
+            "title": "Retorno da SEFIN Nacional" if official_code != "COMMUNICATION_ERROR" else "Comunicação não concluída",
+            "message": official_message,
+            "source": "API oficial da SEFIN Nacional — código " + (official_code or "não informado"),
+        })
+        if attachment_data and attachment_name.lower().endswith(".pdf"):
+            analysis.append({"level": "Atenção", "title": "PDF recebido", "message": "O PDF foi aceito como apoio, mas somente o XML oficial é usado para validar os campos da NFS-e.", "source": "Validação interna do anexo"})
+        if official_code == "COMMUNICATION_ERROR" and xml_data:
+            analysis.append({"level": "Atenção", "title": "XML local analisado", "message": "Os dados abaixo foram extraídos do XML anexado; a situação oficial não pôde ser confirmada nesta tentativa.", "source": "XML fornecido pelo usuário"})
+
+        now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        issuer = xml_details.get("issuer", {})
+        result = {
+            "id": uuid.uuid4().hex, "accessKey": access_key, "model": "NFS-e", "modelCode": "NFSE",
+            "status": status, "riskLevel": risk_level, "officialCode": official_code,
+            "officialMessage": official_message, "protocol": xml_details.get("protocol", ""),
+            "environment": environment, "environmentLabel": "Produção" if environment == "production" else "Homologação",
+            "sourceName": "SEFIN Nacional — NFS-e padrão nacional", "sourceUrl": OFFICIAL_PORTALS["nfse"],
+            "serviceEndpoint": endpoint, "documentationUrl": NFSE_DOCUMENTATION,
+            "consultedAt": now, "consultedBy": user["email"], "company": certificate["company"],
+            "summary": xml_details.get("summary", {"number": "", "series": "", "issuedAt": "", "nature": "Prestação de serviço"}),
+            "issuer": issuer, "recipient": xml_details.get("recipient", {}),
+            "items": xml_details.get("items", []), "taxes": xml_details.get("taxes", {}),
+            "billing": xml_details.get("billing", {}), "events": [], "analysis": analysis,
+            "hasXml": bool(xml_data), "documentStandard": "Sistema Nacional NFS-e",
+            "nationalPanel": xml_details.get("nationalPanel", {}),
+        }
+        xml_filename = f"NFS-e-{access_key}.xml" if xml_data else ""
+        self.store_fiscal_result(result, certificate, user, xml_data, xml_filename)
+        self.audit(user["email"], "nfse_query", f"NFS-e {access_key[-8:]} · {status} · {official_code}")
+        return self.redact_result(result, user)
+
+    def do_GET(self) -> None:
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        private_files = {
+            "/server.py", "/requirements.txt", "/README.md",
+            "/iniciar-site.cmd", "/ABRIR-MODO-SEGURO.cmd",
+        }
+        if (
+            path == "/data" or path.startswith("/data/") or path in private_files
+            or any(part.startswith(".") for part in Path(path).parts if part not in {"/", ""})
+        ):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if path in PROTECTED_ROUTE_MODULES:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, PROTECTED_ROUTE_MODULES[path]):
+                return
+            self.path = "/index.html"
+            super().do_GET()
+            return
+        if path == "/api/health":
+            self.send_json({"ok": True, "database": "sqlite", "version": "1.5", "dfeDistribution": True, "nfseNational": True, "nfseMonthlyPackage": True, "cnpjOfficialApi": bool(os.environ.get("SERPRO_CNPJ_CONSUMER_KEY") and os.environ.get("SERPRO_CNPJ_CONSUMER_SECRET"))})
+            return
+        if path == "/api/public/plans":
+            with connect() as database:
+                rows = database.execute(
+                    """
+                    SELECT id, name, description, monthly_value, annual_value, trial_days
+                    FROM access_plans
+                    WHERE status = 'Ativo' AND id IN ('erp-start', 'erp-profissional', 'erp-business', 'erp-enterprise')
+                    ORDER BY CASE id
+                      WHEN 'erp-start' THEN 0
+                      WHEN 'erp-profissional' THEN 1
+                      WHEN 'erp-business' THEN 2
+                      ELSE 3
+                    END
+                    """
+                ).fetchall()
+            self.send_json({
+                "plans": [
+                    {
+                        "id": row["id"], "name": row["name"], "description": row["description"] or "",
+                        "monthlyValue": row["monthly_value"], "annualValue": row["annual_value"],
+                        "trialDays": row["trial_days"],
+                    }
+                    for row in rows
+                ]
+            })
+            return
+        if path == "/api/access":
+            user = self.require_user()
+            if user is None:
+                return
+            modules = sorted(self.modules_for_user(user))
+            self.send_json({
+                "user": {
+                    "id": user["id"], "email": user["email"], "name": user["name"],
+                    "role": user["role"], "status": user["status"], "planId": user["plan_id"],
+                    "monitoringStart": user["monitoring_start"], "monitoringEnd": user["monitoring_end"],
+                    "modules": modules,
+                },
+                "modules": modules,
+            })
+            return
+        if path == "/api/admin/access-management":
+            user = self.require_admin()
+            if user is None:
+                return
+            self.send_json(self.admin_access_payload())
+            return
+        if path.startswith("/api/admin/"):
+            user = self.require_admin()
+            if user is None:
+                return
+            self.send_json({"error": "Rota administrativa não encontrada."}, HTTPStatus.NOT_FOUND)
+            return
+        if path.startswith("/api/public/cnpj-profile/"):
+            cnpj = clean_cnpj(path.removeprefix("/api/public/cnpj-profile/"))
+            if not re.fullmatch(r"[A-Z0-9]{12}[0-9]{2}", cnpj):
+                self.send_json({"error": "CNPJ inválido. Informe 14 posições alfanuméricas."}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self.send_json({"profile": fetch_cnpj_profile(cnpj)})
+            except RuntimeError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
+            return
+        if path.startswith("/api/public/cnpj-ws/"):
+            cnpj = path.removeprefix("/api/public/cnpj-ws/").strip().upper()
+            if not re.fullmatch(r"[A-Z0-9]{12}[0-9]{2}", cnpj):
+                self.send_json(
+                    {"error": "CNPJ inválido. Informe 14 posições alfanuméricas."},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                request = Request(
+                    f"https://publica.cnpj.ws/cnpj/{quote(cnpj, safe='')}",
+                    headers={"Accept": "application/json", "User-Agent": "ERPGestaoFiscal/1.0"},
+                )
+                with urlopen(request, timeout=12) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.send_json(payload)
+            except HTTPError as error:
+                self.send_json(
+                    {"error": "A fonte pública de Inscrição Estadual não respondeu."},
+                    HTTPStatus.TOO_MANY_REQUESTS if error.code == 429 else HTTPStatus.BAD_GATEWAY,
+                )
+            except (URLError, TimeoutError, json.JSONDecodeError):
+                self.send_json(
+                    {"error": "A fonte pública de Inscrição Estadual não respondeu."},
+                    HTTPStatus.BAD_GATEWAY,
+                )
+            return
+        if path.startswith("/api/public/cnpj/"):
+            cnpj = path.removeprefix("/api/public/cnpj/").strip().upper()
+            if not re.fullmatch(r"[A-Z0-9]{12}[0-9]{2}", cnpj):
+                self.send_json(
+                    {"error": "CNPJ inválido. Informe 14 posições alfanuméricas."},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            providers = (
+                f"https://brasilapi.com.br/api/cnpj/v1/{quote(cnpj, safe='')}",
+                f"https://open.cnpja.com/office/{quote(cnpj, safe='')}",
+            )
+            errors = []
+            for provider in providers:
+                try:
+                    request = Request(
+                        provider,
+                        headers={"Accept": "application/json", "User-Agent": "ERPGestaoFiscal/1.0"},
+                    )
+                    with urlopen(request, timeout=12) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                    self.send_json(payload)
+                    return
+                except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
+                    errors.append(str(error))
+            self.send_json(
+                {"error": "As fontes públicas de CNPJ não responderam.", "detail": errors[:2]},
+                HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        if path == "/api/profile":
+            user = self.require_user()
+            if user is None:
+                return
+            with connect() as database:
+                profile = database.execute(
+                    "SELECT email, name, role, status, plan_id, active, billing_cycle, subscription_value, "
+                    "monitoring_start, monitoring_end, last_login_at, previous_login_at, "
+                    "profile_photo_encrypted, profile_photo_mime, profile_photo_updated_at "
+                    "FROM users WHERE email = ?",
+                    (user["email"],),
+                ).fetchone()
+            if profile is None:
+                self.send_json({"error": "Perfil não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            photo_data_url = ""
+            if profile["profile_photo_encrypted"]:
+                try:
+                    photo_bytes = get_fernet().decrypt(profile["profile_photo_encrypted"])
+                    photo_data_url = (
+                        f"data:{profile['profile_photo_mime'] or 'image/jpeg'};base64,"
+                        + base64.b64encode(photo_bytes).decode("ascii")
+                    )
+                except (InvalidToken, RuntimeError):
+                    photo_data_url = ""
+            today = dt.datetime.now().astimezone().date()
+            days_remaining = None
+            subscription_status = "Sem prazo"
+            if profile["monitoring_end"]:
+                try:
+                    end_date = dt.date.fromisoformat(profile["monitoring_end"][:10])
+                    days_remaining = max(0, (end_date - today).days)
+                    if not profile["active"] or end_date < today:
+                        subscription_status = "Encerrada"
+                    elif end_date == today:
+                        subscription_status = "Expira hoje"
+                    elif days_remaining <= 30:
+                        subscription_status = "Vence em breve"
+                    else:
+                        subscription_status = "Ativa"
+                except ValueError:
+                    subscription_status = "Prazo inválido"
+            self.send_json({
+                "user": {
+                    "email": profile["email"], "name": profile["name"],
+                    "role": profile["role"], "active": bool(profile["active"]),
+                    "status": profile["status"], "planId": profile["plan_id"],
+                    "modules": sorted(self.modules_for_user(user)),
+                    "billingCycle": profile["billing_cycle"],
+                    "subscriptionValue": profile["subscription_value"],
+                    "monitoringStart": profile["monitoring_start"],
+                    "monitoringEnd": profile["monitoring_end"],
+                    "daysRemaining": days_remaining,
+                    "subscriptionStatus": subscription_status,
+                    "lastLoginAt": profile["previous_login_at"],
+                    "currentLoginAt": profile["last_login_at"],
+                    "profilePhotoDataUrl": photo_data_url,
+                    "profilePhotoUpdatedAt": profile["profile_photo_updated_at"],
+                }
+            })
+            return
+        if path == "/api/sefaz/bootstrap":
+            user = self.require_user()
+            if user is None:
+                return
+            permissions = self.permissions_for(user)
+            params = parse_qs(parsed_url.query)
+            where, values = ["1 = 1"], []
+            if user["role"] != "Administrador":
+                where.append("consulted_by = ?")
+                values.append(user["email"])
+            filters = {
+                "company": ("company LIKE ?", lambda value: f"%{value[:100]}%"),
+                "model": ("model = ?", lambda value: value[:20]),
+                "status": ("status = ?", lambda value: value[:40]),
+                "from": ("date(consulted_at) >= date(?)", lambda value: value[:10]),
+                "to": ("date(consulted_at) <= date(?)", lambda value: value[:10]),
+            }
+            for name, (condition, normalizer) in filters.items():
+                value = str(params.get(name, [""])[0]).strip()
+                if value:
+                    where.append(condition)
+                    values.append(normalizer(value))
+            condition_sql = " AND ".join(where)
+            with connect() as database:
+                certificates = database.execute(
+                    "SELECT * FROM fiscal_certificates WHERE active = 1 ORDER BY company, branch, valid_until"
+                ).fetchall()
+                history_rows = []
+                distributed_rows = []
+                if "view_history" in permissions:
+                    history_rows = database.execute(
+                        f"SELECT id, access_key, model, company, environment, status, risk_level, official_code, consulted_by, consulted_at FROM fiscal_queries WHERE {condition_sql} ORDER BY consulted_at DESC LIMIT 250",
+                        values,
+                    ).fetchall()
+                    distributed_user_filter = "WHERE d.synced_by = ?" if user["role"] != "Administrador" else ""
+                    distributed_values = [user["email"]] if user["role"] != "Administrador" else []
+                    distributed_rows = database.execute(
+                        f"""
+                        SELECT d.id, d.nsu, d.schema_name, d.document_type, d.access_key,
+                               d.direction, d.status, d.environment, d.received_at,
+                               c.company, c.branch, c.document, c.state_code
+                        FROM distributed_documents d
+                        JOIN fiscal_certificates c ON c.id = d.certificate_id
+                        {distributed_user_filter}
+                        ORDER BY d.received_at DESC, d.nsu DESC LIMIT 250
+                        """,
+                        distributed_values,
+                    ).fetchall()
+                distribution_rows = database.execute(
+                    """
+                    SELECT s.certificate_id, s.environment, s.state_code, s.last_nsu,
+                           s.max_nsu, s.official_code, s.motive, s.updated_at, c.company
+                    FROM distribution_state s
+                    JOIN fiscal_certificates c ON c.id = s.certificate_id
+                    ORDER BY s.updated_at DESC
+                    """
+                ).fetchall()
+                import_user_filter = "WHERE imported_by = ?" if user["role"] != "Administrador" else ""
+                import_values = [user["email"]] if user["role"] != "Administrador" else []
+                nfse_import_rows = database.execute(
+                    f"""
+                    SELECT id, certificate_id, environment, month, source_filename,
+                           source_documents, imported_documents, duplicate_documents,
+                           cancellation_events, ignored_documents, error_count, is_complete,
+                           imported_by, imported_at
+                    FROM nfse_monthly_imports
+                    {import_user_filter}
+                    ORDER BY imported_at DESC LIMIT 60
+                    """,
+                    import_values,
+                ).fetchall()
+                stats_where = "consulted_by = ?" if user["role"] != "Administrador" else "1 = 1"
+                stats_values = [user["email"]] if user["role"] != "Administrador" else []
+                stats_rows = database.execute(
+                    f"SELECT status, risk_level, COUNT(*) AS amount FROM fiscal_queries WHERE {stats_where} GROUP BY status, risk_level",
+                    stats_values,
+                ).fetchall()
+                users, permission_matrix = [], []
+                if user["role"] == "Administrador":
+                    users = [dict(row) for row in database.execute("SELECT email, name, role FROM users WHERE active = 1 ORDER BY name").fetchall()]
+                    permission_rows = database.execute("SELECT email, permission FROM user_permissions WHERE allowed = 1 ORDER BY email, permission").fetchall()
+                    grouped: dict[str, list[str]] = {}
+                    for row in permission_rows:
+                        grouped.setdefault(row["email"], []).append(row["permission"])
+                    permission_matrix = [{"email": email, "permissions": assigned} for email, assigned in grouped.items()]
+            stats = {"total": 0, "authorized": 0, "cancelled": 0, "pending": 0, "divergent": 0, "located": len(distributed_rows)}
+            for row in stats_rows:
+                amount = row["amount"]
+                stats["total"] += amount
+                if row["status"] in {"Autorizada", "Encerrado"}:
+                    stats["authorized"] += amount
+                elif row["status"] == "Cancelada":
+                    stats["cancelled"] += amount
+                elif row["risk_level"] in {"Divergência", "Erro crítico"}:
+                    stats["divergent"] += amount
+                else:
+                    stats["pending"] += amount
+            can_sensitive = "view_sensitive" in permissions
+            history = []
+            for row in history_rows:
+                key = row["access_key"]
+                history.append({
+                    "id": row["id"], "accessKey": key if can_sensitive else "",
+                    "keyMasked": key if can_sensitive else key[:6] + "…" + key[-8:],
+                    "model": row["model"], "company": row["company"], "status": row["status"],
+                    "riskLevel": row["risk_level"], "officialCode": row["official_code"],
+                    "environment": row["environment"], "environmentLabel": "Produção" if row["environment"] == "production" else "Homologação",
+                    "consultedBy": row["consulted_by"], "consultedAt": row["consulted_at"],
+                })
+            certificate_summaries = [self.certificate_summary(row) for row in certificates]
+            if not can_sensitive:
+                for summary in certificate_summaries:
+                    document = digits(summary.get("document", ""))
+                    if document:
+                        summary["document"] = "*" * max(0, len(document) - 4) + document[-4:]
+                    summary["holder"] = "Titular protegido"
+            distributed = []
+            for row in distributed_rows:
+                key = row["access_key"] or ""
+                distributed.append({
+                    "id": row["id"], "nsu": row["nsu"], "schemaName": row["schema_name"],
+                    "model": row["document_type"], "accessKey": key if can_sensitive else "",
+                    "keyMasked": key if can_sensitive else (key[:6] + "…" + key[-8:] if key else "Evento sem chave"),
+                    "direction": row["direction"], "status": row["status"],
+                    "environment": row["environment"],
+                    "environmentLabel": "Produção" if row["environment"] == "production" else "Homologação",
+                    "receivedAt": row["received_at"], "company": row["company"],
+                    "branch": row["branch"], "state": UF_NAMES.get(row["state_code"] or "", ""),
+                })
+            distribution_states = [{
+                "certificateId": row["certificate_id"], "environment": row["environment"],
+                "stateCode": row["state_code"], "state": UF_NAMES.get(row["state_code"] or "", ""),
+                "lastNsu": row["last_nsu"], "maxNsu": row["max_nsu"],
+                "officialCode": row["official_code"], "message": row["motive"],
+                "updatedAt": row["updated_at"], "company": row["company"],
+            } for row in distribution_rows]
+            nfse_monthly_imports = [{
+                "id": row["id"], "certificateId": row["certificate_id"],
+                "environment": row["environment"], "month": row["month"],
+                "sourceFilename": row["source_filename"], "sourceDocuments": row["source_documents"],
+                "importedDocuments": row["imported_documents"], "duplicates": row["duplicate_documents"],
+                "cancellations": row["cancellation_events"], "ignored": row["ignored_documents"],
+                "errorCount": row["error_count"], "isComplete": bool(row["is_complete"]),
+                "importedBy": row["imported_by"], "importedAt": row["imported_at"],
+            } for row in nfse_import_rows]
+            self.send_json({
+                "permissions": sorted(permissions), "certificates": certificate_summaries,
+                "history": history, "distributedDocuments": distributed,
+                "distributionStates": distribution_states, "stats": stats, "portals": OFFICIAL_PORTALS,
+                "nfseMonthlyImports": nfse_monthly_imports,
+                "cryptoAvailable": CRYPTO_AVAILABLE, "users": users, "permissionMatrix": permission_matrix,
+            })
+            return
+        history_match = re.fullmatch(r"/api/sefaz/history/([a-f0-9]{32})(/xml)?", path)
+        if history_match:
+            user = self.require_user()
+            if user is None:
+                return
+            required = "download_xml" if history_match.group(2) else "view_history"
+            if not self.require_permission(user, required):
+                return
+            with connect() as database:
+                row = database.execute("SELECT * FROM fiscal_queries WHERE id = ?", (history_match.group(1),)).fetchone()
+            if row is None or (user["role"] != "Administrador" and row["consulted_by"] != user["email"]):
+                self.send_json({"error": "Consulta não encontrada."}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                fernet = get_fernet()
+                if history_match.group(2):
+                    if not row["xml_encrypted"]:
+                        raise ValueError("O XML não está disponível para esta consulta.")
+                    xml_data = fernet.decrypt(row["xml_encrypted"])
+                    self.audit(user["email"], "xml_download", f"consulta {row['id']}")
+                    self.send_json({"filename": row["xml_filename"] or f"{row['access_key']}.xml", "dataBase64": base64.b64encode(xml_data).decode("ascii")})
+                else:
+                    result = json.loads(fernet.decrypt(row["result_encrypted"]).decode("utf-8"))
+                    if result.get("model") == "NFS-e" and row["xml_encrypted"] and not result.get("nationalPanel"):
+                        xml_details = parse_nfse_xml(fernet.decrypt(row["xml_encrypted"]), row["access_key"])
+                        result["nationalPanel"] = xml_details.get("nationalPanel", {})
+                        result["summary"] = xml_details.get("summary", result.get("summary", {}))
+                        result["issuer"] = xml_details.get("issuer", result.get("issuer", {}))
+                        result["recipient"] = xml_details.get("recipient", result.get("recipient", {}))
+                        result["items"] = xml_details.get("items", result.get("items", []))
+                        result["taxes"] = xml_details.get("taxes", result.get("taxes", {}))
+                        result["billing"] = xml_details.get("billing", result.get("billing", {}))
+                    self.send_json(self.redact_result(result, user))
+            except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                self.send_json({"error": str(error) or "Conteúdo protegido indisponível."}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+        distributed_match = re.fullmatch(r"/api/sefaz/distribution/documents/([a-f0-9]{32})(/xml)?", path)
+        if distributed_match:
+            user = self.require_user()
+            if user is None:
+                return
+            required = "download_xml" if distributed_match.group(2) else "view_history"
+            if not self.require_permission(user, required):
+                return
+            with connect() as database:
+                row = database.execute(
+                    "SELECT * FROM distributed_documents WHERE id = ?",
+                    (distributed_match.group(1),),
+                ).fetchone()
+            if row is None:
+                self.send_json({"error": "Documento distribuído não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                fernet = get_fernet()
+                if distributed_match.group(2):
+                    xml_data = fernet.decrypt(row["xml_encrypted"])
+                    filename = (row["access_key"] or f"NSU-{row['nsu']}") + ".xml"
+                    self.audit(user["email"], "distributed_xml_download", f"NSU {row['nsu']}")
+                    self.send_json({"filename": filename, "dataBase64": base64.b64encode(xml_data).decode("ascii")})
+                else:
+                    result = json.loads(fernet.decrypt(row["result_encrypted"]).decode("utf-8"))
+                    self.send_json(self.redact_result(result, user))
+            except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError) as error:
+                self.send_json({"error": "Conteúdo protegido indisponível."}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+        if path == "/api/state":
+            user = self.require_user()
+            if user is None:
+                return
+            with connect() as database:
+                row = database.execute(
+                    "SELECT payload, updated_at, updated_by FROM app_state WHERE id = 1"
+                ).fetchone()
+            if row is None:
+                self.send_json({"data": None, "updatedAt": None})
+            else:
+                self.send_json(
+                    {
+                        "data": json.loads(row["payload"]),
+                        "updatedAt": row["updated_at"],
+                        "updatedBy": row["updated_by"],
+                    }
+                )
+            return
+        if path.startswith("/api/"):
+            self.send_json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
+            return
+        super().do_GET()
+
+    def do_POST(self) -> None:
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        try:
+            payload = self.read_json() if path != "/api/logout" else {}
+        except ValueError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/password-reset/request":
+            try:
+                reset = self.request_password_reset(payload)
+                self.send_json({"ok": True, "reset": reset})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/password-reset/confirm":
+            try:
+                reset = self.confirm_password_reset(payload)
+                self.send_json({"ok": True, "message": "Senha alterada com sucesso.", "user": reset})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/register":
+            try:
+                registered_user = self.register_public_user(payload)
+                self.send_json(
+                    {
+                        "ok": True,
+                        "message": "Conta criada com sucesso.",
+                        "user": registered_user,
+                    },
+                    HTTPStatus.CREATED,
+                )
+            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/admin/users":
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            try:
+                user_id = self.save_managed_user(payload, administrator)
+                self.send_json({"ok": True, "id": user_id, "data": self.admin_access_payload()}, HTTPStatus.CREATED)
+            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        user_action = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})/action", path)
+        if user_action:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            action = str(payload.get("action", "")).strip()
+            user_id = user_action.group(1)
+            try:
+                with connect() as database:
+                    target = database.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+                    if target is None:
+                        raise ValueError("Usuário não encontrado.")
+                    if target["email"] == administrator["email"] and action in {"inactivate", "block"}:
+                        raise ValueError("O administrador da sessão não pode bloquear ou inativar o próprio acesso.")
+                    previous = {"status": target["status"], "active": bool(target["active"])}
+                    labels = {
+                        "activate": ("Ativo", 1, "Administrador ativou usuário"),
+                        "inactivate": ("Inativo", 0, "Administrador inativou usuário"),
+                        "block": ("Bloqueado", 1, "Administrador bloqueou usuário"),
+                        "unblock": ("Ativo", 1, "Administrador desbloqueou usuário"),
+                    }
+                    if action == "reset_password":
+                        new_password = str(payload.get("password", ""))
+                        if len(new_password) < 8:
+                            raise ValueError("A nova senha deve possuir pelo menos 8 caracteres.")
+                        salt = secrets.token_hex(16)
+                        database.execute(
+                            "UPDATE users SET salt = ?, password_hash = ?, login_attempts = 0, updated_at = ?, updated_by = ? WHERE id = ?",
+                            (salt, password_hash(new_password, salt), local_now(), administrator["email"], user_id),
+                        )
+                        database.execute("DELETE FROM sessions WHERE email = ?", (target["email"],))
+                        write_access_audit(database, administrator["email"], target["email"], "Administrador redefiniu senha", "Senha anterior protegida", "Nova senha protegida por hash", self.client_ip())
+                    elif action in labels:
+                        status, active, label = labels[action]
+                        database.execute(
+                            "UPDATE users SET status = ?, active = ?, login_attempts = 0, blocked_at = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                            (status, active, local_now() if status == "Bloqueado" else None, local_now(), administrator["email"], user_id),
+                        )
+                        if action in {"inactivate", "block"}:
+                            database.execute("DELETE FROM sessions WHERE email = ?", (target["email"],))
+                        write_access_audit(database, administrator["email"], target["email"], label, previous, {"status": status, "active": bool(active)}, self.client_ip())
+                    else:
+                        raise ValueError("Ação administrativa inválida.")
+                self.send_json({"ok": True, "data": self.admin_access_payload()})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        if path == "/api/admin/plans":
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            try:
+                plan_id = self.save_access_plan(payload, administrator)
+                self.send_json({"ok": True, "id": plan_id, "data": self.admin_access_payload()}, HTTPStatus.CREATED)
+            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/login":
+            login_identifier = str(payload.get("email", "")).strip().lower()
+            password = str(payload.get("password", ""))
+            with connect() as database:
+                refresh_expired_subscriptions(database)
+                user = database.execute(
+                    "SELECT id, email, name, role, status, active, plan_id, salt, password_hash, billing_cycle, "
+                    "subscription_value, monitoring_start, monitoring_end, last_login_at, login_attempts "
+                    "FROM users "
+                    "WHERE lower(email) = ? OR lower(login) = ?",
+                    (login_identifier, login_identifier),
+                ).fetchone()
+                valid = user and hmac.compare_digest(
+                    password_hash(password, user["salt"]), user["password_hash"]
+                )
+                if not valid:
+                    if user:
+                        attempts = int(user["login_attempts"] or 0) + 1
+                        if attempts >= 5 and user["role"] != "Administrador":
+                            database.execute(
+                                "UPDATE users SET login_attempts = ?, status = 'Bloqueado', blocked_at = ?, updated_at = ? WHERE email = ?",
+                                (attempts, local_now(), local_now(), user["email"]),
+                            )
+                            write_access_audit(database, "Sistema", user["email"], "Usuário bloqueado após tentativas de login", attempts - 1, attempts, self.client_ip())
+                        else:
+                            database.execute("UPDATE users SET login_attempts = ? WHERE email = ?", (attempts, user["email"]))
+                    self.send_json(
+                        {"error": "E-mail ou senha inválidos."}, HTTPStatus.UNAUTHORIZED
+                    )
+                    return
+                if not user["active"] or user["status"] in {"Inativo", "Bloqueado", "Aguardando ativação"}:
+                    self.send_json({"error": "Acesso indisponível. Consulte o administrador responsável."}, HTTPStatus.FORBIDDEN)
+                    return
+                email = user["email"]
+                token = secrets.token_urlsafe(32)
+                now = int(time.time())
+                current_login_at = local_now()
+                previous_login_at = user["last_login_at"]
+                database.execute(
+                    "UPDATE users SET previous_login_at = ?, last_login_at = ?, last_login_ip = ?, login_attempts = 0 WHERE email = ?",
+                    (previous_login_at, current_login_at, self.client_ip(), email),
+                )
+                database.execute(
+                    "INSERT INTO sessions(token, email, created_at, expires_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (token, email, now, now + SESSION_SECONDS),
+                )
+                modules = sorted(modules_for_email(database, email, user["role"], user["status"]))
+                write_access_audit(database, email, email, "Login realizado", "", current_login_at, self.client_ip())
+            self.audit(email, "login")
+            self.send_json(
+                {
+                    "token": token,
+                    "user": {
+                        "email": user["email"],
+                        "id": user["id"],
+                        "name": user["name"],
+                        "role": user["role"],
+                        "status": user["status"],
+                        "planId": user["plan_id"],
+                        "modules": modules,
+                        "active": True,
+                        "billingCycle": user["billing_cycle"],
+                        "subscriptionValue": user["subscription_value"],
+                        "monitoringStart": user["monitoring_start"],
+                        "monitoringEnd": user["monitoring_end"],
+                        "lastLoginAt": previous_login_at,
+                        "currentLoginAt": current_login_at,
+                    },
+                }
+            )
+            return
+
+        if path == "/api/profile/photo":
+            user = self.require_user()
+            if user is None:
+                return
+            try:
+                photo_data = decode_base64_field(
+                    payload.get("dataBase64", ""), MAX_PROFILE_PHOTO_BYTES, "Foto do perfil"
+                )
+                if photo_data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    mime_type = "image/png"
+                elif photo_data.startswith(b"\xff\xd8\xff"):
+                    mime_type = "image/jpeg"
+                elif len(photo_data) >= 12 and photo_data[:4] == b"RIFF" and photo_data[8:12] == b"WEBP":
+                    mime_type = "image/webp"
+                else:
+                    raise ValueError("Use uma foto válida nos formatos JPG, PNG ou WebP.")
+                updated_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+                encrypted_photo = get_fernet().encrypt(photo_data)
+                with connect() as database:
+                    database.execute(
+                        "UPDATE users SET profile_photo_encrypted = ?, profile_photo_mime = ?, "
+                        "profile_photo_updated_at = ? WHERE email = ?",
+                        (encrypted_photo, mime_type, updated_at, user["email"]),
+                    )
+                self.audit(user["email"], "profile_photo_updated", mime_type)
+                self.send_json({
+                    "ok": True,
+                    "profilePhotoDataUrl": f"data:{mime_type};base64," + base64.b64encode(photo_data).decode("ascii"),
+                    "profilePhotoUpdatedAt": updated_at,
+                })
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/logout":
+            user = self.require_user()
+            if user is None:
+                return
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            with connect() as database:
+                database.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            for password_key in [item for item in SESSION_CERT_PASSWORDS if item[0] == token]:
+                SESSION_CERT_PASSWORDS.pop(password_key, None)
+            self.audit(user["email"], "logout")
+            self.send_json({"ok": True})
+            return
+
+        if path == "/api/sefaz/certificates":
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "manage_certificates"):
+                return
+            try:
+                filename = str(payload.get("filename", ""))[:180]
+                if not re.search(r"\.(pfx|p12)$", filename, re.IGNORECASE):
+                    raise ValueError("Envie um certificado A1 no formato .pfx ou .p12.")
+                pfx_data = decode_base64_field(payload.get("dataBase64", ""), MAX_CERTIFICATE_BYTES, "Certificado")
+                password = str(payload.get("password", ""))
+                company = str(payload.get("company", "")).strip()[:160]
+                branch = str(payload.get("branch", "")).strip()[:100] or "Matriz"
+                expected_document = digits(payload.get("document", ""))
+                environment = str(payload.get("environment", "production"))
+                state_code = digits(payload.get("stateCode", ""))
+                save_password = bool(payload.get("savePassword"))
+                if not company:
+                    raise ValueError("Informe a empresa vinculada ao certificado.")
+                if environment not in {"production", "homologation"}:
+                    raise ValueError("Ambiente fiscal inválido.")
+                if state_code not in UF_NAMES:
+                    raise ValueError("Selecione a UF do estabelecimento.")
+                metadata = certificate_metadata(pfx_data, password)
+                detected_document = metadata["document"]
+                if expected_document and detected_document and expected_document != detected_document:
+                    raise ValueError("O CPF/CNPJ informado não coincide com o titular identificado no certificado.")
+                document = detected_document or expected_document
+                fernet = get_fernet()
+                certificate_id = uuid.uuid4().hex
+                now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+                encrypted_password = fernet.encrypt(password.encode("utf-8")) if save_password else None
+                with connect() as database:
+                    database.execute(
+                        "UPDATE fiscal_certificates SET active = 0, updated_at = ? WHERE company = ? AND branch = ? AND environment = ? AND active = 1",
+                        (now, company, branch, environment),
+                    )
+                    database.execute(
+                        """
+                        INSERT INTO fiscal_certificates(
+                          id, company, branch, document, holder, issuer, serial, valid_from, valid_until,
+                          environment, state_code, pfx_encrypted, password_encrypted, save_password,
+                          created_by, created_at, updated_at, active
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        """,
+                        (
+                            certificate_id, company, branch, document, metadata["holder"], metadata["issuer"],
+                            metadata["serial"], metadata["not_before"], metadata["not_after"], environment,
+                            state_code, fernet.encrypt(pfx_data), encrypted_password, 1 if save_password else 0,
+                            user["email"], now, now,
+                        ),
+                    )
+                SESSION_CERT_PASSWORDS[(self.session_token(), certificate_id)] = password
+                self.audit(user["email"], "certificate_registered", f"{company} · {branch} · {document[-4:] if document else 'sem documento'}")
+                self.send_json({"message": "Certificado validado, cifrado e associado à empresa.", "certificate": self.certificate_summary(self.certificate_row(certificate_id))}, HTTPStatus.CREATED)
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        certificate_test = re.fullmatch(r"/api/sefaz/certificates/([a-f0-9]{32})/test", path)
+        if certificate_test:
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "manage_certificates"):
+                return
+            certificate = self.certificate_row(certificate_test.group(1))
+            if certificate is None:
+                self.send_json({"error": "Certificado não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                pfx_data, password = self.certificate_credentials(certificate, str(payload.get("password", "")))
+                endpoint = DISTRIBUTION_ENDPOINTS[certificate["environment"]]
+                hostname = urlparse(endpoint).hostname
+                with tempfile.TemporaryDirectory(prefix="gestao-fiscal-test-") as temporary:
+                    cert_path, key_path = certificate_pem_files(pfx_data, password, Path(temporary))
+                    context = ssl.create_default_context()
+                    context.minimum_version = ssl.TLSVersion.TLSv1_2
+                    context.load_cert_chain(str(cert_path), str(key_path))
+                    with socket.create_connection((hostname, 443), timeout=15) as connection:
+                        with context.wrap_socket(connection, server_hostname=hostname) as tls:
+                            protocol = tls.version()
+                self.audit(user["email"], "certificate_connection_test", f"{certificate['company']} · {protocol}")
+                self.send_json({"ok": True, "message": f"Certificado aceito na conexão TLS com o Ambiente Nacional da NF-e ({protocol}).", "endpoint": endpoint})
+            except (ValueError, RuntimeError, OSError, ssl.SSLError) as error:
+                self.audit(user["email"], "certificate_connection_failed", certificate["company"])
+                self.send_json({"error": f"Não foi possível concluir a conexão oficial: {error}"}, HTTPStatus.BAD_GATEWAY)
+            return
+
+        if path == "/api/sefaz/distribution":
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "consult_documents"):
+                return
+            try:
+                self.send_json(self.perform_distribution_sync(payload, user))
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/sefaz/nfse/query":
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "consult_documents"):
+                return
+            try:
+                self.send_json(self.perform_nfse_query(payload, user))
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/sefaz/query":
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "consult_documents"):
+                return
+            try:
+                self.send_json(self.perform_fiscal_query(payload, user))
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/sefaz/batch":
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "consult_documents"):
+                return
+            raw_keys = payload.get("accessKeys", [])
+            if not isinstance(raw_keys, list) or not 1 <= len(raw_keys) <= 50:
+                self.send_json({"error": "O lote deve conter de 1 a 50 chaves."}, HTTPStatus.BAD_REQUEST)
+                return
+            completed, failures = [], []
+            for raw_key in raw_keys:
+                item_payload = dict(payload)
+                item_payload["accessKey"] = str(raw_key)
+                item_payload.pop("accessKeys", None)
+                try:
+                    result = self.perform_fiscal_query(item_payload, user)
+                    completed.append({"id": result["id"], "accessKey": result["accessKey"], "status": result["status"]})
+                except (ValueError, RuntimeError) as error:
+                    failures.append({"accessKey": digits(raw_key), "error": str(error)})
+            self.audit(user["email"], "sefaz_batch", f"{len(completed)} concluídas · {len(failures)} falhas")
+            self.send_json({"completed": len(completed), "failed": len(failures), "results": completed, "failures": failures})
+            return
+
+        if path == "/api/sefaz/xml-batch":
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "download_xml"):
+                return
+            try:
+                self.send_json(self.build_monthly_xml_batch(payload, user))
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/sefaz/nfse/monthly-import":
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "consult_documents"):
+                return
+            if not self.require_permission(user, "download_xml"):
+                return
+            try:
+                self.send_json(self.import_nfse_monthly_package(payload, user))
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        self.send_json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
+        if managed_user_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            try:
+                with connect() as database:
+                    target = database.execute("SELECT * FROM users WHERE id = ?", (managed_user_match.group(1),)).fetchone()
+                    if target is None:
+                        raise ValueError("Usuário não encontrado.")
+                    if target["email"] == administrator["email"]:
+                        raise ValueError("Não é possível excluir o usuário da sessão atual.")
+                    if target["role"] == "Administrador":
+                        total = database.execute("SELECT COUNT(*) AS total FROM users WHERE role = 'Administrador' AND active = 1 AND status = 'Ativo'").fetchone()["total"]
+                        if total <= 1:
+                            raise ValueError("Mantenha pelo menos um administrador ativo.")
+                    write_access_audit(database, administrator["email"], target["email"], "Administrador excluiu usuário", dict(target), "Registro excluído", self.client_ip())
+                    database.execute("DELETE FROM sessions WHERE email = ?", (target["email"],))
+                    database.execute("DELETE FROM user_permissions WHERE email = ?", (target["email"],))
+                    database.execute("DELETE FROM user_modules WHERE email = ?", (target["email"],))
+                    database.execute("DELETE FROM users WHERE id = ?", (managed_user_match.group(1),))
+                self.send_json({"ok": True, "data": self.admin_access_payload()})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        managed_plan_match = re.fullmatch(r"/api/admin/plans/([a-z0-9-]{1,64})", path)
+        if managed_plan_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            try:
+                with connect() as database:
+                    plan = database.execute("SELECT * FROM access_plans WHERE id = ?", (managed_plan_match.group(1),)).fetchone()
+                    if plan is None:
+                        raise ValueError("Plano não encontrado.")
+                    assigned = database.execute("SELECT COUNT(*) AS total FROM users WHERE plan_id = ?", (plan["id"],)).fetchone()["total"]
+                    if assigned:
+                        raise ValueError("Este plano possui usuários vinculados. Altere o plano desses usuários antes de excluir.")
+                    write_access_audit(database, administrator["email"], "", "Administrador excluiu plano", dict(plan), "Plano excluído", self.client_ip())
+                    database.execute("DELETE FROM plan_modules WHERE plan_id = ?", (plan["id"],))
+                    database.execute("DELETE FROM access_plans WHERE id = ?", (plan["id"],))
+                self.send_json({"ok": True, "data": self.admin_access_payload()})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        if path == "/api/profile/photo":
+            user = self.require_user()
+            if user is None:
+                return
+            with connect() as database:
+                database.execute(
+                    "UPDATE users SET profile_photo_encrypted = NULL, profile_photo_mime = NULL, "
+                    "profile_photo_updated_at = NULL WHERE email = ?",
+                    (user["email"],),
+                )
+            self.audit(user["email"], "profile_photo_removed")
+            self.send_json({"ok": True})
+            return
+        match = re.fullmatch(r"/api/sefaz/certificates/([a-f0-9]{32})", path)
+        if not match:
+            self.send_json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
+            return
+        user = self.require_user()
+        if user is None or not self.require_permission(user, "manage_certificates"):
+            return
+        certificate = self.certificate_row(match.group(1))
+        if certificate is None:
+            self.send_json({"error": "Certificado não encontrado."}, HTTPStatus.NOT_FOUND)
+            return
+        with connect() as database:
+            database.execute(
+                "UPDATE fiscal_certificates SET active = 0, pfx_encrypted = ?, password_encrypted = NULL, updated_at = ? WHERE id = ?",
+                (b"removed", dt.datetime.now().astimezone().isoformat(timespec="seconds"), certificate["id"]),
+            )
+        for password_key in [item for item in SESSION_CERT_PASSWORDS if item[1] == certificate["id"]]:
+            SESSION_CERT_PASSWORDS.pop(password_key, None)
+        self.audit(user["email"], "certificate_removed", f"{certificate['company']} · {certificate['branch']}")
+        self.send_json({"ok": True})
+
+    def do_PUT(self) -> None:
+        path = urlparse(self.path).path
+        managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
+        if managed_user_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            try:
+                payload = self.read_json()
+                user_id = self.save_managed_user(payload, administrator, managed_user_match.group(1))
+                self.send_json({"ok": True, "id": user_id, "data": self.admin_access_payload()})
+            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        managed_plan_match = re.fullmatch(r"/api/admin/plans/([a-z0-9-]{1,64})", path)
+        if managed_plan_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            try:
+                payload = self.read_json()
+                plan_id = self.save_access_plan(payload, administrator, managed_plan_match.group(1))
+                self.send_json({"ok": True, "id": plan_id, "data": self.admin_access_payload()})
+            except (ValueError, sqlite3.IntegrityError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        if path == "/api/sefaz/permissions":
+            user = self.require_user()
+            if user is None:
+                return
+            if user["role"] != "Administrador":
+                self.send_json({"error": "Somente administradores podem alterar permissões."}, HTTPStatus.FORBIDDEN)
+                return
+            try:
+                payload = self.read_json()
+                assignments = payload.get("users", [])
+                if not isinstance(assignments, list):
+                    raise ValueError("Estrutura de permissões inválida.")
+                normalized = []
+                for assignment in assignments:
+                    email = str(assignment.get("email", "")).strip().lower()
+                    permissions = assignment.get("permissions", [])
+                    if not email or not isinstance(permissions, list):
+                        raise ValueError("Usuário ou permissões inválidos.")
+                    permission_set = {str(item) for item in permissions}
+                    if not permission_set.issubset(SEFAZ_PERMISSIONS):
+                        raise ValueError("Foi informada uma permissão fiscal desconhecida.")
+                    normalized.append((email, sorted(permission_set)))
+                with connect() as database:
+                    for email, permissions in normalized:
+                        managed = database.execute("SELECT role FROM users WHERE email = ? AND active = 1", (email,)).fetchone()
+                        if managed is None or managed["role"] == "Administrador":
+                            raise ValueError(f"Usuário de consulta não encontrado: {email}")
+                        database.execute("DELETE FROM user_permissions WHERE email = ?", (email,))
+                        for permission in permissions:
+                            database.execute("INSERT INTO user_permissions(email, permission, allowed) VALUES (?, ?, 1)", (email, permission))
+                self.audit(user["email"], "sefaz_permissions_updated", f"{len(normalized)} usuário(s)")
+                self.send_json({"ok": True})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        if path != "/api/state":
+            self.send_json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
+            return
+        user = self.require_user()
+        if user is None:
+            return
+        if user["role"] != "Administrador":
+            self.send_json(
+                {"error": "Somente administradores podem alterar a base."},
+                HTTPStatus.FORBIDDEN,
+            )
+            return
+        try:
+            payload = self.read_json()
+            if not isinstance(payload.get("clients"), list):
+                raise ValueError("A base deve conter uma lista de clientes.")
+            safe_payload = dict(payload)
+            safe_payload.pop("users", None)
+            encoded = json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":"))
+        except ValueError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        with connect() as database:
+            database.execute(
+                """
+                INSERT INTO app_state(id, payload, updated_at, updated_by)
+                VALUES (1, ?, datetime('now'), ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  payload = excluded.payload,
+                  updated_at = excluded.updated_at,
+                  updated_by = excluded.updated_by
+                """,
+                (encoded, user["email"]),
+            )
+        self.audit(
+            user["email"], "state_update",
+            f"{len(payload['clients'])} clientes; usuários administrados em base protegida separada",
+        )
+        self.send_json({"ok": True})
+
+
+def main() -> None:
+    initialize_database()
+    server = ThreadingHTTPServer((HOST, PORT), SimplesCalcHandler)
+    print(f"ContTech ERP disponível em http://{HOST}:{PORT}")
+    print(f"Banco de dados: {DB_PATH}")
+    if os.environ.get("GESTAOFISCAL_NO_BROWSER", "0") != "1":
+        threading.Timer(0.7, lambda: webbrowser.open(f"http://{HOST}:{PORT}/#sefaz-portal")).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nServidor encerrado.")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

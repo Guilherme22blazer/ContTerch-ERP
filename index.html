@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e1e37">
+  <meta name="description" content="ContTech ERP. O ERP mais completo do Brasil para contadores, com gestão fiscal, contábil, trabalhista e tributária.">
+  <meta name="keywords" content="ERP contábil, gestão fiscal, inteligência tributária, contabilidade, Simples Nacional, MEI, IBS, CBS, reforma tributária, folha de pagamento, obrigações acessórias, consulta CNPJ, SEFAZ, controle de clientes">
+  <title>ContTech ERP</title>
+  <link rel="icon" type="image/png" href="logo-conttech.png">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="user-management.css">
+</head>
+<body>
+  <section class="login-screen" id="login-screen" aria-labelledby="login-title">
+    <div class="login-visual">
+      <video class="login-background-video" autoplay muted loop playsinline preload="auto" aria-hidden="true">
+        <source src="video-login-conttech.mp4" type="video/mp4">
+      </video>
+      <div class="login-video-overlay" aria-hidden="true"></div>
+      <div class="login-orb login-orb--one"></div><div class="login-orb login-orb--two"></div>
+    </div>
+    <div class="login-panel">
+      <form class="login-card" id="login-form">
+        <div class="login-mobile-brand"><span class="brand-mark"><img src="logo-conttech.png" alt=""></span><strong>ContTech ERP</strong></div>
+        <div class="login-card-intro">
+          <div class="login-card-symbol" aria-label="Logo ContTech ERP">
+            <img src="logo-conttech.png" alt="Logo ContTech ERP">
+          </div>
+          <div class="login-card-intro-copy">
+            <p class="login-slogan">O ERP mais completo do Brasil para contadores</p>
+            <h1>ContTech ERP</h1>
+            <p class="login-description">Clientes, diagnósticos, obrigações e a transição de IBS e CBS organizados em uma plataforma profissional.</p>
+            <div class="login-keywords" aria-label="Principais soluções da plataforma">
+              <span>Gestão Fiscal</span><span>Contabilidade</span><span>Simples Nacional</span><span>MEI</span><span>IBS e CBS</span><span>SEFAZ</span>
+            </div>
+            <div class="login-points">
+              <span>✓ Dados persistentes</span><span>✓ Fontes oficiais</span><span>✓ Histórico auditável</span>
+            </div>
+          </div>
+        </div>
+        <span class="eyebrow">Acesso seguro</span>
+        <h2 id="login-title">Bem-vindo de volta</h2>
+        <p>Entre para acessar seu ambiente tributário.</p>
+        <label class="field"><span>E-mail</span><input id="login-email" type="email" placeholder="seu@email.com" autocomplete="username" required></label>
+        <label class="field"><span>Senha</span><span class="password-wrap"><input id="login-password" type="password" placeholder="Digite sua senha" autocomplete="current-password" required><button type="button" class="icon-button password-toggle" data-action="toggle-password" aria-label="Mostrar senha">◉</button></span></label>
+        <div class="login-row"><label class="check"><input type="checkbox" checked> Manter conectado</label><button class="link-button" type="button" data-action="forgot-password">Esqueci minha senha</button></div>
+        <button class="primary-button primary-button--wide" type="submit">Entrar na plataforma <span>→</span></button>
+        <div class="login-signup-callout"><span>Ainda não tem cadastro?</span><button type="button" data-action="open-signup">Inscreva-se agora</button></div>
+        <p class="security-note">🔒 <strong>Ambiente protegido e comprometido com a privacidade.</strong> O tratamento dos dados pessoais deve observar as regras de coleta, uso, armazenamento e segurança previstas na Lei Geral de Proteção de Dados Pessoais — LGPD (Lei nº 13.709/2018). <a href="https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709compilado.htm" target="_blank" rel="noopener noreferrer">Consultar a lei oficial</a>.</p>
+        <p class="developer-signature">Foi desenvolvido por <strong>GF Contabilidade</strong></p>
+      </form>
+      <form class="register-card is-hidden" id="register-form">
+        <header class="register-header">
+          <button class="register-back" type="button" data-action="back-to-login" aria-label="Voltar para o login">←</button>
+          <div><span class="eyebrow">Comece agora</span><h2>Crie sua conta</h2><p>Cadastre seus dados, escolha o plano e inicie seu período de avaliação.</p></div>
+        </header>
+        <div class="signup-grid">
+          <label class="field"><span>Nome completo do responsável *</span><input id="signup-responsible" name="responsibleName" required minlength="3" maxlength="160" autocomplete="name" placeholder="Ex.: Guilherme Fernandes"></label>
+          <label class="field"><span>Razão social ou nome da atividade *</span><input id="signup-company" name="companyName" required minlength="2" maxlength="180" autocomplete="organization" placeholder="Ex.: Empresa XYZ"></label>
+          <label class="field"><span>E-mail da conta *</span><input id="signup-email" name="email" type="email" required maxlength="180" autocomplete="email" placeholder="seuemail@exemplo.com"></label>
+          <label class="field"><span>Nº de WhatsApp *</span><input id="signup-phone" name="phone" inputmode="tel" required autocomplete="tel" placeholder="(00) 00000-0000"></label>
+          <div class="field signup-document-field">
+            <span>Documento da conta *</span>
+            <div class="signup-document-row"><input id="signup-document-type" name="documentType" type="hidden" value="CNPJ"><div class="signup-document-toggle" role="group" aria-label="Tipo de documento"><button type="button" class="active" data-action="signup-document-type" data-type="CNPJ">CNPJ</button><button type="button" data-action="signup-document-type" data-type="CPF">CPF</button></div><input id="signup-document" name="document" required maxlength="18" autocomplete="off" placeholder="00.000.000/0000-00"></div>
+          </div>
+          <label class="field"><span>Segmento de trabalho *</span><select id="signup-segment" name="segment" required><option value="">Selecione uma opção</option><option>Contabilidade e assessoria</option><option>Comércio</option><option>Prestação de serviços</option><option>Indústria</option><option>Construção civil</option><option>Saúde</option><option>Tecnologia</option><option>Agronegócio</option><option>Terceiro setor</option><option>Outro segmento</option></select></label>
+          <label class="field"><span>Atividade principal *</span><select id="signup-activity" name="primaryActivity" required><option value="">Selecione primeiro o segmento</option></select></label>
+          <label class="field"><span>Plano contratado *</span><select id="signup-plan" name="planId" required><option value="erp-start">ERP Start — R$ 197/mês ou R$ 1.970/ano</option><option value="erp-profissional">ERP Profissional ⭐ — R$ 397/mês ou R$ 3.970/ano</option><option value="erp-business">ERP Business — R$ 697/mês ou R$ 6.970/ano</option><option value="erp-enterprise">ERP Enterprise — R$ 1.297/mês ou R$ 12.970/ano</option></select></label>
+          <label class="field"><span>Periodicidade *</span><select id="signup-billing-cycle" name="billingCycle" required><option>Mensal</option><option>Trimestral</option><option>Anual</option></select></label>
+          <div class="signup-plan-summary" id="signup-plan-summary" aria-live="polite"><span>Plano escolhido</span><strong>ERP Start · R$ 197,00/mês</strong><small>7 dias de avaliação incluídos</small></div>
+          <label class="field"><span>Digite uma senha *</span><span class="password-wrap"><input id="signup-password" name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="Mínimo de 8 caracteres"><button type="button" class="icon-button" data-action="toggle-field-password" data-target="signup-password" aria-label="Mostrar senha">◉</button></span></label>
+          <label class="field"><span>Confirme sua senha *</span><span class="password-wrap"><input id="signup-password-confirmation" name="passwordConfirmation" type="password" required minlength="8" autocomplete="new-password" placeholder="Repita a senha"><button type="button" class="icon-button" data-action="toggle-field-password" data-target="signup-password-confirmation" aria-label="Mostrar confirmação da senha">◉</button></span></label>
+          <label class="field"><span>Cupom de desconto</span><input name="couponCode" maxlength="80" autocomplete="off" placeholder="Digite aqui"></label>
+          <label class="field"><span>Código de parceiro</span><input name="partnerCode" maxlength="80" autocomplete="off" placeholder="Digite aqui"></label>
+        </div>
+        <label class="check signup-terms"><input id="signup-terms" name="acceptedTerms" type="checkbox" required> <span>Declaro ter lido e aceitado os <button type="button" data-action="signup-terms">termos de serviço e a política de privacidade</button>.</span></label>
+        <button class="primary-button primary-button--wide signup-submit" type="submit">Criar minha conta <span>→</span></button>
+        <p class="register-login-link">Já possui cadastro? <button type="button" data-action="back-to-login">Entrar na plataforma</button></p>
+        <p class="register-security">🔒 Senhas protegidas por hash e dados armazenados no ambiente seguro da plataforma.</p>
+      </form>
+    </div>
+  </section>
+
+  <div class="app-shell is-hidden" id="app-shell">
+    <header class="app-header">
+      <div class="topbar">
+        <a class="brand" href="#dashboard" data-route="dashboard" aria-label="ContTech ERP — Início">
+          <span class="brand-mark"><img src="logo-conttech.png" alt=""></span>
+          <span><strong>ContTech ERP</strong></span>
+        </a>
+        <div class="topbar-badges">
+          <button class="law-badge" data-route="lei-complementar"><b>✓ LC</b><span>123/2006</span></button>
+          <button class="law-badge" data-route="mei"><b>✓ MEI</b><span>2026</span></button>
+          <button class="law-badge law-badge--small" data-route="ibs-cbs"><b>IBS/CBS</b></button>
+          <button class="law-badge" data-route="parametros-2026"><b>Parâmetros</b><span>2026</span></button>
+          <button class="pdf-button" data-action="print-page" title="Imprimir ou salvar em PDF"><span>↧</span><b>PDF</b></button>
+          <div class="brazil-clock" id="header-brazil-clock" title="Data e horário oficial de Brasília">
+            <time class="brazil-clock-time" datetime="">--:--:--</time>
+            <small class="brazil-clock-date">--/--/----</small>
+          </div>
+          <button class="user-chip" data-action="user-menu" aria-label="Abrir meu perfil e assinatura" title="Meu perfil e assinatura"><span class="avatar" id="header-avatar">AM</span><span class="user-chip-copy"><b id="header-user">Ana Martins</b><small id="header-role">Administrador</small></span><span>⌄</span></button>
+        </div>
+      </div>
+
+      <div class="actionbar">
+        <button class="mobile-menu" data-action="toggle-nav" aria-label="Abrir menu">☰</button>
+        <label class="client-picker"><span>▰ Cliente:</span><select id="header-client-select" aria-label="Cliente selecionado"></select></label>
+        <button class="toolbar-button" data-route="clientes"><span>👥</span> Clientes</button>
+        <button class="toolbar-button toolbar-button--green" data-action="save-current"><span>▣</span> Salvar</button>
+        <button class="toolbar-button toolbar-button--blue" data-action="export-all"><span>↧</span> Exportar JSON</button>
+        <button class="toolbar-button toolbar-button--purple" data-action="import-json"><span>↥</span> Importar JSON</button>
+        <span class="save-status" id="save-status"><i></i> Dados salvos</span>
+        <button class="global-search-trigger" data-action="open-search"><span>⌕</span><span>Pesquisar...</span><kbd>Ctrl K</kbd></button>
+      </div>
+
+      <nav class="main-nav" id="main-nav" aria-label="Navegação principal">
+        <a class="nav-home-link" href="#inicio" data-route="inicio"><span>⌂</span>Visão Geral da Carteira</a>
+        <details class="nav-group nav-group--fiscal" data-nav-area="fiscal" open>
+          <summary><span class="nav-group-mark">F</span><span><b>Área Fiscal</b><small>Tributos, obrigações e consultas</small></span><em>24</em></summary>
+          <div class="nav-group-items">
+            <a href="#sefaz-portal" data-route="sefaz-portal"><span>▣</span>Consulta SEFAZ e Portal do Contribuinte</a>
+            <a href="#dashboard" data-route="dashboard"><span>▥</span>Cálculo DAS</a>
+            <a href="#diagnostico" data-route="diagnostico"><span>◉</span>Diagnóstico Tributário</a>
+            <a href="#mei" data-route="mei"><span>●</span>MEI</a>
+            <a href="#controle-mei" data-route="controle-mei"><span>▤</span>Controle de MEI</a>
+            <a href="#obrigacoes" data-route="obrigacoes"><span>▣</span>Obrigações Acessórias</a>
+            <a href="#ibs-cbs" data-route="ibs-cbs"><span>◈</span>IBS e CBS</a>
+            <a href="#transicao-reforma" data-route="transicao-reforma"><span>⇄</span>Transição da Reforma Tributária</a>
+            <a href="#lei-complementar" data-route="lei-complementar"><span>§</span>Lei Complementar Completa</a>
+            <a href="#mei-ibs-cbs" data-route="mei-ibs-cbs"><span>◎</span>MEI, IBS e CBS</a>
+            <a href="#parametros-2026" data-route="parametros-2026"><span>⚙</span>Parâmetros 2026</a>
+            <a href="#consulta-cnpj" data-route="consulta-cnpj"><span>⌕</span>Consulta CNPJ</a>
+            <a href="#inscricao-estadual" data-route="inscricao-estadual"><span>▤</span>Inscrição Estadual</a>
+            <a href="#cnae-servicos" data-route="cnae-servicos"><span>🏷</span>CNAE × Serviços</a>
+            <a href="#ncm-tipi" data-route="ncm-tipi"><span>▦</span>NCM / TIPI</a>
+            <a href="#consulta-cest" data-route="consulta-cest"><span>▦</span>Consulta CEST</a>
+            <a href="#cfop" data-route="cfop"><span>▧</span>CFOP</a>
+            <a href="#icms-difal" data-route="icms-difal"><span>∑</span>ICMS / DIFAL</a>
+            <a href="#aliquotas-beneficios" data-route="aliquotas-beneficios"><span>%</span>Alíquotas e Benefícios</a>
+            <a href="#aliquotas-iss" data-route="aliquotas-iss"><span>‰</span>Alíquotas do ISS</a>
+            <a href="#simulador-locacao" data-route="simulador-locacao"><span>⌂</span>Simulador de Locação</a>
+            <a href="#nbs-cclasstrib" data-route="nbs-cclasstrib"><span>§</span>NBS / cClassTrib</a>
+            <a href="#calculadora-tributaria" data-route="calculadora-tributaria"><span>▣</span>Calculadora Tributária</a>
+            <a href="#cnpj-simples" data-route="cnpj-simples"><span>◎</span>Consulta CNPJ Simples</a>
+          </div>
+        </details>
+
+        <details class="nav-group nav-group--contabil" data-nav-area="contabil">
+          <summary><span class="nav-group-mark">C</span><span><b>Área Contábil</b><small>Balanço e escrituração</small></span><em>2</em></summary>
+          <div class="nav-group-items">
+            <a href="#analise-balanco" data-route="analise-balanco"><span>▦</span>Análise de Balanço</a>
+            <a href="#lancamentos-contabeis" data-route="lancamentos-contabeis"><span>▤</span>Lançamentos Contábeis</a>
+          </div>
+        </details>
+
+        <details class="nav-group nav-group--trabalhista" data-nav-area="trabalhista">
+          <summary><span class="nav-group-mark">T</span><span><b>Área Trabalhista</b><small>Folha, benefícios e previdência</small></span><em>8</em></summary>
+          <div class="nav-group-items">
+            <a href="#folha" data-route="folha"><span>♟</span>Folha de Pagamento</a>
+            <a href="#horas-extras-noturno" data-route="horas-extras-noturno"><span>◷</span>Horas Extras e Trabalho Noturno</a>
+            <a href="#verbas-rescisorias" data-route="verbas-rescisorias"><span>▤</span>Verbas Rescisórias</a>
+            <a href="#seguro-desemprego" data-route="seguro-desemprego"><span>◉</span>Seguro-Desemprego</a>
+            <a href="#gps-atraso" data-route="gps-atraso"><span>∑</span>GPS — INSS em Atraso</a>
+            <a href="#pro-labore" data-route="pro-labore"><span>♙</span>Pró-Labore</a>
+            <a href="#irrf-aliquota-efetiva" data-route="irrf-aliquota-efetiva"><span>%</span>Alíquota Efetiva do IRRF</a>
+            <a href="#pensao-alimenticia" data-route="pensao-alimenticia"><span>◫</span>Pensão Alimentícia</a>
+          </div>
+        </details>
+
+        <details class="nav-group nav-group--outros" data-nav-area="outros">
+          <summary><span class="nav-group-mark">＋</span><span><b>Outros</b><small>Gestão e documentos</small></span><em>7</em></summary>
+          <div class="nav-group-items">
+            <a href="#kanban" data-route="kanban"><span>▦</span>Quadro Kanban</a>
+            <a href="#central-formularios" data-route="central-formularios"><span>▧</span>Central de Formulários</a>
+            <a href="#modelos-contratos" data-route="modelos-contratos"><span>▨</span>Modelos e Contratos</a>
+            <a href="#clientes" data-route="clientes"><span>♟</span>Clientes</a>
+            <a href="#gestao-usuarios" data-route="gestao-usuarios"><span>⚿</span>Gestão de Usuários</a>
+            <a href="#configuracoes" data-route="configuracoes"><span>⚙</span>Configurações</a>
+            <a href="#historico" data-route="historico"><span>◷</span>Histórico de Atualizações</a>
+          </div>
+        </details>
+      </nav>
+    </header>
+
+    <main class="main-content" id="main-content" tabindex="-1"></main>
+    <footer class="app-footer"><span class="footer-credit"><span class="footer-symbol"><img src="logo-conttech.png" alt=""></span><span>Foi desenvolvido por <strong>GF Contabilidade</strong></span></span><time id="footer-update" datetime="">Data e hora do Brasil: --/--/---- às --:--:-- BRT</time></footer>
+  </div>
+
+  <div class="search-layer is-hidden" id="search-layer">
+    <div class="search-dialog" role="dialog" aria-modal="true" aria-label="Pesquisa global">
+      <div class="search-input-wrap"><span>⌕</span><input id="global-search" placeholder="Pesquise clientes, normas, obrigações ou páginas..." autocomplete="off"><button class="icon-button" data-action="close-search" aria-label="Fechar pesquisa">×</button></div>
+      <div class="search-results" id="search-results"></div>
+      <div class="search-hint"><span>↑↓ navegar</span><span>Enter abrir</span><span>Esc fechar</span></div>
+    </div>
+  </div>
+
+  <div class="modal-layer is-hidden" id="modal-layer" aria-live="polite"></div>
+  <div class="toast-region" id="toast-region" aria-live="polite"></div>
+  <input class="is-hidden" id="json-file-input" type="file" accept="application/json,.json">
+  <script src="brazil-map-data.js"></script>
+  <script src="iss-data.js"></script>
+  <script src="cest-data.js"></script>
+  <script src="accounting-entries.js"></script>
+  <script src="forms-catalog.js"></script>
+  <script src="contracts-catalog.js"></script>
+  <script src="user-management.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

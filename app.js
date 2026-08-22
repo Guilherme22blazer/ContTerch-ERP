@@ -1,0 +1,6522 @@
+(function () {
+  'use strict';
+
+  var KEYS = {
+    clients: 'simplescalc.clients.v1',
+    audit: 'simplescalc.audit.v1',
+    legal: 'simplescalc.legal.v1',
+    settings: 'simplescalc.settings.v1',
+    users: 'simplescalc.users.v1',
+    auth: 'simplescalc.auth.v1',
+    cnpjCache: 'simplescalc.cnpj-cache.v1'
+  };
+
+  var TODAY = '20/08/2026';
+  var APP_NAME = 'ContTech ERP';
+  var currentUser = null;
+  var apiToken = sessionStorage.getItem('simplescalc.apiToken') || '';
+  var syncTimer = null;
+  var hydratingFromServer = false;
+  var signupPlans = [
+    { id: 'erp-start', name: 'ERP Start', monthlyValue: 197, annualValue: 1970, trialDays: 7 },
+    { id: 'erp-profissional', name: 'ERP Profissional ⭐', monthlyValue: 397, annualValue: 3970, trialDays: 14 },
+    { id: 'erp-business', name: 'ERP Business', monthlyValue: 697, annualValue: 6970, trialDays: 14 },
+    { id: 'erp-enterprise', name: 'ERP Enterprise', monthlyValue: 1297, annualValue: 12970, trialDays: 30 }
+  ];
+  var signupActivities = {
+    'Contabilidade e assessoria': ['Escritório de contabilidade', 'Consultoria tributária', 'BPO financeiro', 'Auditoria e perícia'],
+    'Comércio': ['Comércio varejista', 'Comércio atacadista', 'Comércio eletrônico', 'Representação comercial'],
+    'Prestação de serviços': ['Serviços administrativos', 'Serviços profissionais', 'Manutenção e reparação', 'Transportes e logística'],
+    'Indústria': ['Indústria de transformação', 'Produção de alimentos', 'Confecção e vestuário', 'Fabricação de equipamentos'],
+    'Construção civil': ['Construção de edifícios', 'Obras de infraestrutura', 'Instalações e acabamento', 'Serviços de engenharia'],
+    'Saúde': ['Clínica e consultório', 'Serviços odontológicos', 'Laboratório', 'Atendimento terapêutico'],
+    'Tecnologia': ['Desenvolvimento de software', 'Suporte e infraestrutura', 'Consultoria em tecnologia', 'Serviços digitais'],
+    'Agronegócio': ['Produção rural', 'Comércio agropecuário', 'Serviços para agricultura', 'Agroindústria'],
+    'Terceiro setor': ['Associação', 'Fundação', 'Organização religiosa', 'Projeto social'],
+    'Outro segmento': ['Atividade empresarial em geral', 'Profissional autônomo', 'Microempreendedor individual', 'Outra atividade']
+  };
+  var sefazState = { certificates: [], history: [], distributedDocuments: [], distributionStates: [], nfseMonthlyImports: [], stats: {}, permissions: [], portals: {}, selectedResult: null, loading: false };
+  var transitionXmlState = { files: [], totals: null };
+  var SEFAZ_UFS = [
+    ['11','RO'],['12','AC'],['13','AM'],['14','RR'],['15','PA'],['16','AP'],['17','TO'],
+    ['21','MA'],['22','PI'],['23','CE'],['24','RN'],['25','PB'],['26','PE'],['27','AL'],
+    ['28','SE'],['29','BA'],['31','MG'],['32','ES'],['33','RJ'],['35','SP'],['41','PR'],
+    ['42','SC'],['43','RS'],['50','MS'],['51','MT'],['52','GO'],['53','DF']
+  ];
+  var state = {
+    clients: [],
+    audit: [],
+    customLegal: [],
+    settings: {},
+    users: [],
+    selectedClientId: null,
+    filters: {},
+    searchIndex: 0,
+    importMode: 'clients',
+    route: 'inicio',
+    portfolioFilters: {}
+  };
+
+  var DEMO_CLIENTS = [
+    {
+      id: 'cli-ime-03',
+      name: 'GRUPO IME - FILIAL 03',
+      document: '12.345.678/0001-95',
+      tradeName: 'IME Tecnologia',
+      email: 'fiscal@grupoi.me',
+      phone: '(11) 4002-8922',
+      regime: 'Simples Nacional',
+      activity: 'Consultoria em tecnologia',
+      cnae: '6204-0/00',
+      status: 'Ativo',
+      responsible: 'Ana Martins',
+      startDate: '2019-02-18',
+      city: 'São Paulo / SP',
+      revenueMonth: 5000,
+      revenue12: 480000,
+      annex: 'Anexo V — Serviços',
+      employees: 3,
+      notes: 'Empresa estabelecida. Apurar IBS e CBS pelo regime regular a partir de 2027.',
+      obligations: ['PGDAS-D', 'DEFIS', 'DCTFWeb', 'eSocial', 'EFD-Reinf', 'NFS-e'],
+      analyses: [
+        { date: '2026-08-12', risk: 'Médio', score: 42, summary: 'Atenção à opção pelo regime regular de IBS/CBS.' },
+        { date: '2026-06-30', risk: 'Baixo', score: 28, summary: 'Cadastro e obrigações regulares.' }
+      ],
+      updatedAt: '2026-08-14T08:46:04-03:00'
+    },
+    {
+      id: 'cli-horizonte',
+      name: 'OFICINA HORIZONTE MEI',
+      document: '45.926.810/0001-01',
+      tradeName: 'Horizonte Reparos',
+      email: 'contato@horizonterep.com.br',
+      phone: '(31) 98880-1420',
+      regime: 'MEI',
+      activity: 'Manutenção e reparação',
+      cnae: '9529-1/99',
+      status: 'Alerta',
+      responsible: 'Carlos Nunes',
+      startDate: '2023-07-03',
+      city: 'Belo Horizonte / MG',
+      revenueMonth: 7900,
+      revenue12: 77400,
+      annex: 'SIMEI',
+      employees: 1,
+      notes: 'Faturamento acumulado próximo ao limite anual do MEI.',
+      obligations: ['DAS-MEI', 'DASN-SIMEI', 'NFS-e', 'eSocial'],
+      analyses: [
+        { date: '2026-08-10', risk: 'Alto', score: 78, summary: 'Faturamento atingiu 95,56% do limite do MEI.' }
+      ],
+      updatedAt: '2026-08-10T15:12:00-03:00'
+    },
+    {
+      id: 'cli-raiz',
+      name: 'MERCADO RAIZ LTDA',
+      document: '38.217.506/0001-20',
+      tradeName: 'Mercado Raiz',
+      email: 'administrativo@mercadoraiz.com.br',
+      phone: '(41) 3345-0909',
+      regime: 'Simples Nacional',
+      activity: 'Comércio varejista',
+      cnae: '4712-1/00',
+      status: 'Ativo',
+      responsible: 'Beatriz Lima',
+      startDate: '2017-11-09',
+      city: 'Curitiba / PR',
+      revenueMonth: 148000,
+      revenue12: 1680000,
+      annex: 'Anexo I — Comércio',
+      employees: 11,
+      notes: 'Operação regular com emissão de NF-e e NFC-e.',
+      obligations: ['PGDAS-D', 'DEFIS', 'DCTFWeb', 'eSocial', 'EFD-Reinf', 'NF-e/NFC-e'],
+      analyses: [
+        { date: '2026-08-04', risk: 'Baixo', score: 24, summary: 'Sem inconsistências críticas identificadas.' }
+      ],
+      updatedAt: '2026-08-04T10:30:00-03:00'
+    },
+    {
+      id: 'cli-studio',
+      name: 'STUDIO NORTE DESIGN LTDA',
+      document: '51.720.364/0001-87',
+      tradeName: 'Studio Norte',
+      email: 'financeiro@studionorte.design',
+      phone: '(91) 99104-8080',
+      regime: 'Lucro Presumido',
+      activity: 'Design e comunicação',
+      cnae: '7410-2/99',
+      status: 'Em revisão',
+      responsible: 'Ana Martins',
+      startDate: '2021-03-22',
+      city: 'Belém / PA',
+      revenueMonth: 93000,
+      revenue12: 1116000,
+      annex: 'Regime geral',
+      employees: 7,
+      notes: 'Avaliar possibilidade de enquadramento no Simples Nacional.',
+      obligations: ['DCTFWeb', 'EFD-Reinf', 'eSocial', 'EFD-Contribuições', 'NFS-e'],
+      analyses: [],
+      updatedAt: '2026-08-01T09:05:00-03:00'
+    }
+  ];
+
+  var DEFAULT_USERS = [
+    {
+      id: 'usr-admin', name: 'Ana Martins', email: 'admin@simplescalc.pro',
+      role: 'Administrador', active: true, billingCycle: 'Anual', subscriptionValue: 1190,
+      monitoringStart: '2026-01-01', monitoringEnd: '2026-12-31', createdAt: '2026-01-01T09:00:00-03:00'
+    },
+    {
+      id: 'usr-consulta', name: 'Rafael Costa', email: 'usuario@simplescalc.pro',
+      role: 'Usuário', active: true, billingCycle: 'Trimestral', subscriptionValue: 297,
+      monitoringStart: '2026-08-01', monitoringEnd: '2026-10-31', createdAt: '2026-08-01T09:00:00-03:00'
+    }
+  ];
+
+  var OFFICIAL_SOURCES = [
+    { id: 'irpf-2026', area: 'Pró-Labore', title: 'Tabela mensal do IRPF 2026 e redução do imposto', number: 'Leis 15.191/2025 e 15.270/2025', publication: '26/11/2025', updated: '27/04/2026', summary: 'Tabela progressiva mensal, dedução por dependente, desconto simplificado e redução do imposto para rendimentos mensais até R$ 7.350,00.', url: 'https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/tabelas/2026', issuer: 'Receita Federal' },
+    { id: 'inss-2026', area: 'Pró-Labore', title: 'Salário de contribuição e teto previdenciário de 2026', number: 'Portaria Interministerial MPS/MF nº 13/2026', publication: '09/01/2026', updated: '13/01/2026', summary: 'Fixa o salário mínimo previdenciário em R$ 1.621,00 e o limite máximo do salário de contribuição em R$ 8.475,55 a partir de janeiro de 2026.', url: 'https://www.gov.br/inss/pt-br/direitos-e-deveres/inscricao-e-contribuicao/tabela-de-contribuicao-mensal', issuer: 'INSS / MPS / Ministério da Fazenda' },
+    { id: 'inss-prolabore-11', area: 'Pró-Labore', title: 'Contribuição previdenciária do contribuinte individual', number: 'IN RFB nº 2.110/2022, art. 37', publication: '19/10/2022', updated: 'Texto vigente consultado em 14/08/2026', summary: 'Prevê a alíquota de 11% sobre a remuneração do contribuinte individual que presta serviço à empresa, observado o limite máximo do salário de contribuição.', url: 'https://normas.receita.fazenda.gov.br/sijut2consulta/link.action?idAto=126687', issuer: 'Receita Federal' },
+    { id: 'ec-132-2023', area: 'IBS e CBS', title: 'Emenda Constitucional nº 132/2023', number: 'EC 132/2023', publication: '20/12/2023', updated: '20/12/2023', summary: 'Institui a Reforma Tributária do consumo e cria as bases constitucionais do IBS, da CBS e do Imposto Seletivo.', url: 'https://www.planalto.gov.br/ccivil_03/constituicao/emendas/emc/emc132.htm', issuer: 'Presidência da República' },
+    { id: 'lc-123-2006', area: 'Simples Nacional', title: 'Lei Complementar nº 123/2006', number: 'LC 123/2006', publication: '14/12/2006', updated: 'Texto compilado', summary: 'Estatuto da Microempresa e da Empresa de Pequeno Porte. Disciplina o Simples Nacional e o MEI.', url: 'https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp123.htm', issuer: 'Presidência da República' },
+    { id: 'lc-214-2025', area: 'IBS e CBS', title: 'Lei Complementar nº 214/2025', number: 'LC 214/2025', publication: '16/01/2025', updated: 'Texto compilado em 2026', summary: 'Institui IBS, CBS e Imposto Seletivo; define incidência, créditos, regimes diferenciados e transição.', url: 'https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp214compilado.htm', issuer: 'Presidência da República' },
+    { id: 'lc-227-2026', area: 'IBS e CBS', title: 'Lei Complementar nº 227/2026', number: 'LC 227/2026', publication: '13/01/2026', updated: '13/01/2026', summary: 'Institui o Comitê Gestor do IBS, o processo administrativo e regras de distribuição da arrecadação.', url: 'https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp227.htm', issuer: 'Presidência da República' },
+    { id: 'res-140-2018', area: 'MEI', title: 'Resolução CGSN nº 140/2018', number: 'Res. CGSN 140/2018', publication: '22/05/2018', updated: 'Compilada até 2026', summary: 'Regulamenta o Simples Nacional e o SIMEI, incluindo limites, obrigações e regras de desenquadramento.', url: 'https://normas.receita.fazenda.gov.br/sijut2consulta/link.action?idAto=92278&visao=compilado', issuer: 'Comitê Gestor do Simples Nacional' },
+    { id: 'res-186-2026', area: 'Simples Nacional', title: 'Resolução CGSN nº 186/2026', number: 'Res. CGSN 186/2026', publication: '17/04/2026', updated: '17/04/2026', summary: 'Dispõe sobre prazos e condições para opção dos optantes do Simples pelo regime regular do IBS e da CBS em 2027.', url: 'https://normas.receita.fazenda.gov.br/sijut2consulta/consulta.action?lblTiposAtosSelecionados=Res.&orgaosSelecionados=CGSN&tipoData=2&tiposAtosSelecionados=67', issuer: 'Comitê Gestor do Simples Nacional' },
+    { id: 'orientacoes-2026', area: 'Obrigações Acessórias', title: 'Orientações da Reforma Tributária para 2026', number: 'Orientação oficial RTC', publication: '12/12/2025', updated: '06/05/2026', summary: 'Relaciona os documentos fiscais eletrônicos com destaque individualizado de IBS e CBS e a dispensa condicionada no ano-teste.', url: 'https://www.gov.br/receitafederal/pt-br/acesso-a-informacao/acoes-e-programas/programas-e-atividades/reforma-tributaria-do-consumo/orientacoes-2026', issuer: 'Receita Federal' },
+    { id: 'nt-2025-002', area: 'Obrigações Acessórias', title: 'Nota Técnica NF-e/NFC-e 2025.002 v1.50', number: 'NT 2025.002 v1.50', publication: '03/06/2026', updated: '03/06/2026', summary: 'Adequa os leiautes da NF-e e NFC-e aos campos e regras de validação da Reforma Tributária do Consumo.', url: 'https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=6WfrpZYE4Ik%3D', issuer: 'Portal Nacional da NF-e' },
+    { id: 'decreto-13075', area: 'IBS e CBS', title: 'Decreto nº 13.075/2026', number: 'Decreto 13.075/2026', publication: '21/07/2026', updated: '22/07/2026', summary: 'Prorroga para 2027 obrigações cadastrais e documentais aplicáveis a pessoas físicas contribuintes da CBS.', url: 'https://www.gov.br/receitafederal/pt-br/assuntos/noticias/emissao-do-cnpj-e-de-documentos-fiscais-por-pessoas-fisicas-contribuintes-da-cbs-comecara-em-1o-de-janeiro-de-2027', issuer: 'Receita Federal' },
+    { id: 'dasn-simei', area: 'MEI', title: 'Prazo da DASN-SIMEI', number: 'Res. CGSN 140/2018', publication: 'Regra permanente', updated: '04/09/2025', summary: 'A DASN-SIMEI deve ser transmitida até 31 de maio do ano seguinte ao da apuração, inclusive sem faturamento.', url: 'https://www.gov.br/empresas-e-negocios/pt-br/empreendedor/perguntas-frequentes/dasn-simei-declaracao/qual-e-o-prazo-de', issuer: 'Portal do Empreendedor' }
+  ];
+
+  var UPDATE_TIMELINE = [
+    { date: '27/07/2026', title: 'Cronograma de DF-e da Reforma Tributária', text: 'RFB e CGIBS informaram a elaboração de ato conjunto para o cronograma dos documentos fiscais eletrônicos.', source: 'Receita Federal', url: 'https://www.gov.br/receitafederal/pt-br/assuntos/noticias/2026/julho/receita-federal-e-comite-gestor-do-ibs-divulgarao-cronograma-para-emissao-dos-documentos-fiscais-eletronicos-da-reforma-tributaria' },
+    { date: '22/07/2026', title: 'Obrigações de pessoas físicas adiadas', text: 'Decreto nº 13.075/2026 transfere para 2027 obrigações cadastrais e documentais indicadas.', source: 'Receita Federal', url: 'https://www.gov.br/receitafederal/pt-br/assuntos/noticias/emissao-do-cnpj-e-de-documentos-fiscais-por-pessoas-fisicas-contribuintes-da-cbs-comecara-em-1o-de-janeiro-de-2027' },
+    { date: '03/06/2026', title: 'Nota Técnica 2025.002 v1.50', text: 'Nova versão dos leiautes de NF-e e NFC-e para IBS, CBS e Imposto Seletivo.', source: 'Portal da NF-e', url: 'https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=6WfrpZYE4Ik%3D' },
+    { date: '17/04/2026', title: 'Resolução CGSN nº 186/2026', text: 'Definidas regras de opção pelo regime regular de IBS e CBS para optantes do Simples em 2027.', source: 'CGSN', url: 'https://normas.receita.fazenda.gov.br/sijut2consulta/consulta.action?lblTiposAtosSelecionados=Res.&orgaosSelecionados=CGSN&tipoData=2&tiposAtosSelecionados=67' },
+    { date: '13/01/2026', title: 'Lei Complementar nº 227/2026', text: 'Instituição do Comitê Gestor do IBS e regras do processo administrativo.', source: 'Presidência da República', url: 'https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp227.htm' },
+    { date: '16/01/2025', title: 'Lei Complementar nº 214/2025', text: 'Regulamentação geral do IBS, CBS e Imposto Seletivo.', source: 'Presidência da República', url: 'https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp214compilado.htm' }
+  ];
+
+  var NAV_ITEMS = [
+    { route: 'inicio', label: 'Visão Geral da Carteira', icon: '⌂', desc: 'Dashboard profissional com indicadores e andamento de todos os clientes' },
+    { route: 'sefaz-portal', label: 'Consulta SEFAZ e Portal do Contribuinte', icon: '▣', desc: 'Consulta oficial de documentos fiscais e gestão segura de certificados' },
+    { route: 'dashboard', label: 'Cálculo DAS', icon: '▥', desc: 'Apuração interativa do Simples Nacional' },
+    { route: 'diagnostico', label: 'Diagnóstico Tributário', icon: '◉', desc: 'Riscos, inconsistências e recomendações' },
+    { route: 'mei', label: 'MEI', icon: '●', desc: 'Limites, regras e desenquadramento' },
+    { route: 'controle-mei', label: 'Controle de MEI', icon: '▤', desc: 'Receitas, despesas, fluxo mensal e dashboard financeiro' },
+    { route: 'folha', label: 'Folha de Pagamento', icon: '♟', desc: 'Encargos e calendário da folha' },
+    { route: 'horas-extras-noturno', label: 'Horas Extras e Trabalho Noturno', icon: '◷', desc: 'Horas extras, adicional noturno, hora reduzida e reflexo no descanso semanal' },
+    { route: 'verbas-rescisorias', label: 'Verbas Rescisórias', icon: '▤', desc: 'Simulação completa do desligamento e custo final da rescisão' },
+    { route: 'seguro-desemprego', label: 'Seguro-Desemprego', icon: '◉', desc: 'Valor da parcela, quantidade e requisitos do benefício em 2026' },
+    { route: 'gps-atraso', label: 'GPS — INSS em Atraso', icon: '∑', desc: 'Multa, juros Selic e total da contribuição previdenciária em atraso' },
+    { route: 'pro-labore', label: 'Pró-Labore', icon: '♙', desc: 'Simulação de INSS e IRRF' },
+    { route: 'irrf-aliquota-efetiva', label: 'Alíquota Efetiva do IRRF', icon: '%', desc: 'Simulação mensal do IRRF e da alíquota efetiva em 2026' },
+    { route: 'pensao-alimenticia', label: 'Pensão Alimentícia', icon: '◫', desc: 'Percentual judicial sobre rendimento bruto, líquido ou valor fixo' },
+    { route: 'analise-balanco', label: 'Análise de Balanço', icon: '▦', desc: 'Liquidez, endividamento, rentabilidade e diagnóstico patrimonial' },
+    { route: 'lancamentos-contabeis', label: 'Lançamentos Contábeis', icon: '▤', desc: 'Índice alfabético, busca, favoritos e modelos de débito e crédito' },
+    { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
+    { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
+    { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
+    { route: 'obrigacoes', label: 'Obrigações Acessórias', icon: '▣', desc: 'Agenda e documentos fiscais' },
+    { route: 'ibs-cbs', label: 'IBS e CBS', icon: '◈', desc: 'Reforma tributária do consumo' },
+    { route: 'transicao-reforma', label: 'Transição da Reforma Tributária', icon: '⇄', desc: 'Comparação dos tributos atuais com IBS, CBS e Imposto Seletivo de 2026 a 2033' },
+    { route: 'lei-complementar', label: 'Lei Complementar Completa', icon: '§', desc: 'Normas oficiais consolidadas' },
+    { route: 'mei-ibs-cbs', label: 'MEI, IBS e CBS', icon: '◎', desc: 'Impactos da transição no SIMEI' },
+    { route: 'parametros-2026', label: 'Parâmetros 2026', icon: '⚙', desc: 'Alíquotas, limites e prazos' },
+    { route: 'clientes', label: 'Clientes', icon: '♟', desc: 'Cadastro e gestão da base' },
+    { route: 'gestao-usuarios', label: 'Gestão de Usuários e Acessos', icon: '⚿', desc: 'Usuários, planos, permissões, assinaturas e auditoria' },
+    { route: 'configuracoes', label: 'Configurações', icon: '⚙', desc: 'Usuários, dados e conteúdo legal' },
+    { route: 'historico', label: 'Histórico de Atualizações', icon: '◷', desc: 'Alterações legais e trilha de auditoria' },
+    { route: 'consulta-cnpj', label: 'Consulta CNPJ', icon: '⌕', desc: 'Consulta cadastral com suporte ao CNPJ alfanumérico' },
+    { route: 'inscricao-estadual', label: 'Inscrição Estadual', icon: '▤', desc: 'Portais estaduais e consulta SINTEGRA' },
+    { route: 'cnae-servicos', label: 'CNAE × Serviços', icon: '🏷', desc: 'Correlação de atividades e serviços' },
+    { route: 'ncm-tipi', label: 'NCM / TIPI', icon: '▦', desc: 'Pesquisa de classificação fiscal e alíquotas' },
+    { route: 'consulta-cest', label: 'Consulta CEST', icon: '▦', desc: 'Pesquisa de CEST por NCM, código, mercadoria e segmento' },
+    { route: 'cfop', label: 'CFOP', icon: '▧', desc: 'Consulta de códigos fiscais de operações' },
+    { route: 'icms-difal', label: 'ICMS / DIFAL', icon: '∑', desc: 'Matriz estadual e calculadora de diferencial' },
+    { route: 'aliquotas-beneficios', label: 'Alíquotas Internas e Benefícios Fiscais', icon: '%', desc: 'Consulta de ICMS, FCP, operações interestaduais e benefícios por UF' },
+    { route: 'aliquotas-iss', label: 'Alíquotas do ISS', icon: '‰', desc: 'Consulta dos 200 serviços da LC 116 nas 27 capitais brasileiras' },
+    { route: 'simulador-locacao', label: 'Simulador de Locação', icon: '⌂', desc: 'Projeção de IBS e CBS para locação de bens imóveis e móveis' },
+    { route: 'nbs-cclasstrib', label: 'NBS / cClassTrib', icon: '§', desc: 'Correlação de serviços e classificação IBS/CBS' },
+    { route: 'calculadora-tributaria', label: 'Calculadora Tributária', icon: '▣', desc: 'Comparação entre regimes tributários' },
+    { route: 'cnpj-simples', label: 'Consulta CNPJ Simples', icon: '◎', desc: 'Consulta de opção pelo Simples Nacional e MEI' }
+  ];
+
+  var FISCAL_MODULES = {
+    'consulta-cnpj': { tab: 'cnpj', title: 'Consulta CNPJ', desc: 'Consulta cadastral em fontes públicas, preparada para CNPJs numéricos e alfanuméricos.' },
+    'inscricao-estadual': { tab: 'ie', title: 'Inscrição Estadual', desc: 'Acesso organizado ao SINTEGRA e aos portais oficiais das Secretarias de Fazenda.' },
+    'cnae-servicos': { tab: 'cnae', title: 'CNAE × Serviços', desc: 'Pesquisa e correlação entre atividades econômicas e serviços.' },
+    'ncm-tipi': { tab: 'ncm', title: 'NCM / TIPI', desc: 'Pesquisa por código, descrição, capítulo e alíquota da TIPI.' },
+    'cfop': { tab: 'cfop', title: 'CFOP', desc: 'Consulta completa dos códigos fiscais de operações e prestações.' },
+    'icms-difal': { tab: 'icms', title: 'ICMS / DIFAL', desc: 'Matriz de alíquotas estaduais e simuladores de ICMS, DIFAL e FEM/FCP.' },
+    'nbs-cclasstrib': { tab: 'nbs', title: 'NBS / cClassTrib', desc: 'Correlação entre LC 116, NBS, indicador de operação e classificação tributária IBS/CBS.' },
+    'calculadora-tributaria': { tab: 'calc', title: 'Calculadora Tributária', desc: 'Simulação comparativa de Lucro Presumido, Lucro Real e Simples Nacional.' },
+    'cnpj-simples': { tab: 'simples', title: 'Consulta CNPJ Simples', desc: 'Consulta cadastral com indicação de opção pelo Simples Nacional e enquadramento como MEI.' }
+  };
+
+  var ICMS_STATES = [
+    { uf: 'AC', name: 'Acre', region: 'Norte', rate: 19, fcp: 0, source: 'https://sefaz.ac.gov.br/' },
+    { uf: 'AL', name: 'Alagoas', region: 'Nordeste', rate: 19, fcp: 1, source: 'https://www.sefaz.al.gov.br/', note: 'FCP de referência de 1%. O GNV possui alíquota específica de 12% desde 01/04/2026, conforme Lei estadual nº 9.776/2025.' },
+    { uf: 'AP', name: 'Amapá', region: 'Norte', rate: 18, fcp: 0, source: 'https://sefaz.portal.ap.gov.br/' },
+    { uf: 'AM', name: 'Amazonas', region: 'Norte', rate: 20, fcp: 0, source: 'https://www.sefaz.am.gov.br/' },
+    { uf: 'BA', name: 'Bahia', region: 'Nordeste', rate: 20.5, fcp: 0, source: 'https://www.sefaz.ba.gov.br/', note: 'A incidência de FUNCEP depende da mercadoria e do enquadramento previsto na legislação baiana.' },
+    { uf: 'CE', name: 'Ceará', region: 'Nordeste', rate: 20, fcp: 0, source: 'https://www.sefaz.ce.gov.br/' },
+    { uf: 'DF', name: 'Distrito Federal', region: 'Centro-Oeste', rate: 20, fcp: 0, source: 'https://www.receita.fazenda.df.gov.br/' },
+    { uf: 'ES', name: 'Espírito Santo', region: 'Sudeste', rate: 17, fcp: 0, source: 'https://sefaz.es.gov.br/' },
+    { uf: 'GO', name: 'Goiás', region: 'Centro-Oeste', rate: 19, fcp: 0, source: 'https://goias.gov.br/economia/' },
+    { uf: 'MA', name: 'Maranhão', region: 'Nordeste', rate: 23, fcp: 0, source: 'https://sistemas1.sefaz.ma.gov.br/portalsefaz/' },
+    { uf: 'MT', name: 'Mato Grosso', region: 'Centro-Oeste', rate: 17, fcp: 0, source: 'https://www.sefaz.mt.gov.br/' },
+    { uf: 'MS', name: 'Mato Grosso do Sul', region: 'Centro-Oeste', rate: 17, fcp: 0, source: 'https://www.sefaz.ms.gov.br/' },
+    { uf: 'MG', name: 'Minas Gerais', region: 'Sudeste', rate: 18, fcp: 0, source: 'https://www.fazenda.mg.gov.br/' },
+    { uf: 'PA', name: 'Pará', region: 'Norte', rate: 19, fcp: 0, source: 'https://www.sefa.pa.gov.br/' },
+    { uf: 'PB', name: 'Paraíba', region: 'Nordeste', rate: 20, fcp: 0, source: 'https://www.sefaz.pb.gov.br/' },
+    { uf: 'PR', name: 'Paraná', region: 'Sul', rate: 19.5, fcp: 0, source: 'https://www.fazenda.pr.gov.br/' },
+    { uf: 'PE', name: 'Pernambuco', region: 'Nordeste', rate: 20.5, fcp: 0, source: 'https://www.sefaz.pe.gov.br/' },
+    { uf: 'PI', name: 'Piauí', region: 'Nordeste', rate: 22.5, fcp: 0, source: 'https://portal.sefaz.pi.gov.br/', note: 'Alíquota modal de 22,5%; produtos e benefícios podem possuir carga efetiva distinta.' },
+    { uf: 'RJ', name: 'Rio de Janeiro', region: 'Sudeste', rate: 20, fcp: 2, source: 'https://portal.fazenda.rj.gov.br/pagamentos/aliquotas-internas/', note: 'Alíquota geral de 20% acrescida de 2% de FECP, segundo a SEFAZ-RJ; há exceções por mercadoria.' },
+    { uf: 'RN', name: 'Rio Grande do Norte', region: 'Nordeste', rate: 20, fcp: 0, source: 'https://www.set.rn.gov.br/' },
+    { uf: 'RS', name: 'Rio Grande do Sul', region: 'Sul', rate: 17, fcp: 0, source: 'https://www.sefaz.rs.gov.br/' },
+    { uf: 'RO', name: 'Rondônia', region: 'Norte', rate: 19.5, fcp: 0, source: 'https://www.sefin.ro.gov.br/' },
+    { uf: 'RR', name: 'Roraima', region: 'Norte', rate: 20, fcp: 0, source: 'https://sefaz.rr.gov.br/' },
+    { uf: 'SC', name: 'Santa Catarina', region: 'Sul', rate: 17, fcp: 0, source: 'https://www.sef.sc.gov.br/' },
+    { uf: 'SP', name: 'São Paulo', region: 'Sudeste', rate: 18, fcp: 0, source: 'https://portal.fazenda.sp.gov.br/' },
+    { uf: 'SE', name: 'Sergipe', region: 'Nordeste', rate: 19, fcp: 1, source: 'https://www.sefaz.se.gov.br/', note: 'Fundo estadual de referência de 1%; confirme a incidência para o NCM consultado.' },
+    { uf: 'TO', name: 'Tocantins', region: 'Norte', rate: 20, fcp: 0, source: 'https://www.sefaz.to.gov.br/' }
+  ];
+  var ICMS_BENEFIT_CATEGORIES = [
+    { type: 'Redução de base de cálculo', icon: '↘', scope: 'Insumos agropecuários', ncm: 'Capítulos 01, 12, 23, 28, 29 e 31', chapters: ['01', '12', '23', '28', '29', '31'], terms: 'adubo fertilizante semente ração insumo agropecuário agrícola', reference: 'Convênio ICMS 100/1997', url: 'https://www.confaz.fazenda.gov.br/legislacao/convenios/1997/CV100_97', detail: 'Pode reduzir a carga em operações com insumos listados, conforme incorporação e condições da legislação estadual.' },
+    { type: 'Redução de base de cálculo', icon: '↘', scope: 'Máquinas e equipamentos industriais', ncm: 'NCMs dos anexos do convênio', chapters: ['84', '85', '87', '90'], terms: 'máquina equipamento industrial ativo imobilizado', reference: 'Convênio ICMS 52/1991', url: 'https://www.confaz.fazenda.gov.br/legislacao/convenios/1991/CV052_91', detail: 'Carga reduzida para itens expressamente relacionados; exige conferência do NCM completo e da vigência estadual.' },
+    { type: 'Isenção', icon: '○', scope: 'Equipamentos e insumos de saúde', ncm: 'NCMs específicos', chapters: ['30', '90', '94'], terms: 'hospital médico saúde equipamento medicamento deficiência', reference: 'Convênio ICMS 01/1999 e normas correlatas', url: 'https://www.confaz.fazenda.gov.br/legislacao/convenios/1999/CV001_99', detail: 'Hipóteses de isenção dependem do produto, destinatário, finalidade e incorporação pela Unidade Federada.' },
+    { type: 'Isenção / redução', icon: '○', scope: 'Cesta básica e alimentos', ncm: 'Capítulos 01 a 24', chapters: ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24'], terms: 'cesta básica alimento arroz feijão leite carne óleo farinha café', reference: 'Legislação estadual e convênios CONFAZ', url: 'https://www.confaz.fazenda.gov.br/legislacao/convenios', detail: 'O tratamento varia amplamente por estado, descrição, embalagem e NCM; consulte a lista estadual vigente.' },
+    { type: 'Crédito presumido', icon: '+', scope: 'Setores produtivos e programas estaduais', ncm: 'Conforme programa', terms: 'crédito presumido indústria atacado logística investimento programa incentivo', reference: 'Convênio ICMS 190/2017 e atos estaduais', url: 'https://www.confaz.fazenda.gov.br/legislacao/convenios/2017/CV190_17', detail: 'Benefícios reinstituídos e registrados exigem análise do ato concessivo, termo de acordo e condições de fruição.' },
+    { type: 'Diferimento', icon: '◷', scope: 'Etapas específicas da circulação', ncm: 'Conforme legislação estadual', terms: 'diferimento produtor indústria matéria prima operação subsequente', reference: 'RICMS e anexos da Unidade Federada', url: 'https://www.confaz.fazenda.gov.br/legislacao', detail: 'O recolhimento pode ser transferido para etapa posterior; não representa dispensa definitiva do imposto.' },
+    { type: 'Isenção / incentivo regional', icon: '◇', scope: 'Zona Franca e Áreas de Livre Comércio', ncm: 'Conforme produto e destino', terms: 'zona franca manaus alc área livre comércio suframa amazônia', reference: 'Convênios ICMS e legislação SUFRAMA', url: 'https://www.gov.br/suframa/pt-br/assuntos/incentivos-fiscais', detail: 'Exige comprovação do ingresso, destinatário habilitado, finalidade e observância das exclusões legais.' }
+  ];
+
+  var ANNEX_ORDER = ['I', 'II', 'III', 'IV', 'V'];
+  var ANNEX_LIMITS = [180000, 360000, 720000, 1800000, 3600000, 4800000];
+  var TAX_COLORS = {
+    IRPJ: '#2c67cf', CSLL: '#743bc2', COFINS: '#114896', 'PIS/Pasep': '#3464a6',
+    CBS: '#114896', IBS: '#1e51ab', CPP: '#c37b11', ISS: '#c23c3c',
+    ICMS: '#d45757', IPI: '#9059c7'
+  };
+  var SIMPLES_ANNEXES = {
+    I: {
+      key: 'I', name: 'Anexo I — Comércio', description: 'Receitas decorrentes de atividades de comércio.',
+      rates: [4, 7.3, 9.5, 10.7, 14.3, 19], deductions: [0, 5940, 13860, 22500, 87300, 378000],
+      partitions: [
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 12.74, 'PIS/Pasep': 2.76, CPP: 41.5, ICMS: 34 },
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 12.74, 'PIS/Pasep': 2.76, CPP: 41.5, ICMS: 34 },
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 12.74, 'PIS/Pasep': 2.76, CPP: 42, ICMS: 33.5 },
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 12.74, 'PIS/Pasep': 2.76, CPP: 42, ICMS: 33.5 },
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 12.74, 'PIS/Pasep': 2.76, CPP: 42, ICMS: 33.5 },
+        { IRPJ: 13.5, CSLL: 10, COFINS: 28.27, 'PIS/Pasep': 6.13, CPP: 42.1, ICMS: 0 }
+      ]
+    },
+    II: {
+      key: 'II', name: 'Anexo II — Indústria', description: 'Receitas decorrentes de atividades industriais.',
+      rates: [4.5, 7.8, 10, 11.2, 14.7, 30], deductions: [0, 5940, 13860, 22500, 85500, 720000],
+      partitions: [
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 11.51, 'PIS/Pasep': 2.49, CPP: 37.5, IPI: 7.5, ICMS: 32 },
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 11.51, 'PIS/Pasep': 2.49, CPP: 37.5, IPI: 7.5, ICMS: 32 },
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 11.51, 'PIS/Pasep': 2.49, CPP: 37.5, IPI: 7.5, ICMS: 32 },
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 11.51, 'PIS/Pasep': 2.49, CPP: 37.5, IPI: 7.5, ICMS: 32 },
+        { IRPJ: 5.5, CSLL: 3.5, COFINS: 11.51, 'PIS/Pasep': 2.49, CPP: 37.5, IPI: 7.5, ICMS: 32 },
+        { IRPJ: 8.5, CSLL: 7.5, COFINS: 20.96, 'PIS/Pasep': 4.54, CPP: 23.5, IPI: 35, ICMS: 0 }
+      ]
+    },
+    III: {
+      key: 'III', name: 'Anexo III — Serviços', description: 'Serviços do Anexo III e atividades sujeitas ao fator R igual ou superior a 28%.',
+      rates: [6, 11.2, 13.5, 16, 21, 33], deductions: [0, 9360, 17640, 35640, 125640, 648000],
+      partitions: [
+        { IRPJ: 4, CSLL: 3.5, COFINS: 12.82, 'PIS/Pasep': 2.78, CPP: 43.4, ISS: 33.5 },
+        { IRPJ: 4, CSLL: 3.5, COFINS: 14.05, 'PIS/Pasep': 3.05, CPP: 43.4, ISS: 32 },
+        { IRPJ: 4, CSLL: 3.5, COFINS: 13.64, 'PIS/Pasep': 2.96, CPP: 43.4, ISS: 32.5 },
+        { IRPJ: 4, CSLL: 3.5, COFINS: 13.64, 'PIS/Pasep': 2.96, CPP: 43.4, ISS: 32.5 },
+        { IRPJ: 4, CSLL: 3.5, COFINS: 12.82, 'PIS/Pasep': 2.78, CPP: 43.4, ISS: 33.5 },
+        { IRPJ: 35, CSLL: 15, COFINS: 16.03, 'PIS/Pasep': 3.47, CPP: 30.5, ISS: 0 }
+      ]
+    },
+    IV: {
+      key: 'IV', name: 'Anexo IV — Serviços', description: 'Serviços do Anexo IV; a contribuição patronal previdenciária não integra o DAS.',
+      rates: [4.5, 9, 10.2, 14, 22, 33], deductions: [0, 8100, 12420, 39780, 183780, 828000],
+      partitions: [
+        { IRPJ: 18.8, CSLL: 15.2, COFINS: 17.67, 'PIS/Pasep': 3.83, ISS: 44.5 },
+        { IRPJ: 19.8, CSLL: 15.2, COFINS: 20.55, 'PIS/Pasep': 4.45, ISS: 40 },
+        { IRPJ: 20.8, CSLL: 15.2, COFINS: 19.73, 'PIS/Pasep': 4.27, ISS: 40 },
+        { IRPJ: 17.8, CSLL: 19.2, COFINS: 18.9, 'PIS/Pasep': 4.1, ISS: 40 },
+        { IRPJ: 18.8, CSLL: 19.2, COFINS: 18.08, 'PIS/Pasep': 3.92, ISS: 40 },
+        { IRPJ: 53.5, CSLL: 21.5, COFINS: 20.55, 'PIS/Pasep': 4.45, ISS: 0 }
+      ]
+    },
+    V: {
+      key: 'V', name: 'Anexo V — Serviços profissionais', description: 'Serviços profissionais e atividades sujeitas ao fator R inferior a 28%.',
+      rates: [15.5, 18, 19.5, 20.5, 23, 30.5], deductions: [0, 4500, 9900, 17100, 62100, 540000],
+      partitions: [
+        { IRPJ: 25, CSLL: 15, COFINS: 14.1, 'PIS/Pasep': 3.05, CPP: 28.85, ISS: 14 },
+        { IRPJ: 23, CSLL: 15, COFINS: 14.1, 'PIS/Pasep': 3.05, CPP: 27.85, ISS: 17 },
+        { IRPJ: 24, CSLL: 15, COFINS: 14.92, 'PIS/Pasep': 3.23, CPP: 23.85, ISS: 19 },
+        { IRPJ: 21, CSLL: 15, COFINS: 15.74, 'PIS/Pasep': 3.41, CPP: 23.85, ISS: 21 },
+        { IRPJ: 23, CSLL: 12.5, COFINS: 14.1, 'PIS/Pasep': 3.05, CPP: 23.85, ISS: 23.5 },
+        { IRPJ: 35, CSLL: 15.5, COFINS: 16.44, 'PIS/Pasep': 3.56, CPP: 29.5, ISS: 0 }
+      ]
+    }
+  };
+
+  function $(selector, context) { return (context || document).querySelector(selector); }
+  function $$(selector, context) { return Array.prototype.slice.call((context || document).querySelectorAll(selector)); }
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (char) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char];
+    });
+  }
+  function money(value) { return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
+  function number(value) { return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 }); }
+  function updateBrazilClock() {
+    var now = new Date();
+    var dateText = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric' }).format(now);
+    var timeText = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(now);
+    var isoText = now.toISOString();
+    $$('.brazil-clock-time').forEach(function (element) { element.textContent = timeText; element.setAttribute('datetime', isoText); });
+    $$('.brazil-clock-date').forEach(function (element) { element.textContent = dateText + ' · BRT'; });
+    var headerClock = $('#header-brazil-clock');
+    if (headerClock) headerClock.setAttribute('aria-label', 'Horário de Brasília: ' + timeText + ', ' + dateText);
+    var footerClock = $('#footer-update');
+    if (footerClock) {
+      footerClock.textContent = 'Data e hora do Brasil: ' + dateText + ' às ' + timeText + ' BRT';
+      footerClock.setAttribute('datetime', isoText);
+    }
+  }
+  function docDigits(value) { return String(value || '').replace(/\D/g, ''); }
+  function cleanCnpj(value) { return String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 14); }
+  function clientDocumentKey(value) {
+    var cnpj = cleanCnpj(value);
+    return cnpj.length === 14 ? cnpj : docDigits(value).slice(0, 11);
+  }
+  function cnpjDigit(base) {
+    var weights = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2], chars = String(base || '').split(''), total = 0;
+    var start = weights.length - chars.length;
+    chars.forEach(function (char, index) { total += (char.charCodeAt(0) - 48) * weights[start + index]; });
+    var remainder = total % 11;
+    return remainder < 2 ? 0 : 11 - remainder;
+  }
+  function validCnpj(value) {
+    var cnpj = cleanCnpj(value);
+    if (!/^[A-Z0-9]{12}[0-9]{2}$/.test(cnpj) || /^(\d)\1{13}$/.test(cnpj)) return false;
+    var first = cnpjDigit(cnpj.slice(0, 12));
+    var second = cnpjDigit(cnpj.slice(0, 12) + first);
+    return cnpj.slice(12) === String(first) + String(second);
+  }
+  function validCpf(value) {
+    var cpf = docDigits(value);
+    if (!/^\d{11}$/.test(cpf) || /^(\d)\1{10}$/.test(cpf)) return false;
+    function digit(length) {
+      var total = 0;
+      for (var index = 0; index < length; index += 1) total += Number(cpf[index]) * (length + 1 - index);
+      var remainder = (total * 10) % 11;
+      return remainder === 10 ? 0 : remainder;
+    }
+    return digit(9) === Number(cpf[9]) && digit(10) === Number(cpf[10]);
+  }
+  function validClientDocument(value) { return validCpf(value) || validCnpj(value); }
+  function formatCnpj(value) {
+    var cnpj = cleanCnpj(value);
+    if (cnpj.length !== 14) return String(value || '');
+    return cnpj.slice(0, 2) + '.' + cnpj.slice(2, 5) + '.' + cnpj.slice(5, 8) + '/' + cnpj.slice(8, 12) + '-' + cnpj.slice(12);
+  }
+  function formatCnae(value) {
+    var cnae = String(value || '').replace(/\D/g, '').slice(0, 7);
+    if (cnae && cnae.length < 7) cnae = cnae.padStart(7, '0');
+    return cnae.length === 7 ? cnae.slice(0, 4) + '-' + cnae.slice(4, 5) + '/' + cnae.slice(5) : String(value || '');
+  }
+  function initials(name) { return String(name || 'SC').split(/\s+/).filter(Boolean).slice(0, 2).map(function (p) { return p[0]; }).join('').toUpperCase(); }
+  function validProfilePhoto(value) { return /^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(String(value || '')); }
+  function profileAvatarContent(user, alt) {
+    return validProfilePhoto(user && user.profilePhotoDataUrl)
+      ? '<img src="' + esc(user.profilePhotoDataUrl) + '" alt="' + esc(alt || '') + '">'
+      : esc(initials(user && user.name));
+  }
+  function uid(prefix) { return (prefix || 'id') + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7); }
+  function nowISO() { return new Date().toISOString(); }
+  function dateBR(iso) {
+    if (!iso) return '—';
+    var part = String(iso).slice(0, 10).split('-');
+    return part.length === 3 ? part[2] + '/' + part[1] + '/' + part[0] : iso;
+  }
+  function dateTimeBR(value) {
+    if (!value) return '—';
+    var parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString('pt-BR');
+  }
+  function accessDateTimeBR(value) {
+    if (!value) return 'Primeiro acesso';
+    var parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return String(value);
+    return parsed.toLocaleDateString('pt-BR') + ' às ' + parsed.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  }
+  function todayISO() {
+    var date = new Date();
+    return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+  }
+  function localDate(iso) {
+    var parts = String(iso || '').slice(0, 10).split('-').map(Number);
+    return parts.length === 3 && parts.every(Boolean) ? new Date(parts[0], parts[1] - 1, parts[2]) : null;
+  }
+  function addMonthsISO(iso, months, inclusiveEnd) {
+    var source = localDate(iso) || new Date();
+    var day = source.getDate();
+    var target = new Date(source.getFullYear(), source.getMonth() + Number(months || 0), 1);
+    var lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(day, lastDay));
+    if (inclusiveEnd) target.setDate(target.getDate() - 1);
+    return target.getFullYear() + '-' + String(target.getMonth() + 1).padStart(2, '0') + '-' + String(target.getDate()).padStart(2, '0');
+  }
+  function billingMonths(cycle) { return cycle === 'Anual' ? 12 : cycle === 'Trimestral' ? 3 : 1; }
+  function subscriptionInfo(user) {
+    var start = localDate(user.monitoringStart);
+    var end = localDate(user.monitoringEnd);
+    var today = localDate(todayISO());
+    if (!start || !end) return { status: 'Incompleto', className: 'warning', percent: 0, daysRemaining: 0, nextDue: '—' };
+    var dayMs = 86400000;
+    var totalDays = Math.max(1, Math.round((end - start) / dayMs) + 1);
+    var elapsed = Math.round((today - start) / dayMs) + 1;
+    var percent = Math.max(0, Math.min(100, elapsed / totalDays * 100));
+    var daysRemaining = Math.max(0, Math.round((end - today) / dayMs));
+    var status = 'Ativo', className = 'success';
+    if (!user.active) { status = 'Inativo'; className = 'danger'; }
+    else if (today < start) { status = 'Agendado'; className = 'info'; percent = 0; }
+    else if (today > end) { status = 'Encerrado'; className = 'danger'; percent = 100; daysRemaining = 0; }
+    else if (daysRemaining <= 30) { status = 'Vence em breve'; className = 'warning'; }
+    var nextDue = '—';
+    if (status !== 'Encerrado' && status !== 'Inativo') {
+      var due = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+      if (today >= start) {
+        var step = billingMonths(user.billingCycle);
+        while (due <= today && due <= end) {
+          var dueISO = due.getFullYear() + '-' + String(due.getMonth() + 1).padStart(2, '0') + '-' + String(due.getDate()).padStart(2, '0');
+          due = localDate(addMonthsISO(dueISO, step, false));
+        }
+      }
+      if (due <= end) nextDue = dateBR(due.getFullYear() + '-' + String(due.getMonth() + 1).padStart(2, '0') + '-' + String(due.getDate()).padStart(2, '0'));
+      else nextDue = 'Ciclo concluído';
+    }
+    return { status: status, className: className, percent: percent, daysRemaining: daysRemaining, nextDue: nextDue, totalDays: totalDays };
+  }
+  function storageGet(key, fallback) {
+    try { var value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; }
+    catch (error) { return fallback; }
+  }
+  function storageSet(key, value) {
+    localStorage.setItem(key, JSON.stringify(value));
+    updateSaveStatus();
+  }
+  function persist() {
+    storageSet(KEYS.clients, state.clients);
+    storageSet(KEYS.audit, state.audit.slice(0, 500));
+    storageSet(KEYS.legal, state.customLegal);
+    storageSet(KEYS.settings, state.settings);
+    storageSet(KEYS.users, state.users.map(function (user) { var safe = Object.assign({}, user); delete safe.password; return safe; }));
+    scheduleServerSync();
+  }
+  function seed() {
+    state.clients = storageGet(KEYS.clients, null) || DEMO_CLIENTS;
+    var demoDocumentCorrections = {
+      'cli-ime-03': ['12.345.678/0001-90', '12.345.678/0001-95'],
+      'cli-horizonte': ['45.926.810/0001-07', '45.926.810/0001-01'],
+      'cli-raiz': ['38.217.506/0001-42', '38.217.506/0001-20'],
+      'cli-studio': ['51.720.364/0001-11', '51.720.364/0001-87']
+    };
+    state.clients.forEach(function (client) {
+      var correction = demoDocumentCorrections[client.id];
+      if (correction && client.document === correction[0]) client.document = correction[1];
+    });
+    state.audit = storageGet(KEYS.audit, []);
+    state.customLegal = storageGet(KEYS.legal, []);
+    state.settings = storageGet(KEYS.settings, { company: APP_NAME, inactivity: 30, legalBaseChecked: TODAY });
+    if (['ERP Gestão Fiscal – Inteligência Tributária', 'ERP Gestão Fiscal', 'Gestão Fiscal Pro', 'SimplesCalc Pro', 'SimplesCalc Assessoria'].indexOf(state.settings.company) >= 0) state.settings.company = APP_NAME;
+    state.users = (storageGet(KEYS.users, null) || DEFAULT_USERS).map(function (user) { var safe = Object.assign({}, user); delete safe.password; return safe; });
+    state.selectedClientId = storageGet('simplescalc.selectedClient', state.clients[0] && state.clients[0].id);
+    if (!state.clients.some(function (c) { return c.id === state.selectedClientId; })) state.selectedClientId = state.clients[0] && state.clients[0].id;
+    persist();
+  }
+  function audit(action, detail) {
+    state.audit.unshift({ id: uid('audit'), date: nowISO(), user: currentUser ? currentUser.name : 'Sistema', role: currentUser ? currentUser.role : 'Sistema', action: action, detail: detail || '' });
+    storageSet(KEYS.audit, state.audit.slice(0, 500));
+  }
+  function toast(title, message, type) {
+    var region = $('#toast-region');
+    var element = document.createElement('div');
+    element.className = 'toast' + (type ? ' toast--' + type : '');
+    element.innerHTML = '<span>' + (type === 'error' ? '!' : type === 'warning' ? '⚠' : '✓') + '</span><div><b>' + esc(title) + '</b><span>' + esc(message || '') + '</span></div>';
+    region.appendChild(element);
+    window.setTimeout(function () { element.remove(); }, 4200);
+  }
+  function updateSaveStatus() {
+    var el = $('#save-status');
+    if (!el) return;
+    el.classList.add('is-saving');
+    el.innerHTML = '<i></i> Salvando...';
+    window.setTimeout(function () {
+      el.classList.remove('is-saving');
+      el.innerHTML = '<i></i> Dados salvos';
+    }, 450);
+  }
+  function currentClient() { return state.clients.find(function (c) { return c.id === state.selectedClientId; }) || state.clients[0]; }
+  function isAdmin() { return currentUser && currentUser.role === 'Administrador'; }
+  function requireAdmin() {
+    if (isAdmin()) return true;
+    toast('Acesso somente para administradores', 'Seu perfil atual possui permissão de consulta.', 'warning');
+    return false;
+  }
+  function downloadFile(filename, data, type) {
+    var blob = new Blob([data], { type: type || 'application/json;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+  function base64ToBytes(value) {
+    var binary = atob(String(value || ''));
+    var bytes = new Uint8Array(binary.length);
+    for (var index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+  function openModal(title, body, footer, small) {
+    var layer = $('#modal-layer');
+    var modifier = small === 'profile' ? ' modal--profile' : (small ? ' modal--small' : '');
+    layer.innerHTML = '<section class="modal' + modifier + '" role="dialog" aria-modal="true"><header class="modal-header"><h2>' + esc(title) + '</h2><button class="icon-button" data-action="close-modal" aria-label="Fechar">×</button></header><div class="modal-body">' + body + '</div>' + (footer ? '<footer class="modal-footer">' + footer + '</footer>' : '') + '</section>';
+    layer.classList.remove('is-hidden');
+  }
+  function closeModal() { $('#modal-layer').classList.add('is-hidden'); $('#modal-layer').innerHTML = ''; }
+
+  function authenticate(email, password) {
+    return null;
+  }
+  function apiEnabled() { return /^https?:$/.test(location.protocol); }
+  function apiRequest(path, options) {
+    if (String(path || '').indexOf('/api/sefaz/') === 0 && !apiEnabled()) {
+      return Promise.reject(new Error('O certificado digital só pode ser processado no modo seguro. Inicie o servidor e acesse http://127.0.0.1:4173.'));
+    }
+    var request = Object.assign({ headers: {} }, options || {});
+    request.headers = Object.assign({ 'Content-Type': 'application/json' }, request.headers || {});
+    if (apiToken) request.headers.Authorization = 'Bearer ' + apiToken;
+    return fetch(path, request).catch(function () {
+      if (String(path || '').indexOf('/api/sefaz/') === 0) throw new Error('Não foi possível conectar ao servidor seguro. Confirme que iniciar-site.cmd está aberto e acesse http://127.0.0.1:4173.');
+      throw new Error('Falha de comunicação com o servidor.');
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (payload) {
+        if (!response.ok) throw new Error(payload.error || 'Falha de comunicação com o servidor.');
+        return payload;
+      });
+    });
+  }
+  function scheduleServerSync() {
+    if (!apiEnabled() || !apiToken || hydratingFromServer || !isAdmin()) return;
+    window.clearTimeout(syncTimer);
+    syncTimer = window.setTimeout(function () {
+      apiRequest('/api/state', { method: 'PUT', body: JSON.stringify({ clients: state.clients, audit: state.audit.slice(0, 500), customLegal: state.customLegal, settings: state.settings }) }).catch(function () {
+        toast('Sincronização pendente', 'Os dados continuam salvos localmente e serão reenviados quando o servidor estiver disponível.', 'warning');
+      });
+    }, 350);
+  }
+  function hydrateFromServer() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    hydratingFromServer = true;
+    return apiRequest('/api/state').then(function (payload) {
+      if (payload.data && Array.isArray(payload.data.clients) && payload.data.clients.length) {
+        state.clients = payload.data.clients;
+        state.audit = Array.isArray(payload.data.audit) ? payload.data.audit : state.audit;
+        state.customLegal = Array.isArray(payload.data.customLegal) ? payload.data.customLegal : state.customLegal;
+        state.settings = payload.data.settings || state.settings;
+        if (['ERP Gestão Fiscal – Inteligência Tributária', 'ERP Gestão Fiscal', 'Gestão Fiscal Pro', 'SimplesCalc Pro', 'SimplesCalc Assessoria'].indexOf(state.settings.company) >= 0) state.settings.company = APP_NAME;
+        if (Array.isArray(payload.data.users) && payload.data.users.length) {
+          state.users = payload.data.users.map(function (remoteUser) {
+            var localUser = state.users.find(function (item) { return String(item.email).toLowerCase() === String(remoteUser.email).toLowerCase(); });
+            return Object.assign({}, localUser || {}, remoteUser);
+          });
+        }
+        if (!state.clients.some(function (c) { return c.id === state.selectedClientId; })) state.selectedClientId = state.clients[0].id;
+        storageSet(KEYS.clients, state.clients);
+        storageSet(KEYS.audit, state.audit);
+        storageSet(KEYS.legal, state.customLegal);
+        storageSet(KEYS.settings, state.settings);
+        storageSet(KEYS.users, state.users);
+      } else {
+        hydratingFromServer = false;
+        scheduleServerSync();
+        return;
+      }
+    }).catch(function () {
+      toast('Modo local ativado', 'O servidor não respondeu; a base persistente do navegador continua disponível.', 'warning');
+    }).finally(function () { hydratingFromServer = false; });
+  }
+  function loginUser(email, password) {
+    if (!apiEnabled()) return Promise.reject(new Error('Por segurança, o login e os usuários funcionam somente no modo seguro. Execute ABRIR-MODO-SEGURO.cmd.'));
+    return apiRequest('/api/login', { method: 'POST', body: JSON.stringify({ email: email, password: password }) }).then(function (payload) {
+      if (payload && payload.user) return payload;
+      throw new Error('E-mail ou senha inválidos.');
+    });
+  }
+  function setLoginView(view) {
+    var isRegistering = view === 'register';
+    $('#login-form').classList.toggle('is-hidden', isRegistering);
+    $('#register-form').classList.toggle('is-hidden', !isRegistering);
+    $('#login-screen').classList.toggle('is-registering', isRegistering);
+    document.title = isRegistering ? 'Criar conta · ' + APP_NAME : APP_NAME;
+    if (isRegistering) {
+      loadSignupPlans();
+      window.setTimeout(function () { $('#signup-responsible').focus(); }, 40);
+    } else window.setTimeout(function () { $('#login-email').focus(); }, 40);
+  }
+  function signupPlanById(id) {
+    return signupPlans.find(function (plan) { return plan.id === id; }) || signupPlans[0];
+  }
+  function signupCycleValue(plan, cycle) {
+    if (cycle === 'Anual') return Number(plan.annualValue || 0);
+    if (cycle === 'Trimestral') return Number(plan.monthlyValue || 0) * 3;
+    return Number(plan.monthlyValue || 0);
+  }
+  function signupCycleLabel(cycle) {
+    if (cycle === 'Anual') return 'ano';
+    if (cycle === 'Trimestral') return 'trimestre';
+    return 'mês';
+  }
+  function renderSignupPlans() {
+    var select = $('#signup-plan');
+    if (!select || !signupPlans.length) return;
+    var selected = select.value || signupPlans[0].id;
+    select.innerHTML = signupPlans.map(function (plan) {
+      return '<option value="' + esc(plan.id) + '"' + (plan.id === selected ? ' selected' : '') + '>' + esc(plan.name) + ' — ' + money(plan.monthlyValue) + '/mês ou ' + money(plan.annualValue) + '/ano</option>';
+    }).join('');
+    if (!signupPlanById(select.value)) select.value = signupPlans[0].id;
+    updateSignupPlanSummary();
+  }
+  function loadSignupPlans() {
+    renderSignupPlans();
+    if (!apiEnabled()) return Promise.resolve(signupPlans);
+    return apiRequest('/api/public/plans').then(function (payload) {
+      if (payload && Array.isArray(payload.plans) && payload.plans.length) signupPlans = payload.plans;
+      renderSignupPlans();
+      return signupPlans;
+    }).catch(function () { return signupPlans; });
+  }
+  function updateSignupPlanSummary() {
+    var planField = $('#signup-plan'), cycleField = $('#signup-billing-cycle'), summary = $('#signup-plan-summary');
+    if (!planField || !cycleField || !summary) return;
+    var plan = signupPlanById(planField.value), cycle = cycleField.value;
+    summary.innerHTML = '<span>Plano escolhido</span><strong>' + esc(plan.name) + ' · ' + money(signupCycleValue(plan, cycle)) + '/' + signupCycleLabel(cycle) + '</strong><small>' + esc(plan.trialDays || 7) + ' dias de avaliação incluídos</small>';
+  }
+  function updateSignupActivities() {
+    var segment = $('#signup-segment'), activity = $('#signup-activity');
+    if (!segment || !activity) return;
+    var options = signupActivities[segment.value] || [];
+    activity.innerHTML = '<option value="">' + (options.length ? 'Selecione uma opção' : 'Selecione primeiro o segmento') + '</option>' + options.map(function (item) { return '<option>' + esc(item) + '</option>'; }).join('');
+  }
+  function setSignupDocumentType(type) {
+    var selectedType = type === 'CPF' ? 'CPF' : 'CNPJ';
+    $('#signup-document-type').value = selectedType;
+    $$('.signup-document-toggle button').forEach(function (button) { button.classList.toggle('active', button.getAttribute('data-type') === selectedType); });
+    var input = $('#signup-document'); input.value = ''; input.placeholder = selectedType === 'CPF' ? '000.000.000-00' : '00.000.000/0000-00'; input.maxLength = selectedType === 'CPF' ? 14 : 18; input.focus();
+  }
+  function formatSignupDocument(value) {
+    var type = $('#signup-document-type') && $('#signup-document-type').value;
+    if (type === 'CPF') {
+      var cpf = String(value || '').replace(/\D/g, '').slice(0, 11);
+      return cpf.replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+    }
+    var cnpj = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 14);
+    return cnpj.replace(/^(.{2})(.)/, '$1.$2').replace(/^(.{2})\.(.{3})(.)/, '$1.$2.$3').replace(/\.(.{3})(.)/, '.$1/$2').replace(/(.{4})(.{1,2})$/, '$1-$2');
+  }
+  function formatSignupPhone(value) {
+    var phone = String(value || '').replace(/\D/g, '').slice(0, 11);
+    if (phone.length > 10) return phone.replace(/^(\d{2})(\d{5})(\d{1,4})$/, '($1) $2-$3');
+    return phone.replace(/^(\d{2})(\d{4})(\d{1,4})$/, '($1) $2-$3');
+  }
+  function signupTermsModal() {
+    openModal('Termos de serviço e privacidade', '<div class="info-banner"><span>🔒</span><div><strong>Uso responsável e proteção de dados.</strong> Ao criar a conta, o usuário declara que os dados são verdadeiros, autoriza o tratamento necessário para prestação do serviço e compromete-se a proteger suas credenciais.</div></div><p>Os dados cadastrais são utilizados para autenticação, administração da assinatura, suporte, segurança, auditoria e funcionamento dos módulos contratados. O tratamento deve seguir a LGPD (Lei nº 13.709/2018), com acesso restrito e registro das ações relevantes.</p><p>O período de avaliação não confirma pagamento. Valores, renovação e continuidade da assinatura seguem o plano e a periodicidade selecionados.</p>', '<button class="primary-button" data-action="close-modal">Li e compreendi</button>', true);
+  }
+  function openPasswordRecovery() {
+    var email = $('#login-email') ? $('#login-email').value : '';
+    var body = '<div class="password-reset-intro"><span>1</span><div><strong>Confirme sua identidade</strong><p>Use os mesmos dados informados no cadastro da conta.</p></div></div><form id="password-reset-identify-form"><label class="field"><span>E-mail cadastrado *</span><input name="email" type="email" required autocomplete="email" value="' + esc(email) + '" placeholder="seu@email.com"></label><label class="field"><span>CPF ou CNPJ cadastrado *</span><input name="document" required autocomplete="off" placeholder="Digite somente os dados da conta"></label><label class="field"><span>WhatsApp com DDD *</span><input name="phone" required inputmode="tel" autocomplete="tel" placeholder="(00) 00000-0000"></label><div class="password-reset-security">🔒 As informações serão comparadas no servidor e não ficarão expostas na página.</div></form>';
+    openModal('Alterar minha senha', body, '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="password-reset-verify">Confirmar identidade</button>', true);
+    window.setTimeout(function () { var field = document.querySelector('#password-reset-identify-form [name="email"]'); if (field) field.focus(); }, 30);
+  }
+  function verifyPasswordReset() {
+    var form = $('#password-reset-identify-form');
+    if (!form || !form.reportValidity()) return;
+    if (!apiEnabled()) { toast('Abra o modo seguro', 'A alteração de senha funciona pelo ABRIR-MODO-SEGURO.cmd.', 'warning'); return; }
+    var data = Object.fromEntries(new FormData(form).entries());
+    var button = document.querySelector('[data-action="password-reset-verify"]');
+    if (button) { button.disabled = true; button.textContent = 'Conferindo...'; }
+    apiRequest('/api/password-reset/request', { method: 'POST', body: JSON.stringify(data) }).then(function (payload) {
+      var reset = payload.reset || {};
+      var body = '<div class="password-reset-intro password-reset-intro--success"><span>✓</span><div><strong>Identidade confirmada</strong><p>Olá, ' + esc(reset.name || 'usuário') + '. Crie uma nova senha para continuar.</p></div></div><form id="password-reset-new-form"><input name="resetToken" type="hidden" value="' + esc(reset.resetToken || '') + '"><input name="email" type="hidden" value="' + esc(data.email) + '"><label class="field"><span>Nova senha *</span><span class="password-wrap"><input id="password-reset-new" name="password" type="password" minlength="8" required autocomplete="new-password" placeholder="Mínimo de 8 caracteres, letras e números"><button type="button" class="icon-button" data-action="toggle-field-password" data-target="password-reset-new" aria-label="Mostrar nova senha">◉</button></span></label><label class="field"><span>Confirme a nova senha *</span><span class="password-wrap"><input id="password-reset-confirmation" name="passwordConfirmation" type="password" minlength="8" required autocomplete="new-password" placeholder="Repita a nova senha"><button type="button" class="icon-button" data-action="toggle-field-password" data-target="password-reset-confirmation" aria-label="Mostrar confirmação">◉</button></span></label><div class="password-reset-security">⏱ Esta autorização é válida por 10 minutos e poderá ser utilizada apenas uma vez.</div></form>';
+      var modalBody = document.querySelector('#modal-layer .modal-body');
+      var modalFooter = document.querySelector('#modal-layer .modal-footer');
+      if (modalBody) modalBody.innerHTML = body;
+      if (modalFooter) modalFooter.innerHTML = '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="password-reset-save">Salvar nova senha</button>';
+      window.setTimeout(function () { var field = $('#password-reset-new'); if (field) field.focus(); }, 30);
+    }).catch(function (error) {
+      toast('Não foi possível confirmar', error.message || 'Confira os dados cadastrados.', 'error');
+      if (button) { button.disabled = false; button.textContent = 'Confirmar identidade'; }
+    });
+  }
+  function savePasswordReset() {
+    var form = $('#password-reset-new-form');
+    if (!form || !form.reportValidity()) return;
+    var data = Object.fromEntries(new FormData(form).entries());
+    var button = document.querySelector('[data-action="password-reset-save"]');
+    if (button) { button.disabled = true; button.textContent = 'Salvando...'; }
+    apiRequest('/api/password-reset/confirm', { method: 'POST', body: JSON.stringify(data) }).then(function () {
+      closeModal();
+      $('#login-email').value = data.email || '';
+      $('#login-password').value = '';
+      $('#login-password').focus();
+      toast('Senha alterada com sucesso', 'Entre usando sua nova senha. As sessões anteriores foram encerradas.');
+    }).catch(function (error) {
+      toast('Não foi possível alterar', error.message || 'Inicie a recuperação novamente.', 'error');
+      if (button) { button.disabled = false; button.textContent = 'Salvar nova senha'; }
+    });
+  }
+  function setLoginVideoPlayback(shouldPlay) {
+    var video = $('.login-background-video');
+    if (!video) return;
+    if (shouldPlay) {
+      video.muted = true;
+      var playRequest = video.play();
+      if (playRequest && typeof playRequest.catch === 'function') playRequest.catch(function () {});
+    } else video.pause();
+  }
+  function safeProfile(user) {
+    var source = user || {};
+    var allowed = [
+      'id', 'name', 'email', 'role', 'active', 'billingCycle', 'subscriptionValue',
+      'monitoringStart', 'monitoringEnd', 'subscriptionStatus', 'daysRemaining',
+      'lastLoginAt', 'currentLoginAt', 'profilePhotoDataUrl', 'profilePhotoUpdatedAt',
+      'status', 'planId', 'modules'
+    ];
+    var result = {};
+    allowed.forEach(function (key) { if (source[key] !== undefined) result[key] = source[key]; });
+    return result;
+  }
+  function updateHeaderProfile() {
+    if (!currentUser) return;
+    $('#header-user').textContent = currentUser.name || 'Usuário';
+    $('#header-role').textContent = currentUser.role || 'Usuário';
+    var avatar = $('#header-avatar');
+    avatar.innerHTML = profileAvatarContent(currentUser, 'Foto de ' + (currentUser.name || 'usuário'));
+    avatar.classList.toggle('has-photo', validProfilePhoto(currentUser.profilePhotoDataUrl));
+  }
+  function applyCurrentProfile(profile) {
+    currentUser = Object.assign({}, safeProfile(currentUser), safeProfile(profile));
+    sessionStorage.setItem(KEYS.auth, JSON.stringify(currentUser));
+    updateHeaderProfile();
+  }
+  function refreshCurrentProfile() {
+    var localUser = state.users.find(function (item) {
+      return currentUser && String(item.email || '').toLowerCase() === String(currentUser.email || '').toLowerCase();
+    });
+    if (localUser) applyCurrentProfile(localUser);
+    if (!apiEnabled() || !apiToken) return Promise.resolve(currentUser);
+    return apiRequest('/api/profile').then(function (payload) {
+      if (payload && payload.user) applyCurrentProfile(payload.user);
+      return currentUser;
+    }).catch(function () { return currentUser; });
+  }
+  async function showApp(user, forceHome) {
+    currentUser = safeProfile(user);
+    sessionStorage.setItem(KEYS.auth, JSON.stringify(currentUser));
+    setLoginView('login');
+    $('#login-screen').classList.add('is-hidden');
+    $('#app-shell').classList.remove('is-hidden');
+    setLoginVideoPlayback(false);
+    updateHeaderProfile();
+    await hydrateFromServer();
+    await refreshCurrentProfile();
+    if (window.UserAccessManager) window.UserAccessManager.applyMenu(currentUser);
+    refreshClientSelect();
+    if (forceHome && window.history && window.history.replaceState) window.history.replaceState(null, '', location.href.split('#')[0] + '#inicio');
+    route();
+  }
+  function logout() {
+    audit('Sessão encerrada', 'Logout do usuário');
+    if (apiEnabled() && apiToken) apiRequest('/api/logout', { method: 'POST' }).catch(function () {});
+    apiToken = '';
+    sessionStorage.removeItem('simplescalc.apiToken');
+    sessionStorage.removeItem(KEYS.auth);
+    currentUser = null;
+    $('#app-shell').classList.add('is-hidden');
+    $('#login-screen').classList.remove('is-hidden');
+    setLoginView('login');
+    setLoginVideoPlayback(true);
+    toast('Sessão encerrada', 'Até a próxima.');
+  }
+  function refreshClientSelect() {
+    var select = $('#header-client-select');
+    if (!select) return;
+    select.innerHTML = state.clients.map(function (c) { return '<option value="' + esc(c.id) + '"' + (c.id === state.selectedClientId ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('');
+  }
+  function setSelectedClient(id) {
+    if (!state.clients.some(function (c) { return c.id === id; })) return;
+    state.selectedClientId = id;
+    localStorage.setItem('simplescalc.selectedClient', JSON.stringify(id));
+    refreshClientSelect();
+  }
+  function navigate(routeName) {
+    var target = String(routeName || 'inicio');
+    if (location.hash.slice(1) === target) route();
+    else location.hash = target;
+  }
+  function renderFiscalModule(routeName) {
+    var module = FISCAL_MODULES[routeName] || FISCAL_MODULES['consulta-cnpj'];
+    var isCnpj = module.tab === 'cnpj' || module.tab === 'simples';
+    var sourceAction = isCnpj ? '<a class="secondary-button" target="_blank" rel="noopener" href="https://www.gov.br/receitafederal/pt-br/acesso-a-informacao/acoes-e-programas/programas-e-atividades/cnpj-alfanumerico">Fonte oficial do CNPJ alfanumérico ↗</a>' : '';
+    return [
+      pageHeading(module.title, module.desc, sourceAction),
+      '<div class="info-banner fiscal-source-banner' + (isCnpj ? '' : ' is-hidden') + '" id="fiscal-source-banner"><span>▣</span><div><strong>CNPJ alfanumérico habilitado.</strong> O campo aceita 14 posições no formato AA.AAA.AAA/AAAA-00, mantém compatibilidade com os CNPJs numéricos e confere os dígitos verificadores pelo módulo 11.</div></div>',
+      '<section class="fiscal-module-shell">',
+        '<div class="fiscal-module-toolbar"><span><i></i> Módulo de consulta integrado</span><small>Dados, filtros e calculadoras preservados do sistema fiscal anexado</small></div>',
+        '<iframe class="fiscal-module-frame" id="fiscal-module-frame" data-tab="' + module.tab + '" src="gestao-fiscal-consultas.html?embed=1#' + module.tab + '" title="' + esc(module.title) + '" loading="eager" referrerpolicy="strict-origin-when-cross-origin" allow="clipboard-read; clipboard-write" sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-popups-to-escape-sandbox"></iframe>',
+      '</section>'
+    ].join('');
+  }
+  function updateFiscalModuleView(routeName) {
+    var module = FISCAL_MODULES[routeName] || FISCAL_MODULES['consulta-cnpj'];
+    var isCnpj = module.tab === 'cnpj' || module.tab === 'simples';
+    var heading = $('.page-heading h1'), description = $('.page-heading p'), actions = $('.page-actions');
+    if (heading) heading.textContent = module.title;
+    if (description) description.textContent = module.desc;
+    if (actions) actions.innerHTML = isCnpj ? '<a class="secondary-button" target="_blank" rel="noopener" href="https://www.gov.br/receitafederal/pt-br/acesso-a-informacao/acoes-e-programas/programas-e-atividades/cnpj-alfanumerico">Fonte oficial do CNPJ alfanumérico ↗</a>' : '';
+    var notice = $('#fiscal-source-banner');
+    if (notice) notice.classList.toggle('is-hidden', !isCnpj);
+    var frame = $('#fiscal-module-frame');
+    if (frame && frame.getAttribute('data-tab') !== module.tab) {
+      frame.setAttribute('data-tab', module.tab);
+      frame.setAttribute('title', module.title);
+      frame.src = frame.src.split('#')[0] + '#' + module.tab;
+    }
+  }
+
+  function sefazCan(permission) {
+    return isAdmin() || sefazState.permissions.indexOf(permission) >= 0;
+  }
+  function fiscalKeyDigits(value, limit) { return String(value || '').replace(/\D/g, '').slice(0, limit || 50); }
+  function accessKeyDigits(value) { return fiscalKeyDigits(value, 44); }
+  function nfseKeyDigits(value) { return fiscalKeyDigits(value, 50); }
+  function currentSefazDocumentKind() { return $('#sefaz-document-kind') ? $('#sefaz-document-kind').value : 'dfe'; }
+  function nfseKeyValid(value) { var key = nfseKeyDigits(value); return key.length === 50 && !/^(\d)\1{49}$/.test(key); }
+  function accessKeyValid(key) {
+    var digits = accessKeyDigits(key);
+    if (digits.length !== 44 || /^(\d)\1{43}$/.test(digits)) return false;
+    var weight = 2, sum = 0;
+    for (var index = 42; index >= 0; index -= 1) { sum += Number(digits[index]) * weight; weight = weight === 9 ? 2 : weight + 1; }
+    var remainder = sum % 11;
+    var verifier = remainder === 0 || remainder === 1 ? 0 : 11 - remainder;
+    return verifier === Number(digits[43]);
+  }
+  function accessKeyMeta(key) {
+    var digits = accessKeyDigits(key), modelCode = digits.length >= 22 ? digits.slice(20, 22) : '';
+    var models = { '55': 'NF-e', '65': 'NFC-e', '57': 'CT-e', '67': 'CT-e OS', '58': 'MDF-e' };
+    return { key: digits, count: digits.length, modelCode: modelCode, model: models[modelCode] || (digits.length === 44 ? 'Documento não reconhecido' : 'Aguardando chave'), valid: accessKeyValid(digits) };
+  }
+  function currentFiscalKeyMeta(value) {
+    if (currentSefazDocumentKind() === 'nfse') {
+      var nfseKey = nfseKeyDigits(value);
+      return { key: nfseKey, count: nfseKey.length, expected: 50, modelCode: 'NFSE', model: nfseKey.length === 50 ? 'NFS-e de Serviço · padrão nacional' : 'Aguardando chave da NFS-e', valid: nfseKeyValid(nfseKey) };
+    }
+    var meta = accessKeyMeta(value);
+    meta.expected = 44;
+    return meta;
+  }
+  function sefazStatusTag(value) {
+    var status = String(value || 'Pendente');
+    var className = /autoriz|regular|encerrad/i.test(status) ? 'success' : /cancel|aten|pendente/i.test(status) ? 'warning' : /erro|rejei|diverg|inexist/i.test(status) ? 'danger' : 'info';
+    return '<span class="tag tag--' + className + '">' + esc(status) + '</span>';
+  }
+  function sefazCertificateAction() {
+    if (!apiEnabled()) return '<button class="primary-button" data-action="sefaz-open-secure-mode">↗ Verificar e abrir modo seguro</button>';
+    if (sefazCan('manage_certificates')) return '<button class="primary-button" data-action="sefaz-add-certificate">＋ Cadastrar certificado A1</button>';
+    return '<span class="subtle">Cadastro restrito ao administrador</span>';
+  }
+  async function openSefazSecureMode() {
+    var secureUrl = 'http://127.0.0.1:4173/#sefaz-portal';
+    var actionButton = $('[data-action="sefaz-open-secure-mode"]');
+    try {
+      if (actionButton) { actionButton.disabled = true; actionButton.textContent = 'Verificando servidor...'; }
+      await fetch('http://127.0.0.1:4173/api/health?t=' + Date.now(), { mode: 'no-cors', cache: 'no-store' });
+      window.location.href = secureUrl;
+    } catch (error) {
+      var currentPath = decodeURIComponent(location.pathname || '').replace(/^\//, '').replace(/\//g, '\\');
+      var folderPath = currentPath.replace(/\\index\.html$/i, '');
+      openModal('Ativar o modo seguro', '<div class="secure-start-guide"><div class="info-banner info-banner--warning"><span>!</span><div><strong>O servidor ainda não está ligado.</strong> Por segurança, o navegador não pode executar programas do Windows sozinho.</div></div><ol><li>Abra a pasta abaixo no Explorador de Arquivos:<code>' + esc(folderPath) + '</code></li><li>Dê dois cliques em <strong>ABRIR-MODO-SEGURO.cmd</strong>.</li><li>Mantenha a janela verde/preta aberta. A plataforma será aberta automaticamente quando o servidor estiver pronto.</li></ol><p>Na primeira execução, mantenha a internet ativa para instalar o componente que lê certificados A1.</p><a class="secondary-button secure-launcher-download" href="ABRIR-MODO-SEGURO.cmd" download>Baixar uma cópia do inicializador</a></div>', '<button class="secondary-button" data-action="close-modal">Fechar</button><a class="primary-button" href="' + secureUrl + '">Já iniciei — abrir plataforma</a>');
+    } finally {
+      if (actionButton && document.body.contains(actionButton)) { actionButton.disabled = false; actionButton.textContent = '↗ Verificar e abrir modo seguro'; }
+    }
+  }
+  function renderSefazStats() {
+    var stats = sefazState.stats || {};
+    var target = $('#sefaz-stats');
+    if (!target) return;
+    target.innerHTML = [
+      ['Por chave', stats.total || 0, '▣'], ['Localizadas', stats.located || 0, '⌕'], ['Autorizadas', stats.authorized || 0, '✓'],
+      ['Canceladas', stats.cancelled || 0, '×'], ['Pendentes', stats.pending || 0, '◷'],
+      ['Divergências', stats.divergent || 0, '!']
+    ].map(function (item) { return '<article class="sefaz-kpi"><i>' + item[2] + '</i><span><b>' + item[1] + '</b><small>' + item[0] + '</small></span></article>'; }).join('');
+  }
+  function renderSefazCertificates() {
+    var target = $('#sefaz-certificate-list');
+    var select = $('#sefaz-certificate');
+    if (select) {
+      select.innerHTML = '<option value="">Selecione o certificado</option>' + sefazState.certificates.map(function (cert) {
+        return '<option value="' + esc(cert.id) + '">' + esc(cert.company || cert.holder || cert.document) + ' · ' + esc(cert.state || 'UF pendente') + ' · ' + esc(cert.environmentLabel) + '</option>';
+      }).join('');
+    }
+    var distributionSelect = $('#sefaz-distribution-certificate');
+    if (distributionSelect) {
+      var selected = distributionSelect.value;
+      distributionSelect.innerHTML = '<option value="">Selecione o certificado</option>' + sefazState.certificates.map(function (cert) {
+        return '<option value="' + esc(cert.id) + '">' + esc(cert.company || cert.holder || cert.document) + ' · ' + esc(cert.state || 'UF pendente') + '</option>';
+      }).join('');
+      if (sefazState.certificates.some(function (cert) { return cert.id === selected; })) distributionSelect.value = selected;
+      else if (sefazState.certificates.length === 1) distributionSelect.value = sefazState.certificates[0].id;
+    }
+    var batchSelect = $('#sefaz-xml-batch-certificate');
+    if (batchSelect) {
+      var batchSelected = batchSelect.value;
+      batchSelect.innerHTML = '<option value="">Selecione o certificado</option>' + sefazState.certificates.map(function (cert) {
+        return '<option value="' + esc(cert.id) + '">' + esc(cert.company || cert.holder || cert.document) + ' · ' + esc(cert.branch || 'Matriz') + ' · ' + esc(cert.environmentLabel) + '</option>';
+      }).join('');
+      if (sefazState.certificates.some(function (cert) { return cert.id === batchSelected; })) batchSelect.value = batchSelected;
+      else if (distributionSelect && distributionSelect.value) batchSelect.value = distributionSelect.value;
+      else if (sefazState.certificates.length === 1) batchSelect.value = sefazState.certificates[0].id;
+      updateSefazXmlBatchContext();
+    }
+    if (!target) return;
+    target.innerHTML = sefazState.certificates.length ? sefazState.certificates.map(function (cert) {
+      return '<article class="sefaz-cert"><span class="sefaz-cert-icon">◆</span><div><b>' + esc(cert.company || cert.holder || 'Certificado A1') + '</b><small>' + esc(cert.document || 'Documento não identificado') + ' · ' + esc(cert.branch || 'Matriz') + ' · ' + esc(cert.state || 'UF não informada') + '</small><small>Validade: ' + esc(cert.validUntil || 'não informada') + ' · ' + esc(cert.issuer || '') + '</small></div><div>' + sefazStatusTag(cert.status) + '<span class="sefaz-cert-actions"><button class="row-button" data-action="sefaz-test-certificate" data-id="' + esc(cert.id) + '" title="Testar conexão">↻</button>' + (sefazCan('manage_certificates') ? '<button class="row-button" data-action="sefaz-delete-certificate" data-id="' + esc(cert.id) + '" title="Remover">×</button>' : '') + '</span></div></article>';
+    }).join('') : '<div class="empty-state"><p>Nenhum certificado A1 cadastrado.</p><small>Cadastre um arquivo .pfx ou .p12 para consultar os webservices oficiais.</small></div>';
+    updateSefazDistributionContext();
+  }
+  function updateSefazXmlBatchContext() {
+    var select = $('#sefaz-xml-batch-certificate'), environment = $('#sefaz-xml-batch-environment');
+    if (!select || !environment) return;
+    var certificate = sefazState.certificates.find(function (item) { return item.id === select.value; });
+    if (certificate && !environment.dataset.userSelected) environment.value = certificate.environment || 'production';
+    var month = $('#sefaz-xml-batch-month') ? $('#sefaz-xml-batch-month').value : '';
+    var imported = (sefazState.nfseMonthlyImports || []).find(function (item) {
+      return certificate && item.certificateId === certificate.id && item.environment === environment.value && item.month === month && item.isComplete;
+    });
+    var status = $('#sefaz-xml-batch-status');
+    if (!status) return;
+    if (imported) status.innerHTML = '<b>Pacote oficial do mês validado</b><span>' + esc(imported.sourceFilename) + ' · ' + esc(imported.sourceDocuments) + ' XML(s) verificado(s) · pronto para gerar o lote completo.</span>';
+    else status.innerHTML = '<b>Importe o pacote oficial para garantir o mês completo</b><span>O Portal Nacional exporta as NFS-e do período. XMLs já consultados continuam disponíveis no modo “somente arquivo”.</span>';
+  }
+  function updateSefazDistributionContext() {
+    var select = $('#sefaz-distribution-certificate'), context = $('#sefaz-distribution-context');
+    if (!select || !context) return;
+    var certificate = sefazState.certificates.find(function (item) { return item.id === select.value; });
+    var sync = certificate && sefazState.distributionStates.find(function (item) { return item.certificateId === certificate.id && item.environment === certificate.environment; });
+    if (!certificate) { context.innerHTML = '<span>Selecione um certificado A1 válido para localizar documentos.</span>'; return; }
+    context.innerHTML = '<span><b>' + esc(certificate.company) + '</b> · ' + esc(certificate.state || 'UF pendente') + ' · ' + esc(certificate.environmentLabel) + '</span>' + (sync ? '<span>Último NSU: <b>' + esc(sync.lastNsu) + '</b> de ' + esc(sync.maxNsu) + ' · ' + esc(sync.updatedAt || '') + '</span>' : '<span>Primeira sincronização ainda não realizada.</span>');
+    var environment = $('#sefaz-distribution-environment');
+    if (environment) environment.value = certificate.environment || 'production';
+  }
+  function renderSefazDistributedDocuments() {
+    var target = $('#sefaz-distribution-body');
+    if (!target) return;
+    var direction = $('#sefaz-distribution-direction') ? $('#sefaz-distribution-direction').value : '';
+    var documents = (sefazState.distributedDocuments || []).filter(function (item) { return !direction || item.direction === direction; });
+    target.innerHTML = documents.length ? documents.map(function (item) {
+      return '<tr><td><button class="link-button sefaz-key-link" data-action="sefaz-open-distributed" data-id="' + esc(item.id) + '">' + esc(item.keyMasked || item.accessKey || ('NSU ' + item.nsu)) + '</button><small class="subtle">NSU ' + esc(item.nsu) + ' · ' + esc(item.schemaName || '') + '</small></td><td>' + esc(item.company || '—') + '</td><td>' + esc(item.direction || 'Relacionada') + '</td><td>' + esc(item.model || 'Documento fiscal') + '</td><td>' + sefazStatusTag(item.status) + '</td><td>' + esc(item.receivedAt || '') + '</td><td><button class="row-button" data-action="sefaz-open-distributed" data-id="' + esc(item.id) + '" title="Abrir documento">⌕</button></td></tr>';
+    }).join('') : '<tr><td colspan="7"><div class="empty-state"><p>Nenhum documento localizado neste filtro.</p><small>Selecione o certificado e use “Sincronizar notas agora”.</small></div></td></tr>';
+  }
+  function renderSefazHistory() {
+    var target = $('#sefaz-history-body');
+    if (!target) return;
+    target.innerHTML = sefazState.history.length ? sefazState.history.map(function (item) {
+      return '<tr><td><button class="link-button sefaz-key-link" data-action="sefaz-open-history" data-id="' + esc(item.id) + '">' + esc(item.keyMasked || item.accessKey || '') + '</button><small class="subtle">' + esc(item.model || '') + '</small></td><td>' + esc(item.company || '—') + '</td><td>' + sefazStatusTag(item.status) + '</td><td>' + esc(item.environmentLabel || '') + '</td><td>' + esc(item.consultedAt || '') + '</td><td><button class="row-button" data-action="sefaz-open-history" data-id="' + esc(item.id) + '" title="Abrir resultado">⌕</button></td></tr>';
+    }).join('') : '<tr><td colspan="6"><div class="empty-state"><p>Nenhuma consulta encontrada.</p></div></td></tr>';
+  }
+  function renderSefazResult(result) {
+    sefazState.selectedResult = result || null;
+    var target = $('#sefaz-result');
+    if (!target) return;
+    if (!result) { target.innerHTML = '<div class="empty-state sefaz-result-empty"><span>▣</span><p>O resultado oficial ou a análise do XML aparecerá aqui.</p></div>'; return; }
+    var summary = result.summary || {}, analysis = result.analysis || [], items = result.items || [], events = result.events || [], taxes = result.taxes || {};
+    var isNfse = result.model === 'NFS-e' || result.modelCode === 'NFSE';
+    var nationalPanel = result.nationalPanel || {};
+    function panelGrid(data, emptyMessage) {
+      var rows = Object.keys(data || {}).filter(function (name) { return data[name] !== '' && data[name] !== null && typeof data[name] !== 'undefined'; });
+      if (!rows.length) return '<div class="empty-state"><p>' + esc(emptyMessage || 'O campo não foi informado no XML oficial.') + '</p></div>';
+      return '<div class="sefaz-summary-grid sefaz-national-grid">' + rows.map(function (name) { return '<div><span>' + esc(name) + '</span><b>' + esc(data[name]) + '</b></div>'; }).join('') + '</div>';
+    }
+    var summaryRows = [
+      ['Situação', result.status || summary.status], ['Modelo', result.model], ['Número', summary.number], ['Série', summary.series],
+      ['Emissão', dateTimeBR(summary.issuedAt)], ['Competência', summary.competence], ['Protocolo', result.protocol], ['Ambiente', result.environmentLabel], ['Código oficial', result.officialCode],
+      ['Empresa / certificado', result.company], ['Responsável pela consulta', result.consultedBy], ['Fonte oficial', result.sourceName], ['Data da consulta', dateTimeBR(result.consultedAt)]
+    ];
+    var summaryHtml = '<div class="sefaz-summary-grid">' + summaryRows.map(function (row) { return '<div><span>' + esc(row[0]) + '</span><b>' + esc(row[1] || '—') + '</b></div>'; }).join('') + '</div>' +
+      (result.officialMessage ? '<div class="sefaz-official-message"><span>Retorno oficial</span><strong>' + esc(result.officialMessage) + '</strong></div>' : '') +
+      '<div class="sefaz-key-box"><span>' + (result.accessKey ? 'Chave de acesso' : 'Identificação') + '</span><code>' + esc(result.accessKey || ('NSU ' + (result.distributionNsu || 'não informado'))) + '</code>' + (result.accessKey ? '<button class="secondary-button" data-action="sefaz-copy-key">Copiar chave</button>' : '') + '</div>';
+    function partyHtml(party) {
+      party = party || {};
+      return '<div class="sefaz-summary-grid">' + [['Nome / razão social', party.name], ['CNPJ/CPF', party.document], ['NIF', party.foreignId], ['Inscrição estadual/municipal', party.stateRegistration], ['E-mail', party.email], ['Telefone', party.phone], ['Endereço', party.address], ['Município / UF', party.city], ['CEP', party.zipCode]].map(function (row) { return '<div><span>' + esc(row[0]) + '</span><b>' + esc(row[1] || '—') + '</b></div>'; }).join('') + '</div>';
+    }
+    var itemsHtml = items.length ? '<div class="table-wrap"><table><thead><tr><th>#</th><th>Produto/serviço</th><th>NCM</th><th>CFOP</th><th>CST/CSOSN</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr></thead><tbody>' + items.map(function (item, index) { return '<tr><td>' + (index + 1) + '</td><td><b>' + esc(item.description || item.code) + '</b><small class="subtle">Código: ' + esc(item.code || '—') + '</small></td><td>' + esc(item.ncm || '—') + '</td><td>' + esc(item.cfop || '—') + '</td><td>' + esc(item.cst || '—') + '</td><td>' + esc(item.quantity || '—') + '</td><td>' + esc(item.unitValue || '—') + '</td><td>' + esc(item.totalValue || '—') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<div class="empty-state"><p>Os itens completos exigem o XML autorizado ou disponibilidade legal no serviço consultado.</p></div>';
+    var taxesHtml = Object.keys(taxes).length ? '<div class="sefaz-summary-grid">' + Object.keys(taxes).map(function (name) { return '<div><span>' + esc(name) + '</span><b>' + esc(taxes[name] || 'R$ 0,00') + '</b></div>'; }).join('') + '</div>' : '<div class="empty-state"><p>Nenhum detalhamento tributário foi retornado pelo serviço oficial ou pelo XML.</p></div>';
+    var billing = result.billing || {};
+    var billingHtml = '<div class="sefaz-summary-grid">' + [['Fatura', billing.invoice], ['Valor original', billing.originalValue], ['Desconto', billing.discount], ['Valor líquido', billing.netValue], ['Duplicatas', billing.installments]].map(function (row) { return '<div><span>' + esc(row[0]) + '</span><b>' + esc(row[1] || '—') + '</b></div>'; }).join('') + '</div>';
+    var eventsHtml = events.length ? '<div class="sefaz-event-list">' + events.map(function (event) { return '<article><span>◷</span><div><b>' + esc(event.type || 'Evento fiscal') + '</b><small>' + esc(dateTimeBR(event.date)) + ' · ' + esc(event.protocol || 'sem protocolo') + '</small><p>' + esc(event.description || '') + '</p></div></article>'; }).join('') + '</div>' : '<div class="empty-state"><p>Nenhum evento retornado pelo serviço ou pelo XML anexado.</p></div>';
+    var analysisHtml = analysis.length ? '<div class="sefaz-analysis-list">' + analysis.map(function (alert) { return '<article class="sefaz-analysis sefaz-analysis--' + esc(String(alert.level || 'attention').toLowerCase().replace(/[^a-z]/g, '')) + '"><span>!</span><div><b>' + esc(alert.title || alert.level) + '</b><p>' + esc(alert.message || '') + '</p><small>Origem: ' + esc(alert.source || 'Validação interna') + '</small></div></article>'; }).join('') + '</div>' : '<div class="info-banner"><span>✓</span><div><strong>Nenhuma divergência estrutural identificada.</strong> Esta análise interna não substitui a confirmação oficial da SEFAZ.</div></div>';
+    var downloadAction = result.distributionNsu ? 'sefaz-download-distributed-xml' : 'sefaz-download-xml';
+    var xmlHtml = result.hasXml ? '<div class="info-banner"><span>✓</span><div><strong>XML disponível e analisado no backend.</strong> O arquivo foi protegido no histórico e pode ser baixado por usuário autorizado.</div></div><button class="primary-button" data-action="' + downloadAction + '" data-id="' + esc(result.id || '') + '">↧ Baixar XML</button>' : '<div class="empty-state"><p>O webservice de situação não fornece o XML completo. Anexe o XML autorizado ou utilize a Distribuição DF-e quando sua empresa tiver autorização.</p></div>';
+    var technicalRows = [
+      ['Padrão do documento', result.documentStandard], ['Movimento', result.direction], ['NSU', result.distributionNsu], ['Esquema XML', result.schemaName], ['Webservice utilizado', result.serviceEndpoint]
+    ].filter(function (row) { return row[1]; });
+    var technicalHtml = technicalRows.length ? '<div class="sefaz-summary-grid">' + technicalRows.map(function (row) { return '<div><span>' + esc(row[0]) + '</span><b>' + esc(row[1]) + '</b></div>'; }).join('') + '</div>' : '<div class="empty-state"><p>Nenhuma informação técnica adicional foi retornada.</p></div>';
+    function mirrorSection(index, title, subtitle, content) {
+      return '<section class="sefaz-mirror-section"><header><span class="sefaz-mirror-index">' + index + '</span><div><h3>' + esc(title) + '</h3>' + (subtitle ? '<small>' + esc(subtitle) + '</small>' : '') + '</div></header><div class="sefaz-mirror-body">' + content + '</div></section>';
+    }
+    var nfseTotals = nationalPanel.totals || {};
+    var nfseTotalValue = nfseTotals['Valor líquido da NFS-e + IBS/CBS'] || nfseTotals['Valor líquido da NFS-e'] || nfseTotals['Valor da operação / serviço'] || billing.netValue || billing.originalValue || '—';
+    var nfseHero = isNfse ? '<section class="sefaz-national-hero"><div class="sefaz-national-brand"><span>BR</span><div><b>Portal Nacional da NFS-e</b><small>Espelho da consulta oficial</small></div></div><div class="sefaz-national-title"><div><small>NOTA FISCAL DE SERVIÇO ELETRÔNICA</small><h2>NFS-e nº ' + esc(summary.number || '—') + '</h2><p>Documento auxiliar apresentado com os campos retornados pelo XML oficial.</p></div>' + sefazStatusTag(result.status) + '</div><div class="sefaz-national-metrics"><div><span>Emissão</span><b>' + esc(dateTimeBR(summary.issuedAt) || '—') + '</b></div><div><span>Competência</span><b>' + esc(dateTimeBR(summary.competence) || summary.competence || '—') + '</b></div><div><span>Valor total</span><strong>' + esc(nfseTotalValue) + '</strong></div><div><span>Ambiente</span><b>' + esc(result.environmentLabel || '—') + '</b></div></div><div class="sefaz-national-key"><span>Chave de acesso</span><code>' + esc(result.accessKey || '—') + '</code><button class="secondary-button" data-action="sefaz-copy-key">Copiar chave</button></div></section>' : '';
+    var sections;
+    if (isNfse) {
+      sections = [
+        mirrorSection('01', 'Dados da NFS-e e da DPS', 'Identificação conforme o padrão nacional', panelGrid(nationalPanel.identification, 'Os dados de identificação detalhados não vieram no XML.') + summaryHtml),
+        mirrorSection('02', 'Emitente da NFS-e — Prestador do serviço', 'Identificação e endereço do prestador', partyHtml(result.issuer)),
+        mirrorSection('03', 'Tomador do serviço', 'Identificação e endereço do tomador', partyHtml(result.recipient)),
+        mirrorSection('04', 'Serviço prestado', 'Local, códigos de tributação, NBS e descrição', panelGrid(nationalPanel.service, 'O detalhamento do serviço não foi informado no XML.') + '<div class="sefaz-national-items">' + itemsHtml + '</div>'),
+        mirrorSection('05', 'Tributação municipal', 'ISSQN, Simples Nacional, base e alíquota', panelGrid(nationalPanel.municipalTax, 'Não houve detalhamento de tributação municipal no retorno.')),
+        mirrorSection('06', 'Tributação federal', 'Retenções federais informadas na NFS-e', panelGrid(nationalPanel.federalTax, 'Nenhuma retenção federal foi informada.')),
+        mirrorSection('07', 'IBS e CBS', 'Campos da Reforma Tributária retornados pelo leiaute vigente', panelGrid(nationalPanel.ibsCbs, 'O XML consultado não trouxe valores de IBS ou CBS.')),
+        mirrorSection('08', 'Valor total da NFS-e', 'Serviço, descontos, retenções e valor líquido', panelGrid(nationalPanel.totals, 'Os totais detalhados não foram informados.') + billingHtml),
+        mirrorSection('09', 'Eventos da NFS-e', 'Autorização, cancelamento, substituição e manifestações', eventsHtml),
+        mirrorSection('10', 'Informações complementares', 'Referências, obra, imóvel, evento e pedido', panelGrid(nationalPanel.additional, 'Nenhuma informação complementar foi preenchida.')),
+        mirrorSection('11', 'XML do documento', 'Arquivo fiscal protegido e disponível para download', xmlHtml),
+        mirrorSection('12', 'Análise fiscal', 'Alertas, validações e pontos de atenção', analysisHtml),
+        mirrorSection('13', 'Dados técnicos da consulta', 'Fonte, padrão, endpoint e rastreabilidade', technicalHtml)
+      ].join('');
+    } else {
+      sections = [
+        mirrorSection('01', 'Identificação da nota fiscal', 'Dados gerais e retorno do serviço oficial', summaryHtml),
+        mirrorSection('02', 'Emitente', 'Dados cadastrais do emissor', partyHtml(result.issuer)),
+        mirrorSection('03', 'Destinatário', 'Dados cadastrais do recebedor', partyHtml(result.recipient)),
+        mirrorSection('04', 'Itens da nota fiscal', items.length + ' item(ns) localizado(s)', itemsHtml),
+        mirrorSection('05', 'Tributos e retenções', 'Valores tributários retornados', taxesHtml),
+        mirrorSection('06', 'Cobrança e valores', 'Fatura, descontos, valor líquido e duplicatas', billingHtml),
+        mirrorSection('07', 'Eventos fiscais', 'Autorização, cancelamento e demais eventos', eventsHtml),
+        mirrorSection('08', 'XML do documento', 'Arquivo fiscal protegido', xmlHtml),
+        mirrorSection('09', 'Análise fiscal', 'Alertas, validações e pontos de atenção', analysisHtml),
+        mirrorSection('10', 'Dados técnicos', 'Rastreabilidade da consulta', technicalHtml)
+      ].join('');
+    }
+    target.innerHTML = '<section class="card sefaz-result-card sefaz-mirror-card' + (isNfse ? ' sefaz-national-card' : '') + '"><header class="card-header"><div><h2>' + (isNfse ? 'Resultado completo — padrão do Portal Nacional' : 'Espelho completo da nota fiscal') + '</h2><small>' + sefazStatusTag(result.status) + ' · código oficial ' + esc(result.officialCode || '—') + ' · todas as informações exibidas em uma única tela</small></div><div class="page-actions"><button class="secondary-button" data-action="sefaz-export-json">JSON</button><button class="secondary-button" data-action="sefaz-export-csv">Excel</button><button class="secondary-button" data-action="sefaz-print-mirror">PDF / imprimir</button><button class="primary-button" data-action="sefaz-new-query">Nova consulta</button></div></header><div class="card-body sefaz-mirror">' + nfseHero + sections + '</div><footer class="sefaz-official-footnote">Fonte oficial: <a href="' + esc(result.sourceUrl || 'https://www.nfe.fazenda.gov.br/portal/') + '" target="_blank" rel="noopener noreferrer">' + esc(result.sourceName || 'Portal Fiscal') + ' ↗</a>. A tela reproduz a organização do documento nacional com os dados efetivamente retornados pelo XML; a análise interna não substitui a confirmação do Fisco.</footer></section>';
+  }
+  function renderSefazPortal() {
+    var backendNotice = apiEnabled() ? '' : '<div class="info-banner info-banner--warning sefaz-server-notice"><span>!</span><div><strong>Ative o modo seguro para ler o certificado.</strong> Execute <code>ABRIR-MODO-SEGURO.cmd</code>, mantenha a janela aberta e use o botão ao lado. Agora o site verifica o servidor antes de abrir, evitando a tela “conexão recusada”.</div><button class="primary-button" data-action="sefaz-open-secure-mode">Verificar e abrir</button></div>';
+    var certButton = sefazCertificateAction();
+    var batchMonth = new Date().toISOString().slice(0, 7);
+    return [
+      pageHeading('Consulta SEFAZ e Portal do Contribuinte', 'Consulta real de documentos fiscais em serviços oficiais, com certificado A1 processado exclusivamente no backend.', '<a class="secondary-button" href="https://www.nfe.fazenda.gov.br/portal/" target="_blank" rel="noopener">Portal da NF-e ↗</a><a class="secondary-button" href="https://www.nfse.gov.br/" target="_blank" rel="noopener">Portal da NFS-e ↗</a>'),
+      backendNotice,
+      '<div class="info-banner"><span>🔒</span><div><strong>Segurança do certificado.</strong> O arquivo A1 e a senha não são gravados no navegador. O backend cifra o certificado; a senha pode permanecer somente na sessão. Use HTTPS e uma chave mestra externa ao publicar.</div></div>',
+      '<section class="sefaz-stats" id="sefaz-stats"></section>',
+      '<div class="sefaz-workspace">',
+        '<section class="card"><header class="card-header"><div><h2>⌕ Consulta por chave de acesso</h2><small id="sefaz-query-description">NF-e, NFC-e, CT-e e MDF-e · chave de 44 dígitos</small></div></header><div class="card-body">',
+          '<label class="field"><span>Tipo de documento fiscal</span><select id="sefaz-document-kind"><option value="dfe">NF-e / NFC-e / CT-e / MDF-e — 44 dígitos</option><option value="nfse">NFS-e de Serviço — padrão nacional — 50 dígitos</option></select></label>',
+          '<div class="info-banner is-hidden" id="sefaz-nfse-note"><span>ℹ</span><div><strong>Consulta de NFS-e no padrão nacional.</strong> Notas emitidas em sistemas municipais legados podem exigir a consulta no portal da prefeitura responsável.</div></div>',
+          '<label class="field"><span>Chave de acesso</span><textarea id="sefaz-access-key" rows="2" inputmode="numeric" maxlength="44" placeholder="Digite, cole ou leia a chave de 44 dígitos"></textarea></label>',
+          '<div class="sefaz-key-feedback" id="sefaz-key-feedback"><span>0/44 dígitos</span><b>Aguardando chave</b></div>',
+          '<div class="form-grid"><label class="field"><span>Certificado / empresa</span><select id="sefaz-certificate"><option value="">Selecione o certificado</option></select></label><label class="field"><span>Ambiente</span><select id="sefaz-environment"><option value="production">Produção</option><option value="homologation">Homologação</option></select></label></div>',
+          '<label class="field"><span>Senha somente para esta sessão (se necessária)</span><input id="sefaz-session-password" type="password" autocomplete="off" placeholder="Não é armazenada no navegador"></label>',
+          '<label class="field"><span>XML ou PDF para análise complementar</span><input id="sefaz-document-file" type="file" accept=".xml,.pdf,application/xml,text/xml,application/pdf"></label>',
+          '<input id="sefaz-code-image" type="file" accept="image/*" capture="environment" hidden><input id="sefaz-batch-file" type="file" accept=".txt,.csv,.xml,text/plain,text/csv,application/xml" hidden>',
+          '<div class="page-actions sefaz-query-actions"><button class="secondary-button" data-action="sefaz-read-code">▦ Ler QR/código de barras</button><button class="secondary-button" id="sefaz-batch-button" data-action="sefaz-batch">▤ Consulta em lote</button><button class="secondary-button is-hidden" id="sefaz-nfse-public-button" data-action="sefaz-open-nfse-public">↗ Consulta pública NFS-e</button><button class="secondary-button" data-action="sefaz-clear-query">Limpar</button><button class="primary-button" data-action="sefaz-query"' + (!apiEnabled() || !sefazCan('consult_documents') ? ' disabled' : '') + '>Consultar documento oficial</button></div>',
+        '</div></section>',
+        '<section class="card"><header class="card-header"><div><h2>◆ Certificados digitais</h2><small>A1 (.pfx ou .p12) por empresa e filial</small></div><div id="sefaz-certificate-actions">' + certButton + '</div></header><div class="card-body"><div id="sefaz-certificate-list"><div class="skeleton-line"></div></div></div></section>',
+      '</div>',
+      '<section class="card sefaz-distribution-card"><header class="card-header"><div><h2>⌕ Notas fiscais vinculadas ao certificado</h2><small>Distribuição DF-e oficial · documentos emitidos, recebidos e eventos relacionados ao CPF/CNPJ</small></div><div class="page-actions"><a class="secondary-button" href="https://www.nfe.fazenda.gov.br/portal/" target="_blank" rel="noopener">Ambiente Nacional ↗</a></div></header><div class="card-body">',
+        '<div class="info-banner"><span>i</span><div><strong>Consulta oficial por NSU.</strong> O Ambiente Nacional retorna apenas documentos em que o titular do certificado é ator autorizado. A disponibilidade e o ritmo de entrega seguem as regras oficiais da Distribuição DF-e.</div></div>',
+        '<div class="sefaz-distribution-controls"><label class="field"><span>Certificado / empresa</span><select id="sefaz-distribution-certificate"><option value="">Selecione o certificado</option></select></label><label class="field"><span>Ambiente</span><select id="sefaz-distribution-environment"><option value="production">Produção</option><option value="homologation">Homologação</option></select></label><label class="field"><span>Senha somente para esta sessão</span><input id="sefaz-distribution-password" type="password" autocomplete="off" placeholder="Se a senha não foi salva"></label><button class="primary-button" data-action="sefaz-sync-distribution"' + (!apiEnabled() || !sefazCan('consult_documents') ? ' disabled' : '') + '>↻ Sincronizar notas agora</button></div>',
+        '<div class="sefaz-distribution-context" id="sefaz-distribution-context"><span>Selecione um certificado A1 válido para localizar documentos.</span></div>',
+        '<div class="filters sefaz-distribution-filters"><label class="filter-field"><span>Movimento</span><select id="sefaz-distribution-direction"><option value="">Todos</option><option value="Emitida">Emitidas</option><option value="Recebida">Recebidas</option><option value="Relacionada">Relacionadas</option></select></label></div>',
+        '<div class="table-wrap"><table><thead><tr><th>Chave / NSU</th><th>Empresa</th><th>Movimento</th><th>Documento</th><th>Situação</th><th>Recebimento</th><th></th></tr></thead><tbody id="sefaz-distribution-body"><tr><td colspan="7"><div class="skeleton-line"></div></td></tr></tbody></table></div>',
+      '</div></section>',
+      '<section class="card sefaz-xml-batch-card"><header class="card-header"><div><h2>▤ Lote mensal de XML</h2><small>Gere um ZIP com notas autorizadas e eventos de cancelamento organizados por mês</small></div><span class="tag tag--success">Arquivo seguro</span></header><div class="card-body">',
+        '<div class="info-banner"><span>i</span><div><strong>Mês completo de NFS-e, sem criar documentos fictícios.</strong> A API atual do contribuinte consulta por NSU e consulta eventos por chave, mas não documenta uma exportação fechada por mês. Baixe os XMLs oficiais do período e selecione todos de uma vez, ou envie um ZIP; a plataforma validará empresa, mês, ambiente, duplicidades e cancelamentos.</div></div>',
+        '<div class="sefaz-xml-batch-grid">',
+          '<label class="field"><span>Certificado / empresa</span><select id="sefaz-xml-batch-certificate"><option value="">Selecione o certificado</option></select></label>',
+          '<label class="field"><span>Mês de emissão / competência</span><input id="sefaz-xml-batch-month" type="month" value="' + batchMonth + '"></label>',
+          '<label class="field"><span>Tipo de documento</span><select id="sefaz-xml-batch-kind"><option value="all">Todos os documentos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="cte">CT-e</option><option value="mdfe">MDF-e</option><option value="nfse">NFS-e de Serviço</option></select></label>',
+          '<label class="field"><span>Movimento</span><select id="sefaz-xml-batch-movement"><option value="issued">Emitidas pela empresa</option><option value="received">Recebidas pela empresa</option><option value="all">Emitidas, recebidas e relacionadas</option></select></label>',
+          '<label class="field"><span>Situação</span><select id="sefaz-xml-batch-situation"><option value="all">Autorizadas e canceladas</option><option value="authorized">Somente autorizadas</option><option value="cancelled">Somente canceladas</option></select></label>',
+          '<label class="field"><span>Ambiente</span><select id="sefaz-xml-batch-environment"><option value="production">Produção</option><option value="homologation">Homologação</option></select></label>',
+        '</div>',
+        '<div class="sefaz-monthly-import"><input id="sefaz-nfse-monthly-file" type="file" accept=".zip,.xml,application/zip,application/xml,text/xml" multiple hidden><div><b>1. Fonte oficial do mês</b><span>Selecione vários XMLs oficiais de uma vez ou um pacote ZIP do período.</span></div><button class="secondary-button" data-action="sefaz-select-nfse-monthly-package"' + (!apiEnabled() || !sefazCan('consult_documents') || !sefazCan('download_xml') ? ' disabled' : '') + '>＋ Importar XMLs/ZIP oficiais</button><a class="secondary-button" href="https://www.nfse.gov.br/" target="_blank" rel="noopener">Abrir Portal Nacional ↗</a></div>',
+        '<label class="check sefaz-completeness-check"><input id="sefaz-nfse-source-complete" type="checkbox"> Confirmo que selecionei todos os XMLs oficiais emitidos e cancelados do mês informado.</label>',
+        '<label class="check sefaz-completeness-check"><input id="sefaz-xml-batch-complete" type="checkbox" checked> Exigir pacote oficial validado para confirmar a cobertura completa das NFS-e emitidas.</label>',
+        '<div class="sefaz-xml-batch-footer"><div id="sefaz-xml-batch-status"><b>Importe o pacote oficial para garantir o mês completo</b><span>Depois da validação, o ZIP separará notas emitidas, canceladas, recebidas e relacionadas.</span></div><button class="primary-button" data-action="sefaz-generate-xml-batch"' + (!apiEnabled() || !sefazCan('download_xml') ? ' disabled' : '') + '>↧ Gerar lote completo do mês</button></div>',
+      '</div></section>',
+      '<section class="sefaz-portals"><a href="https://www.nfe.fazenda.gov.br/portal/consultaRecaptcha.aspx" target="_blank" rel="noopener"><b>NF-e / NFC-e</b><small>Consulta pública oficial</small><span>↗</span></a><a href="https://www.cte.fazenda.gov.br/portal/consultaRecaptcha.aspx" target="_blank" rel="noopener"><b>CT-e</b><small>Portal nacional oficial</small><span>↗</span></a><a href="https://dfe-portal.svrs.rs.gov.br/MDFE" target="_blank" rel="noopener"><b>MDF-e</b><small>Portal SVRS oficial</small><span>↗</span></a><a href="https://www.nfse.gov.br/" target="_blank" rel="noopener"><b>NFS-e</b><small>Portal do Contribuinte</small><span>↗</span></a></section>',
+      '<section id="sefaz-result"><div class="empty-state sefaz-result-empty"><span>▣</span><p>O resultado oficial ou a análise do XML aparecerá aqui.</p></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>◷ Histórico de consultas</h2><small>Data, usuário, fonte e resultado oficial</small></div><div class="page-actions"><button class="secondary-button" data-action="sefaz-refresh">↻ Atualizar</button>' + (isAdmin() ? '<button class="secondary-button" data-action="sefaz-permissions">⚿ Permissões</button>' : '') + '</div></header><div class="card-body"><div class="filters sefaz-filters"><label class="filter-field"><span>Empresa</span><input id="sefaz-filter-company" placeholder="Nome ou CNPJ"></label><label class="filter-field"><span>Documento</span><select id="sefaz-filter-model"><option value="">Todos</option><option>NF-e</option><option>NFC-e</option><option>CT-e</option><option>MDF-e</option></select></label><label class="filter-field"><span>Situação</span><select id="sefaz-filter-status"><option value="">Todas</option><option>Autorizada</option><option>Cancelada</option><option>Pendente</option><option>Divergência</option><option>Erro crítico</option></select></label><label class="filter-field"><span>Período inicial</span><input id="sefaz-filter-from" type="date"></label><label class="filter-field"><span>Período final</span><input id="sefaz-filter-to" type="date"></label></div><div class="table-wrap"><table><thead><tr><th>Chave / modelo</th><th>Empresa</th><th>Situação</th><th>Ambiente</th><th>Consulta</th><th></th></tr></thead><tbody id="sefaz-history-body"><tr><td colspan="6"><div class="skeleton-line"></div></td></tr></tbody></table></div></div></section>'
+    ].join('');
+  }
+  function readFileAsBase64(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file) { resolve(''); return; }
+      var reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result || '').split(',').pop()); };
+      reader.onerror = function () { reject(new Error('Não foi possível ler o arquivo.')); };
+      reader.readAsDataURL(file);
+    });
+  }
+  function loadSefazData() {
+    if (!apiEnabled() || !apiToken) { renderSefazStats(); renderSefazCertificates(); renderSefazHistory(); renderSefazDistributedDocuments(); return Promise.resolve(); }
+    var params = new URLSearchParams();
+    [['company', '#sefaz-filter-company'], ['model', '#sefaz-filter-model'], ['status', '#sefaz-filter-status'], ['from', '#sefaz-filter-from'], ['to', '#sefaz-filter-to']].forEach(function (entry) { var element = $(entry[1]); if (element && element.value) params.set(entry[0], element.value); });
+    sefazState.loading = true;
+    return apiRequest('/api/sefaz/bootstrap' + (params.toString() ? '?' + params.toString() : '')).then(function (payload) {
+      sefazState.certificates = payload.certificates || [];
+      sefazState.history = payload.history || [];
+      sefazState.distributedDocuments = payload.distributedDocuments || [];
+      sefazState.distributionStates = payload.distributionStates || [];
+      sefazState.nfseMonthlyImports = payload.nfseMonthlyImports || [];
+      sefazState.stats = payload.stats || {};
+      sefazState.permissions = payload.permissions || [];
+      sefazState.permissionMatrix = payload.permissionMatrix || [];
+      sefazState.users = payload.users || [];
+      sefazState.portals = payload.portals || {};
+      var queryButton = $('[data-action="sefaz-query"]');
+      if (queryButton) queryButton.disabled = !sefazCan('consult_documents');
+      var xmlBatchButton = $('[data-action="sefaz-generate-xml-batch"]');
+      if (xmlBatchButton) xmlBatchButton.disabled = !sefazCan('download_xml');
+      var nfseImportButton = $('[data-action="sefaz-select-nfse-monthly-package"]');
+      if (nfseImportButton) nfseImportButton.disabled = !sefazCan('consult_documents') || !sefazCan('download_xml');
+      var certificateActions = $('#sefaz-certificate-actions');
+      if (certificateActions) certificateActions.innerHTML = sefazCertificateAction();
+      renderSefazStats(); renderSefazCertificates(); renderSefazHistory(); renderSefazDistributedDocuments();
+    }).catch(function (error) { toast('SEFAZ indisponível', error.message, 'error'); }).finally(function () { sefazState.loading = false; });
+  }
+  function updateSefazKeyFeedback() {
+    var input = $('#sefaz-access-key'), feedback = $('#sefaz-key-feedback');
+    if (!input || !feedback) return;
+    var meta = currentFiscalKeyMeta(input.value);
+    if (input.value !== meta.key) input.value = meta.key;
+    input.maxLength = meta.expected;
+    input.placeholder = meta.expected === 50 ? 'Digite ou cole a chave de 50 dígitos da NFS-e Nacional' : 'Digite, cole ou leia a chave de 44 dígitos';
+    feedback.className = 'sefaz-key-feedback' + (meta.count === meta.expected ? (meta.valid ? ' valid' : ' invalid') : '');
+    feedback.innerHTML = '<span>' + meta.count + '/' + meta.expected + ' dígitos</span><b>' + esc(meta.model) + (meta.count === meta.expected ? (meta.valid ? ' · formato válido para consulta' : ' · chave inválida') : '') + '</b>';
+    var publicButton = $('#sefaz-nfse-public-button');
+    if (publicButton) publicButton.classList.toggle('is-hidden', meta.expected !== 50);
+    var nfseNote = $('#sefaz-nfse-note');
+    if (nfseNote) nfseNote.classList.toggle('is-hidden', meta.expected !== 50);
+    var batchButton = $('#sefaz-batch-button');
+    if (batchButton) batchButton.classList.toggle('is-hidden', meta.expected === 50);
+    var title = $('#sefaz-query-description');
+    if (title) title.textContent = meta.expected === 50 ? 'NFS-e Nacional · chave de 50 dígitos' : 'NF-e, NFC-e, CT-e e MDF-e · chave de 44 dígitos';
+  }
+  function openSefazCertificateForm() {
+    if (!apiEnabled()) { toast('Modo seguro necessário', 'Execute iniciar-site.cmd e acesse http://127.0.0.1:4173 para cadastrar o certificado.', 'warning'); return; }
+    if (!sefazCan('manage_certificates')) { toast('Permissão necessária', 'Seu usuário não pode cadastrar certificados.', 'warning'); return; }
+    var ufOptions = '<option value="">Selecione a UF</option>' + SEFAZ_UFS.map(function (item) { return '<option value="' + item[0] + '">' + item[1] + '</option>'; }).join('');
+    openModal('Cadastrar certificado digital A1', '<form id="sefaz-certificate-form"><div class="info-banner"><span>🔒</span><div><strong>Leitura segura do A1.</strong> O backend valida o arquivo, identifica o titular e cifra o conteúdo. A UF é necessária para localizar as notas no Ambiente Nacional.</div></div><label class="field"><span>Certificado A1 (.pfx ou .p12)</span><input id="sefaz-cert-file" type="file" accept=".pfx,.p12,application/x-pkcs12" required></label><label class="field"><span>Senha do certificado</span><input id="sefaz-cert-password" type="password" autocomplete="new-password" required></label><div class="form-grid"><label class="field"><span>Empresa</span><input id="sefaz-cert-company" required></label><label class="field"><span>Filial</span><input id="sefaz-cert-branch" placeholder="Matriz"></label><label class="field"><span>CNPJ/CPF esperado</span><input id="sefaz-cert-document" inputmode="numeric"></label><label class="field"><span>UF do estabelecimento</span><select id="sefaz-cert-state" required>' + ufOptions + '</select></label><label class="field"><span>Ambiente</span><select id="sefaz-cert-environment"><option value="production">Produção</option><option value="homologation">Homologação</option></select></label></div><label class="check"><input id="sefaz-cert-save-password" type="checkbox"> Salvar a senha cifrada no backend. Desmarcado: usar somente durante a sessão.</label></form>', '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="sefaz-save-certificate">Validar e cadastrar</button>');
+  }
+  async function saveSefazCertificate() {
+    if (!apiEnabled()) { closeModal(); toast('Certificado não enviado', 'Abra o modo seguro em http://127.0.0.1:4173 e tente novamente.', 'warning'); return; }
+    var form = $('#sefaz-certificate-form'), fileInput = $('#sefaz-cert-file');
+    if (!form || !form.reportValidity()) return;
+    var file = fileInput.files && fileInput.files[0];
+    if (!file || !/\.(pfx|p12)$/i.test(file.name)) { toast('Arquivo inválido', 'Selecione um certificado A1 .pfx ou .p12.', 'error'); return; }
+    try {
+      var payload = await apiRequest('/api/sefaz/certificates', { method: 'POST', body: JSON.stringify({ filename: file.name, dataBase64: await readFileAsBase64(file), password: $('#sefaz-cert-password').value, company: $('#sefaz-cert-company').value.trim(), branch: $('#sefaz-cert-branch').value.trim(), document: $('#sefaz-cert-document').value.trim(), stateCode: $('#sefaz-cert-state').value, environment: $('#sefaz-cert-environment').value, savePassword: $('#sefaz-cert-save-password').checked }) });
+      closeModal(); toast('Certificado cadastrado', payload.message || 'O certificado foi validado e protegido no backend.'); await loadSefazData();
+    } catch (error) { toast('Certificado recusado', error.message, 'error'); }
+  }
+  async function consultSefazDocument() {
+    var kind = currentSefazDocumentKind();
+    var key = kind === 'nfse' ? nfseKeyDigits($('#sefaz-access-key') && $('#sefaz-access-key').value) : accessKeyDigits($('#sefaz-access-key') && $('#sefaz-access-key').value);
+    var keyIsValid = kind === 'nfse' ? nfseKeyValid(key) : accessKeyValid(key);
+    if (!keyIsValid) { toast('Chave inválida', kind === 'nfse' ? 'Informe os 50 dígitos da chave da NFS-e Nacional.' : 'Informe os 44 dígitos e confira o dígito verificador.', 'error'); return; }
+    var certificateId = $('#sefaz-certificate') ? $('#sefaz-certificate').value : '';
+    if (!certificateId) { toast('Certificado necessário', 'Selecione um certificado vinculado à empresa.', 'warning'); return; }
+    var button = $('[data-action="sefaz-query"]'), file = $('#sefaz-document-file') && $('#sefaz-document-file').files[0];
+    try {
+      if (button) { button.disabled = true; button.textContent = 'Consultando serviço oficial...'; }
+      var endpoint = kind === 'nfse' ? '/api/sefaz/nfse/query' : '/api/sefaz/query';
+      var result = await apiRequest(endpoint, { method: 'POST', body: JSON.stringify({ accessKey: key, certificateId: certificateId, environment: $('#sefaz-environment').value, sessionPassword: $('#sefaz-session-password').value, attachmentName: file ? file.name : '', attachmentBase64: file ? await readFileAsBase64(file) : '' }) });
+      renderSefazResult(result); audit('Documento fiscal consultado', result.model + ' · ' + result.status);
+      if ($('#sefaz-result')) $('#sefaz-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (result.officialCode === 'COMMUNICATION_ERROR' || /erro|rejei/i.test(result.status || '')) toast('Consulta não concluída', result.officialMessage || 'O serviço oficial não confirmou a consulta.', 'error');
+      else toast('Consulta concluída', result.status + ' · retorno do serviço oficial.');
+      await loadSefazData();
+    } catch (error) { toast('Consulta não concluída', error.message, 'error'); }
+    finally { if (button) { button.disabled = false; button.textContent = 'Consultar documento oficial'; } }
+  }
+  function openNfsePublicConsultation() {
+    var key = nfseKeyDigits($('#sefaz-access-key') && $('#sefaz-access-key').value);
+    if (!nfseKeyValid(key)) { toast('Chave da NFS-e inválida', 'Informe os 50 dígitos antes de abrir a consulta pública.', 'warning'); return; }
+    var openPortal = function () { window.open('https://www.nfse.gov.br/consultapublica', '_blank', 'noopener'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(key).then(function () { toast('Chave copiada', 'Cole a chave no Portal Nacional da NFS-e.'); openPortal(); }).catch(openPortal);
+    else openPortal();
+  }
+  async function openSefazHistory(id) {
+    try { var result = await apiRequest('/api/sefaz/history/' + encodeURIComponent(id)); renderSefazResult(result); $('#sefaz-result').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    catch (error) { toast('Histórico indisponível', error.message, 'error'); }
+  }
+  function openSefazTestModal(id) {
+    openModal('Testar conexão com a SEFAZ', '<input type="hidden" id="sefaz-test-cert-id" value="' + esc(id) + '"><p>Informe a senha apenas se ela não tiver sido salva. Ela será usada somente nesta sessão.</p><label class="field"><span>Senha do certificado</span><input id="sefaz-test-password" type="password" autocomplete="off"></label>', '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="sefaz-run-test">Testar serviço oficial</button>', true);
+  }
+  async function testSefazCertificate() {
+    var id = $('#sefaz-test-cert-id').value;
+    try { var payload = await apiRequest('/api/sefaz/certificates/' + encodeURIComponent(id) + '/test', { method: 'POST', body: JSON.stringify({ password: $('#sefaz-test-password').value }) }); closeModal(); toast('Conexão confirmada', payload.message || 'O serviço oficial respondeu.'); await loadSefazData(); }
+    catch (error) { toast('Falha no teste', error.message, 'error'); }
+  }
+  async function syncSefazDistribution() {
+    var certificateId = $('#sefaz-distribution-certificate') ? $('#sefaz-distribution-certificate').value : '';
+    var certificate = sefazState.certificates.find(function (item) { return item.id === certificateId; });
+    if (!certificate) { toast('Certificado necessário', 'Selecione o certificado da empresa que deseja sincronizar.', 'warning'); return; }
+    if (!certificate.stateCode) { toast('UF necessária', 'Cadastre novamente o certificado informando a UF do estabelecimento.', 'warning'); return; }
+    var button = $('[data-action="sefaz-sync-distribution"]');
+    try {
+      if (button) { button.disabled = true; button.textContent = 'Sincronizando Ambiente Nacional...'; }
+      var payload = await apiRequest('/api/sefaz/distribution', { method: 'POST', body: JSON.stringify({ certificateId: certificateId, environment: $('#sefaz-distribution-environment').value, stateCode: certificate.stateCode, sessionPassword: $('#sefaz-distribution-password').value }) });
+      var detail = payload.added + ' documento(s) novo(s). NSU ' + payload.lastNsu + ' de ' + payload.maxNsu + '.';
+      if (payload.hasMore) detail += ' Há mais documentos disponíveis; sincronize novamente para avançar.';
+      toast(payload.added ? 'Notas localizadas' : 'Sincronização concluída', detail + (payload.message ? ' ' + payload.message : ''), payload.ok ? '' : 'warning');
+      await loadSefazData();
+    } catch (error) { toast('Sincronização não concluída', error.message, 'error'); }
+    finally { if (button) { button.disabled = !sefazCan('consult_documents'); button.textContent = '↻ Sincronizar notas agora'; } }
+  }
+  async function openSefazDistributedDocument(id) {
+    try {
+      var result = await apiRequest('/api/sefaz/distribution/documents/' + encodeURIComponent(id));
+      renderSefazResult(result);
+      $('#sefaz-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (error) { toast('Documento indisponível', error.message, 'error'); }
+  }
+  async function downloadSefazDistributedXml(id) {
+    if (!sefazCan('download_xml')) { toast('Permissão necessária', 'Seu usuário não pode baixar XML.', 'warning'); return; }
+    try {
+      var payload = await apiRequest('/api/sefaz/distribution/documents/' + encodeURIComponent(id) + '/xml');
+      var bytes = atob(payload.dataBase64), array = new Uint8Array(bytes.length);
+      for (var i = 0; i < bytes.length; i += 1) array[i] = bytes.charCodeAt(i);
+      downloadFile(payload.filename || 'documento-distribuido.xml', array, 'application/xml');
+    } catch (error) { toast('XML indisponível', error.message, 'error'); }
+  }
+  async function deleteSefazCertificate(id) {
+    if (!window.confirm('Remover este certificado protegido? O histórico será preservado.')) return;
+    try { await apiRequest('/api/sefaz/certificates/' + encodeURIComponent(id), { method: 'DELETE' }); toast('Certificado removido', 'O arquivo cifrado foi excluído do backend.'); await loadSefazData(); }
+    catch (error) { toast('Não foi possível remover', error.message, 'error'); }
+  }
+  async function handleSefazCodeImage(file) {
+    if (!file) return;
+    if (!('BarcodeDetector' in window)) { toast('Leitura não disponível', 'Este navegador não oferece leitura local. Copie a chave do DANFE ou use um navegador compatível.', 'warning'); return; }
+    try {
+      var detector = new BarcodeDetector({ formats: ['qr_code', 'code_128', 'data_matrix'] });
+      var bitmap = await createImageBitmap(file), codes = await detector.detect(bitmap);
+      var expected = currentSefazDocumentKind() === 'nfse' ? 50 : 44;
+      var found = codes.map(function (code) { return fiscalKeyDigits(code.rawValue, expected); }).find(function (value) { return value.length === expected; });
+      if (!found) throw new Error('Nenhuma chave de ' + expected + ' dígitos foi encontrada.');
+      $('#sefaz-access-key').value = found; updateSefazKeyFeedback(); toast('Chave identificada', 'O código foi lido no próprio navegador.');
+    } catch (error) { toast('Leitura não concluída', error.message, 'error'); }
+  }
+  async function runSefazBatch(file) {
+    if (!file) return;
+    if (currentSefazDocumentKind() === 'nfse') { toast('Lote indisponível para NFS-e', 'A consulta da NFS-e Nacional é realizada individualmente por chave.', 'warning'); return; }
+    try {
+      var text = await file.text(), keys = (text.match(/\d{44}/g) || []).filter(function (key, index, array) { return array.indexOf(key) === index && accessKeyValid(key); });
+      if (!keys.length) throw new Error('Nenhuma chave válida de 44 dígitos foi encontrada.');
+      if (keys.length > 50) throw new Error('O limite por lote é de 50 chaves para proteger os serviços oficiais.');
+      var certificateId = $('#sefaz-certificate').value;
+      if (!certificateId) throw new Error('Selecione um certificado antes da consulta em lote.');
+      var payload = await apiRequest('/api/sefaz/batch', { method: 'POST', body: JSON.stringify({ accessKeys: keys, certificateId: certificateId, environment: $('#sefaz-environment').value, sessionPassword: $('#sefaz-session-password').value }) });
+      toast('Lote processado', payload.completed + ' consulta(s) concluída(s); ' + payload.failed + ' falha(s).'); await loadSefazData();
+    } catch (error) { toast('Lote não processado', error.message, 'error'); }
+  }
+  async function importNfseMonthlyPackage(fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return;
+    if (!sefazCan('consult_documents') || !sefazCan('download_xml')) { toast('Permissão necessária', 'Seu usuário não pode importar o pacote mensal.', 'warning'); return; }
+    if (files.some(function (file) { return !/\.(zip|xml)$/i.test(file.name); })) { toast('Arquivo inválido', 'Selecione somente XMLs oficiais ou um pacote ZIP.', 'error'); return; }
+    var totalSize = files.reduce(function (total, file) { return total + file.size; }, 0);
+    if (files.length > 2000 || totalSize > 25000000) { toast('Seleção muito grande', 'O limite seguro é de 2.000 arquivos e 25 MB por importação.', 'error'); return; }
+    var certificateId = $('#sefaz-xml-batch-certificate') ? $('#sefaz-xml-batch-certificate').value : '';
+    var month = $('#sefaz-xml-batch-month') ? $('#sefaz-xml-batch-month').value : '';
+    if (!certificateId) { toast('Certificado necessário', 'Selecione a empresa e o certificado antes de importar.', 'warning'); return; }
+    if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(month)) { toast('Mês necessário', 'Selecione o mês que será validado.', 'warning'); return; }
+    if (!$('#sefaz-nfse-source-complete').checked) { toast('Confirmação necessária', 'Confirme que selecionou todos os XMLs oficiais do mês para registrar a cobertura completa.', 'warning'); return; }
+    var button = $('[data-action="sefaz-select-nfse-monthly-package"]');
+    var status = $('#sefaz-xml-batch-status');
+    try {
+      if (button) { button.disabled = true; button.textContent = 'Validando pacote oficial...'; }
+      if (status) status.innerHTML = '<b>Validando os XMLs do mês</b><span>Conferindo certificado, mês, ambiente, cancelamentos e arquivos repetidos.</span>';
+      var encodedFiles = await Promise.all(files.map(async function (file) { return { filename: file.name, dataBase64: await readFileAsBase64(file) }; }));
+      var requestPayload = {
+        certificateId: certificateId,
+        month: month,
+        environment: $('#sefaz-xml-batch-environment').value,
+        confirmComplete: true
+      };
+      if (encodedFiles.length === 1) { requestPayload.filename = encodedFiles[0].filename; requestPayload.dataBase64 = encodedFiles[0].dataBase64; }
+      else requestPayload.files = encodedFiles;
+      var payload = await apiRequest('/api/sefaz/nfse/monthly-import', {
+        method: 'POST',
+        body: JSON.stringify(requestPayload)
+      });
+      var detail = payload.sourceDocuments + ' XML(s) verificado(s) · ' + payload.imported + ' novo(s) · ' + payload.duplicates + ' repetido(s) · ' + payload.cancellations + ' cancelamento(s).';
+      if (status) status.innerHTML = '<b>' + (payload.isComplete ? 'Pacote oficial do mês validado' : 'Pacote importado com ressalvas') + '</b><span>' + esc(detail) + '</span>';
+      toast(payload.isComplete ? 'Mês pronto para gerar' : 'Importação concluída com ressalvas', detail, payload.isComplete ? '' : 'warning');
+      if (payload.errors && payload.errors.length) window.setTimeout(function () { toast('Arquivos que exigem atenção', payload.errors.join(' '), 'warning'); }, 500);
+      await loadSefazData();
+    } catch (error) {
+      if (status) status.innerHTML = '<b>Pacote mensal não validado</b><span>' + esc(error.message) + '</span>';
+      toast('Importação não concluída', error.message, 'error');
+    } finally {
+      if (button) { button.disabled = !sefazCan('consult_documents') || !sefazCan('download_xml'); button.textContent = '＋ Importar XMLs/ZIP oficiais'; }
+      var input = $('#sefaz-nfse-monthly-file');
+      if (input) input.value = '';
+    }
+  }
+  async function generateSefazXmlBatch() {
+    if (!sefazCan('download_xml')) { toast('Permissão necessária', 'Seu usuário não pode gerar lotes de XML.', 'warning'); return; }
+    var certificateId = $('#sefaz-xml-batch-certificate') ? $('#sefaz-xml-batch-certificate').value : '';
+    var month = $('#sefaz-xml-batch-month') ? $('#sefaz-xml-batch-month').value : '';
+    if (!certificateId) { toast('Certificado necessário', 'Selecione a empresa e o certificado do lote.', 'warning'); return; }
+    if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(month)) { toast('Mês necessário', 'Selecione o mês de emissão ou competência.', 'warning'); return; }
+    var button = $('[data-action="sefaz-generate-xml-batch"]');
+    var status = $('#sefaz-xml-batch-status');
+    try {
+      if (button) { button.disabled = true; button.textContent = 'Preparando arquivo ZIP...'; }
+      if (status) status.innerHTML = '<b>Selecionando os XMLs do mês</b><span>Validando emissão, movimento, situação e duplicidades.</span>';
+      var payload = await apiRequest('/api/sefaz/xml-batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          certificateId: certificateId,
+          month: month,
+          documentKind: $('#sefaz-xml-batch-kind').value,
+          movement: $('#sefaz-xml-batch-movement').value,
+          situation: $('#sefaz-xml-batch-situation').value,
+          environment: $('#sefaz-xml-batch-environment').value,
+          completenessMode: $('#sefaz-xml-batch-complete').checked ? 'complete' : 'archive'
+        })
+      });
+      downloadFile(payload.filename || ('lote-xml-' + month + '.zip'), base64ToBytes(payload.dataBase64), 'application/zip');
+      var counts = payload.counts || {};
+      var summary = (counts.total || 0) + ' XML(s) · ' + (counts.authorized || 0) + ' autorizado(s) · ' + (counts.cancelled || 0) + ' cancelado(s)';
+      if (status) status.innerHTML = '<b>Lote gerado com sucesso</b><span>' + esc(summary) + '. O manifesto foi incluído dentro do ZIP.</span>';
+      toast('Lote mensal gerado', summary + '.');
+      if (payload.warnings && payload.warnings.length) window.setTimeout(function () { toast('Atenção ao arquivo mensal', payload.warnings.join(' '), 'warning'); }, 500);
+    } catch (error) {
+      if (status) status.innerHTML = '<b>Não foi possível gerar o lote</b><span>' + esc(error.message) + '</span>';
+      toast('Lote XML não gerado', error.message, 'error');
+    } finally {
+      if (button) { button.disabled = !sefazCan('download_xml'); button.textContent = '↧ Gerar lote completo do mês'; }
+    }
+  }
+  function exportSefazResult(format) {
+    var result = sefazState.selectedResult;
+    if (!result) { toast('Nenhum resultado', 'Realize ou abra uma consulta antes de exportar.', 'warning'); return; }
+    if (!sefazCan('export_reports')) { toast('Permissão necessária', 'Seu usuário não pode exportar relatórios.', 'warning'); return; }
+    if (format === 'json') downloadFile('consulta-fiscal-' + fiscalKeyDigits(result.accessKey, 50) + '.json', JSON.stringify(result, null, 2));
+    else {
+      var rows = [['Campo', 'Valor'], ['Chave', result.accessKey], ['Modelo', result.model], ['Situação', result.status], ['Código oficial', result.officialCode], ['Protocolo', result.protocol], ['Ambiente', result.environmentLabel], ['Fonte', result.sourceName], ['Consulta', result.consultedAt]];
+      [['Emitente', result.issuer], ['Tomador/Destinatário', result.recipient]].forEach(function (group) {
+        Object.keys(group[1] || {}).forEach(function (name) { rows.push([group[0] + ' — ' + name, group[1][name]]); });
+      });
+      Object.keys(result.nationalPanel || {}).forEach(function (section) {
+        Object.keys(result.nationalPanel[section] || {}).forEach(function (name) { rows.push([section + ' — ' + name, result.nationalPanel[section][name]]); });
+      });
+      (result.items || []).forEach(function (item, index) { Object.keys(item).forEach(function (name) { rows.push(['Item ' + (index + 1) + ' — ' + name, item[name]]); }); });
+      Object.keys(result.taxes || {}).forEach(function (name) { rows.push(['Tributo — ' + name, result.taxes[name]]); });
+      (result.events || []).forEach(function (event, index) { rows.push(['Evento ' + (index + 1), [event.type, event.date, event.protocol, event.description].filter(Boolean).join(' · ')]); });
+      var csv = rows.map(function (row) { return row.map(function (cell) { return '"' + String(cell || '').replace(/"/g, '""') + '"'; }).join(';'); }).join('\r\n');
+      downloadFile('consulta-fiscal-' + fiscalKeyDigits(result.accessKey, 50) + '.csv', '\ufeff' + csv, 'text/csv;charset=utf-8');
+    }
+    audit('Consulta fiscal exportada', format.toUpperCase() + ' · ' + result.accessKey);
+  }
+  function printSefazMirror() {
+    if (!sefazState.selectedResult) { toast('Nenhum espelho disponível', 'Realize ou abra uma consulta antes de imprimir.', 'warning'); return; }
+    var cleanup = function () { document.body.classList.remove('print-sefaz-mirror'); };
+    document.body.classList.add('print-sefaz-mirror');
+    window.addEventListener('afterprint', cleanup, { once: true });
+    window.print();
+    window.setTimeout(cleanup, 10000);
+  }
+  async function downloadSefazXml(id) {
+    if (!sefazCan('download_xml')) { toast('Permissão necessária', 'Seu usuário não pode baixar XML.', 'warning'); return; }
+    try { var payload = await apiRequest('/api/sefaz/history/' + encodeURIComponent(id) + '/xml'); var bytes = atob(payload.dataBase64), array = new Uint8Array(bytes.length); for (var i = 0; i < bytes.length; i += 1) array[i] = bytes.charCodeAt(i); downloadFile(payload.filename || 'documento.xml', array, 'application/xml'); }
+    catch (error) { toast('XML indisponível', error.message, 'error'); }
+  }
+  function openSefazPermissions() {
+    var permissions = ['consult_documents', 'manage_certificates', 'view_sensitive', 'download_xml', 'export_reports', 'view_history', 'manage_companies'];
+    var labels = { consult_documents: 'Consultar documentos', manage_certificates: 'Cadastrar/remover certificados', view_sensitive: 'Visualizar dados sensíveis', download_xml: 'Baixar XML', export_reports: 'Exportar relatórios', view_history: 'Consultar histórico', manage_companies: 'Administrar empresas e filiais' };
+    var users = (sefazState.users || []).filter(function (user) { return user.role !== 'Administrador'; });
+    var matrix = sefazState.permissionMatrix || [];
+    var html = users.length ? users.map(function (user) { var current = matrix.find(function (item) { return item.email === user.email; }) || { permissions: [] }; return '<section class="sefaz-permission-user"><h3>' + esc(user.name) + ' <small>' + esc(user.email) + '</small></h3>' + permissions.map(function (permission) { return '<label class="check"><input type="checkbox" data-sefaz-permission="' + permission + '" data-email="' + esc(user.email) + '"' + (current.permissions.indexOf(permission) >= 0 ? ' checked' : '') + '> ' + esc(labels[permission]) + '</label>'; }).join('') + '</section>'; }).join('') : '<div class="empty-state"><p>Nenhum usuário de consulta cadastrado.</p></div>';
+    openModal('Permissões da consulta fiscal', '<div class="info-banner"><span>⚿</span><div>Administradores possuem todas as permissões. Defina abaixo somente os acessos dos usuários de consulta.</div></div><div class="sefaz-permission-grid">' + html + '</div>', '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="sefaz-save-permissions">Salvar permissões</button>');
+  }
+  async function saveSefazPermissions() {
+    var grouped = {};
+    $$('[data-sefaz-permission]').forEach(function (input) { var email = input.getAttribute('data-email'); if (!grouped[email]) grouped[email] = []; if (input.checked) grouped[email].push(input.getAttribute('data-sefaz-permission')); });
+    try { await apiRequest('/api/sefaz/permissions', { method: 'PUT', body: JSON.stringify({ users: Object.keys(grouped).map(function (email) { return { email: email, permissions: grouped[email] }; }) }) }); closeModal(); toast('Permissões atualizadas', 'Os acessos fiscais foram gravados no backend.'); await loadSefazData(); }
+    catch (error) { toast('Permissões não salvas', error.message, 'error'); }
+  }
+  function icmsState(uf) {
+    return ICMS_STATES.find(function (item) { return item.uf === uf; }) || ICMS_STATES.find(function (item) { return item.uf === 'SP'; });
+  }
+  function icmsPercent(value) {
+    return Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: Number(value) % 1 ? 1 : 0, maximumFractionDigits: 2 }) + '%';
+  }
+  function interstateRate(origin, destination, imported) {
+    if (origin === destination) return icmsState(destination).rate + icmsState(destination).fcp;
+    if (imported) return 4;
+    var southSoutheastOrigin = ['MG', 'PR', 'RJ', 'RS', 'SC', 'SP'].indexOf(origin) >= 0;
+    var target = icmsState(destination);
+    var reducedDestination = target && (['Norte', 'Nordeste', 'Centro-Oeste'].indexOf(target.region) >= 0 || destination === 'ES');
+    return southSoutheastOrigin && reducedDestination ? 7 : 12;
+  }
+  function icmsStateOptions(selected) {
+    return ICMS_STATES.map(function (item) {
+      return '<option value="' + item.uf + '"' + (item.uf === selected ? ' selected' : '') + '>' + item.uf + ' — ' + esc(item.name) + '</option>';
+    }).join('');
+  }
+  function renderTaxBenefits() {
+    var selectedUf = state.settings.icmsBenefitState || 'SP';
+    var options = icmsStateOptions(selectedUf);
+    var rows = ICMS_STATES.map(function (item) {
+      return '<tr data-icms-state-row data-region="' + esc(item.region) + '" data-search="' + esc((item.uf + ' ' + item.name + ' ' + item.region).toLowerCase()) + '"><td><span class="icms-uf-badge">' + item.uf + '</span><b>' + esc(item.name) + '</b></td><td>' + esc(item.region) + '</td><td><strong>' + icmsPercent(item.rate) + '</strong></td><td>' + (item.fcp ? icmsPercent(item.fcp) : '<span class="subtle">Por produto</span>') + '</td><td><strong>' + icmsPercent(item.rate + item.fcp) + '</strong></td><td><button class="row-button" data-action="icms-select-state" data-uf="' + item.uf + '" title="Consultar ' + esc(item.name) + '">⌕</button><a class="row-button" href="' + esc(item.source) + '" target="_blank" rel="noopener noreferrer" title="Fonte oficial">↗</a></td></tr>';
+    }).join('');
+    var stateButtons = ICMS_STATES.map(function (item) {
+      return '<button class="icms-map-state' + (item.uf === selectedUf ? ' active' : '') + '" data-action="icms-select-state" data-uf="' + item.uf + '" title="' + esc(item.name) + '">' + item.uf + '</button>';
+    }).join('');
+    return [
+      pageHeading('Alíquotas Internas e Benefícios Fiscais', 'Consulta orientativa de ICMS para as 27 Unidades Federadas, com cálculo interestadual, FCP e pesquisa de benefícios por NCM ou descrição.', '<button class="secondary-button" data-action="export-icms-benefits">↧ Exportar base JSON</button>'),
+      '<div class="info-banner icms-update-banner"><span>✓</span><div><strong>Referência organizada para 2026.</strong> Base revisada em 20/08/2026. As alíquotas específicas, o FCP e os benefícios dependem do NCM, descrição, finalidade, destinatário e vigência da norma; valide sempre no portal oficial da UF.</div><a href="https://www.econeteditora.com.br/novo/index.php" target="_blank" rel="noopener noreferrer">Referência visual Econet ↗</a></div>',
+      '<section class="icms-consult-grid"><article class="icms-consult-card"><header><span>01</span><div><h2>Alíquotas internas e benefícios</h2><p>Selecione a UF e pesquise por NCM ou descrição.</p></div></header><label class="field"><span>Unidade Federada</span><select id="icms-benefit-state">' + options + '</select></label><label class="field"><span>NCM ou descrição da mercadoria</span><input id="icms-benefit-query" inputmode="search" placeholder="Ex.: 1905.90.90, cesta básica, máquinas"></label><button class="primary-button" data-action="icms-consult-benefits">Consultar estado e benefícios →</button></article>' +
+      '<article class="icms-consult-card"><header><span>02</span><div><h2>Alíquota interestadual e DIFAL</h2><p>Simulação instantânea entre origem e destino.</p></div></header><div class="icms-route-fields"><label class="field"><span>Origem</span><select id="icms-origin">' + icmsStateOptions('SP') + '</select></label><label class="field"><span>Destino</span><select id="icms-destination">' + icmsStateOptions(selectedUf) + '</select></label></div><label class="field"><span>Valor da operação (R$)</span><input id="icms-operation-value" type="number" min="0" step="0.01" value="10000"></label><label class="check icms-imported-check"><input id="icms-imported-product" type="checkbox"> Mercadoria importada ou com conteúdo de importação sujeito à alíquota de 4%</label><div id="icms-interstate-result"></div></article></section>',
+      '<section class="card icms-map-card"><header class="card-header"><div><h2>Brasil — selecione uma UF</h2><small>Todos os estados e o Distrito Federal disponíveis</small></div><span class="tag tag--success">27 UFs</span></header><div class="card-body"><div class="icms-map-grid">' + stateButtons + '</div></div></section>',
+      '<section id="icms-state-result"></section>',
+      '<section class="card"><header class="card-header"><div><h2>Tabela geral das alíquotas internas</h2><small>Alíquota modal de referência; exceções devem ser verificadas por produto e operação</small></div></header><div class="card-body"><div class="icms-table-filters"><label class="filter-field"><span>Pesquisar UF</span><input id="icms-table-search" placeholder="Estado, sigla ou região"></label><label class="filter-field"><span>Região</span><select id="icms-table-region"><option value="">Todas</option><option>Norte</option><option>Nordeste</option><option>Centro-Oeste</option><option>Sudeste</option><option>Sul</option></select></label><button class="secondary-button" data-action="icms-clear-table-filter">Limpar filtros</button></div><div class="table-wrap"><table class="data-table icms-rate-table"><thead><tr><th>UF / Estado</th><th>Região</th><th>ICMS modal</th><th>FCP ref.</th><th>Carga ref.</th><th>Consulta</th></tr></thead><tbody>' + rows + '</tbody></table></div><p class="icms-table-note">FCP “por produto” significa que não foi somado automaticamente. A incidência pode variar conforme a mercadoria e a legislação estadual.</p></div></section>',
+      '<section class="card icms-sources"><header class="card-header"><div><h2>Fontes e critérios da consulta</h2><small>Transparência da base e validação oficial</small></div></header><div class="card-body"><div><b>Alíquotas interestaduais</b><p>Regras gerais de 7% e 12% conforme Resolução do Senado nº 22/1989; alíquota de 4% para importados conforme Resolução nº 13/2012.</p><a href="https://legis.senado.leg.br/norma/586152/publicacao/15746891" target="_blank" rel="noopener noreferrer">Resolução nº 22/1989 ↗</a><a href="https://legis.senado.leg.br/norma/589952/publicacao/15764968" target="_blank" rel="noopener noreferrer">Resolução nº 13/2012 ↗</a></div><div><b>Benefícios fiscais</b><p>Catálogo orientativo baseado em convênios do CONFAZ. A aplicação depende da incorporação e regulamentação de cada UF.</p><a href="https://www.confaz.fazenda.gov.br/legislacao/convenios" target="_blank" rel="noopener noreferrer">Convênios CONFAZ ↗</a><a href="https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=/NJarYc9nus=" target="_blank" rel="noopener noreferrer">Tabelas oficiais da NF-e ↗</a></div></div></section>'
+    ].join('');
+  }
+
+  function rentalSimulationDefaults() {
+    return {
+      type: 'imovel', purpose: 'residencial', year: '2026-test', lessor: 'pj-regular', lessee: 'empresa-regular',
+      description: 'Imóvel residencial', city: 'São Paulo / SP', amount: 5000, extras: 0, discounts: 0,
+      units: 1, months: 12, ibsRate: 0.1, cbsRate: 0.9, socialReducer: 600, transitional: false, contractDate: '2025-01-01'
+    };
+  }
+  function rentalYearRates(year) {
+    if (year === 'planning') return { ibs: 17.7, cbs: 8.8 };
+    if (year === 'custom') return null;
+    return { ibs: 0.1, cbs: 0.9 };
+  }
+  function rentalPurposeOptions(type, selected) {
+    var options = type === 'movel'
+      ? [['maquinas', 'Máquinas e equipamentos'], ['veiculos', 'Veículos'], ['tecnologia', 'Equipamentos de tecnologia'], ['outros-moveis', 'Outros bens móveis']]
+      : [['residencial', 'Imóvel residencial'], ['comercial', 'Imóvel comercial'], ['industrial', 'Imóvel industrial ou logístico'], ['temporada', 'Locação por temporada']];
+    if (!options.some(function (item) { return item[0] === selected; })) selected = options[0][0];
+    return options.map(function (item) { return '<option value="' + item[0] + '"' + (item[0] === selected ? ' selected' : '') + '>' + item[1] + '</option>'; }).join('');
+  }
+  function renderRentalSimulator() {
+    var data = Object.assign(rentalSimulationDefaults(), state.settings.rentalSimulation || {});
+    var selected = function (value, current) { return value === current ? ' selected' : ''; };
+    return [
+      pageHeading('Simulador de Locação', 'Projeção orientativa de IBS e CBS para locação de bens imóveis e móveis, com cálculo instantâneo e parâmetros editáveis.', '<button class="secondary-button" data-action="rental-export-json">↧ Exportar JSON</button><button class="secondary-button" data-action="rental-print">▣ PDF / imprimir</button><button class="primary-button" data-action="rental-save">▣ Salvar simulação</button>'),
+      '<div class="info-banner rental-law-banner"><span>i</span><div><strong>Reforma Tributária em implementação.</strong> Esta ferramenta aplica as regras conhecidas da <a href="https://www.planalto.gov.br/ccivil_03/constituicao/emendas/emc/emc132.htm" target="_blank" rel="noopener noreferrer">EC nº 132/2023</a> e da <a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp214compilado.htm" target="_blank" rel="noopener noreferrer">LC nº 214/2025, compilada</a>. Alíquotas de planejamento são estimativas editáveis e devem ser conferidas na competência da operação.</div><span class="tag tag--warning">Atualizado em 20/08/2026</span></div>',
+      '<section class="card rental-intro"><div class="card-body"><strong>Solução de apoio à análise tributária da locação.</strong><p>Escolha o bem, informe o perfil das partes e os valores da operação. O sistema demonstra base de cálculo, redutores, IBS, CBS, carga efetiva e crédito potencial sem substituir a validação fiscal do contrato.</p><ol><li>Defina o tipo de locação e os participantes.</li><li>Informe os valores e confirme os parâmetros.</li><li>Analise, salve ou exporte o relatório completo.</li></ol></div></section>',
+      '<div class="rental-stepper" aria-label="Etapas da simulação"><button class="active" data-action="rental-step" data-step="1"><span>1</span><b>Dados iniciais</b><small>Operação e perfis</small></button><i></i><button data-action="rental-step" data-step="2"><span>2</span><b>Bens e valores</b><small>Base e alíquotas</small></button><i></i><button data-action="rental-step" data-step="3"><span>3</span><b>Resultado</b><small>Espelho da simulação</small></button></div>',
+      '<div class="rental-layout" id="rental-simulator" data-current-step="1"><div class="rental-form-column">',
+      '<section class="card rental-panel active" data-rental-panel="1"><header class="card-header"><div><h2>1. Dados iniciais da operação</h2><small>Selecione o tipo de bem e o perfil tributário</small></div><span class="tag tag--info">Etapa 1 de 3</span></header><div class="card-body">',
+      '<div class="rental-type-grid"><button class="rental-type-card' + (data.type === 'imovel' ? ' selected' : '') + '" data-action="rental-select-type" data-type="imovel" aria-pressed="' + (data.type === 'imovel') + '"><span>⌂</span><b>Locação de Bens Imóveis</b><small>Casas, apartamentos, espaços comerciais, industriais e logísticos</small><i>✓</i></button><button class="rental-type-card' + (data.type === 'movel' ? ' selected' : '') + '" data-action="rental-select-type" data-type="movel" aria-pressed="' + (data.type === 'movel') + '"><span>⚒</span><b>Locação de Bens Móveis</b><small>Máquinas, equipamentos, veículos e outros bens móveis</small><i>✓</i></button></div>',
+      '<h3 class="rental-section-title">Incidência e enquadramento</h3><div class="form-grid rental-form-grid"><label class="field"><span>Período da projeção</span><select id="rental-year" data-rental-input><option value="2026-test"' + selected('2026-test', data.year) + '>2026 — ano-teste IBS/CBS</option><option value="planning"' + selected('planning', data.year) + '>Planejamento — referência estimada</option><option value="custom"' + selected('custom', data.year) + '>Alíquotas personalizadas</option></select></label><label class="field"><span>Finalidade / categoria</span><select id="rental-purpose" data-rental-input>' + rentalPurposeOptions(data.type, data.purpose) + '</select></label><label class="field"><span>Perfil do locador</span><select id="rental-lessor" data-rental-input><option value="pj-regular"' + selected('pj-regular', data.lessor) + '>Pessoa jurídica — regime regular</option><option value="pf-verificar"' + selected('pf-verificar', data.lessor) + '>Pessoa física — verificar enquadramento</option><option value="simples"' + selected('simples', data.lessor) + '>Optante pelo Simples Nacional</option><option value="nao-contribuinte"' + selected('nao-contribuinte', data.lessor) + '>Não contribuinte — projeção comparativa</option></select></label><label class="field"><span>Perfil do locatário</span><select id="rental-lessee" data-rental-input><option value="empresa-regular"' + selected('empresa-regular', data.lessee) + '>Empresa no regime regular</option><option value="simples"' + selected('simples', data.lessee) + '>Empresa do Simples Nacional</option><option value="consumidor"' + selected('consumidor', data.lessee) + '>Pessoa física / consumidor final</option></select></label><label class="field"><span>Descrição do bem</span><input id="rental-description" data-rental-input value="' + esc(data.description) + '" placeholder="Ex.: sala comercial ou veículo"></label><label class="field"><span>Município / UF</span><input id="rental-city" data-rental-input value="' + esc(data.city) + '" placeholder="Ex.: São Paulo / SP"></label></div>',
+      '<div class="rental-panel-actions"><button class="secondary-button" data-action="rental-clear">Limpar dados</button><button class="primary-button" data-action="rental-step" data-step="2">Próximo: valores →</button></div></div></section>',
+      '<section class="card rental-panel" data-rental-panel="2"><header class="card-header"><div><h2>2. Bens, valores e parâmetros</h2><small>O cálculo é atualizado durante o preenchimento</small></div><span class="tag tag--info">Etapa 2 de 3</span></header><div class="card-body"><div class="form-grid rental-form-grid"><label class="field"><span>Valor mensal da locação (R$)</span><input id="rental-amount" data-rental-input type="number" min="0" step="0.01" value="' + Number(data.amount || 0) + '"></label><label class="field"><span>Encargos integrantes da operação (R$)</span><input id="rental-extras" data-rental-input type="number" min="0" step="0.01" value="' + Number(data.extras || 0) + '"></label><label class="field"><span>Desconto incondicional (R$)</span><input id="rental-discounts" data-rental-input type="number" min="0" step="0.01" value="' + Number(data.discounts || 0) + '"></label><label class="field"><span>Quantidade de bens / imóveis</span><input id="rental-units" data-rental-input type="number" min="1" step="1" value="' + Number(data.units || 1) + '"></label><label class="field"><span>Meses da projeção</span><input id="rental-months" data-rental-input type="number" min="1" max="60" step="1" value="' + Number(data.months || 12) + '"></label><label class="field"><span>Data do contrato</span><input id="rental-contract-date" data-rental-input type="date" value="' + esc(data.contractDate) + '"></label></div>',
+      '<div class="rental-rate-box"><header><div><b>Parâmetros IBS e CBS</b><small>Edite para refletir a competência e a regulamentação aplicável.</small></div><span id="rental-rate-status" class="tag tag--warning">Ano-teste</span></header><div class="rental-rate-fields"><label class="field"><span>Alíquota IBS de referência (%)</span><input id="rental-ibs-rate" data-rental-input type="number" min="0" max="100" step="0.01" value="' + Number(data.ibsRate || 0) + '"></label><label class="field"><span>Alíquota CBS de referência (%)</span><input id="rental-cbs-rate" data-rental-input type="number" min="0" max="100" step="0.01" value="' + Number(data.cbsRate || 0) + '"></label><label class="field rental-only-real-estate"><span>Redutor social por imóvel residencial (R$)</span><input id="rental-social-reducer" data-rental-input type="number" min="0" step="0.01" value="' + Number(data.socialReducer == null ? 600 : data.socialReducer) + '"></label></div><p id="rental-rate-note"></p></div>',
+      '<div class="rental-only-real-estate"><label class="check rental-transition-check"><input id="rental-transitional" data-rental-input type="checkbox"' + (data.transitional ? ' checked' : '') + '> <span><b>Simular opção pelo regime transitório do art. 487</b><small>Alíquota de 3,65% sobre a receita bruta, sem apropriação de créditos, apenas para contratos que cumpram os requisitos legais.</small></span></label><div class="rental-transition-conditions" id="rental-transition-conditions"><strong>Conferência necessária</strong><span>Contrato por prazo determinado, data e registro/documentação devem atender ao art. 487 da LC nº 214/2025. Marcar esta opção não confirma o direito ao regime.</span></div></div>',
+      '<div class="rental-panel-actions"><button class="secondary-button" data-action="rental-step" data-step="1">← Voltar</button><button class="primary-button" data-action="rental-step" data-step="3">Ver resultado completo →</button></div></div></section>',
+      '<section class="card rental-panel" data-rental-panel="3"><header class="card-header"><div><h2>3. Espelho completo da simulação</h2><small>Memória de cálculo, alertas e projeção anual</small></div><span class="tag tag--success">Resultado instantâneo</span></header><div class="card-body"><div class="rental-report-hero"><div><small id="rental-report-mode">Regime regular</small><strong id="rental-report-total">R$ 0,00</strong><span>IBS e CBS estimados por mês</span></div><div><small>Carga efetiva</small><b id="rental-report-effective">0%</b></div></div><div id="rental-result-detail" class="rental-result-detail"></div><div id="rental-alerts" class="rental-alerts"></div><div class="rental-panel-actions"><button class="secondary-button" data-action="rental-step" data-step="2">← Ajustar valores</button><button class="secondary-button" data-action="rental-export-json">↧ JSON</button><button class="primary-button" data-action="rental-save">▣ Salvar simulação</button></div></div></section>',
+      '</div><aside class="card rental-summary"><header class="card-header"><div><h2>Resultado instantâneo</h2><small>Atualiza a cada alteração</small></div><span class="rental-live-dot">ao vivo</span></header><div class="rental-summary-total"><small>IBS + CBS por mês</small><strong id="rental-quick-total">R$ 0,00</strong><span id="rental-quick-mode">Regime regular</span></div><div class="rental-summary-grid"><div><small>Receita mensal</small><b id="rental-quick-gross">R$ 0,00</b></div><div><small>Base tributável</small><b id="rental-quick-base">R$ 0,00</b></div><div><small>Redutores</small><b id="rental-quick-reducer">R$ 0,00</b></div><div><small>Total no período</small><b id="rental-quick-annual">R$ 0,00</b></div></div><div class="rental-summary-foot"><span>Última atualização</span><b id="rental-calculated-at">—</b></div></aside></div>',
+      '<section class="card rental-sources"><header class="card-header"><div><h2>Fontes oficiais e critérios utilizados</h2><small>Consulte o texto consolidado antes de concluir o enquadramento</small></div><span class="tag tag--success">Fontes oficiais</span></header><div class="card-body"><a href="https://www2.camara.leg.br/legin/fed/leicom/2025/leicomplementar-214-16-janeiro-2025-796905-normaatualizada-pl.html" target="_blank" rel="noopener noreferrer"><b>LC nº 214/2025 — texto atualizado</b><span>Arts. 252, 260, 261 e 487 · Câmara dos Deputados ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp214compilado.htm" target="_blank" rel="noopener noreferrer"><b>LC nº 214/2025 — compilada</b><span>Presidência da República ↗</span></a><a href="https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/legislacao/2025/lei-complementar-no-214-2025" target="_blank" rel="noopener noreferrer"><b>Reforma Tributária do Consumo</b><span>Receita Federal ↗</span></a></div></section>'
+    ].join('');
+  }
+
+  function readRentalSimulation() {
+    var fallback = Object.assign(rentalSimulationDefaults(), state.settings.rentalSimulation || {});
+    var value = function (id, defaultValue) { var el = $('#' + id); return el ? el.value : defaultValue; };
+    return {
+      type: ($('#rental-simulator') && $('#rental-simulator').getAttribute('data-rental-type')) || fallback.type,
+      purpose: value('rental-purpose', fallback.purpose), year: value('rental-year', fallback.year),
+      lessor: value('rental-lessor', fallback.lessor), lessee: value('rental-lessee', fallback.lessee),
+      description: value('rental-description', fallback.description), city: value('rental-city', fallback.city),
+      amount: Math.max(0, parseLocaleNumber(value('rental-amount', fallback.amount))),
+      extras: Math.max(0, parseLocaleNumber(value('rental-extras', fallback.extras))),
+      discounts: Math.max(0, parseLocaleNumber(value('rental-discounts', fallback.discounts))),
+      units: Math.max(1, Math.round(parseLocaleNumber(value('rental-units', fallback.units)) || 1)),
+      months: Math.max(1, Math.min(60, Math.round(parseLocaleNumber(value('rental-months', fallback.months)) || 12))),
+      ibsRate: Math.max(0, parseLocaleNumber(value('rental-ibs-rate', fallback.ibsRate))),
+      cbsRate: Math.max(0, parseLocaleNumber(value('rental-cbs-rate', fallback.cbsRate))),
+      socialReducer: Math.max(0, parseLocaleNumber(value('rental-social-reducer', fallback.socialReducer))),
+      transitional: Boolean($('#rental-transitional') && $('#rental-transitional').checked),
+      contractDate: value('rental-contract-date', fallback.contractDate)
+    };
+  }
+  function calculateRentalSimulation(data) {
+    var gross = Math.max(0, data.amount + data.extras - data.discounts);
+    var residential = data.type === 'imovel' && data.purpose === 'residencial';
+    var shortStay = data.type === 'imovel' && data.purpose === 'temporada';
+    var transitional = data.type === 'imovel' && data.transitional;
+    var socialReducer = !transitional && residential ? Math.min(gross, data.socialReducer * data.units) : 0;
+    var taxableBase = transitional ? gross : Math.max(0, gross - socialReducer);
+    var rateReduction = data.type === 'imovel' && !shortStay && !transitional ? 70 : 0;
+    var appliedFactor = rateReduction ? 0.30 : 1;
+    var effectiveIbs = transitional ? 0 : data.ibsRate * appliedFactor;
+    var effectiveCbs = transitional ? 0 : data.cbsRate * appliedFactor;
+    var ibs = taxableBase * effectiveIbs / 100;
+    var cbs = taxableBase * effectiveCbs / 100;
+    var total = transitional ? gross * 3.65 / 100 : ibs + cbs;
+    var credit = data.lessee === 'empresa-regular' && !transitional ? total : 0;
+    var warnings = [];
+    if (data.year === '2026-test') warnings.push('2026 é ano-teste: a incidência nominal de 0,1% de IBS e 0,9% de CBS está sujeita às regras legais de compensação ou dispensa.');
+    if (data.year === 'planning') warnings.push('A carga combinada de planejamento é uma estimativa editável, não uma alíquota definitiva publicada.');
+    if (data.type === 'imovel' && !transitional) warnings.push('Foi aplicada redução de 70% das alíquotas de IBS/CBS para locação de imóvel, conforme art. 261.');
+    if (residential && !transitional) warnings.push('Foi considerado redutor social mensal de ' + money(data.socialReducer) + ' por imóvel residencial. O valor-base legal é atualizado por índice oficial e permanece editável.');
+    if (shortStay) warnings.push('Locação residencial por período não superior a 90 dias pode seguir as regras de hotelaria. O redutor de 70% não foi aplicado automaticamente; valide o prazo e o enquadramento.');
+    if (data.type === 'movel') warnings.push('Locação de bem móvel não utiliza o redutor específico de 70% previsto para operações com imóveis.');
+    if (transitional) warnings.push('Regime transitório de 3,65% selecionado: confirme prazo, data, registro e demais requisitos contratuais do art. 487; não há apropriação de créditos.');
+    if (data.lessor === 'pf-verificar') warnings.push('Pessoa física: confirme se os critérios legais de sujeição ao IBS/CBS foram alcançados na competência.');
+    if (data.lessor === 'nao-contribuinte') warnings.push('O locador foi indicado como não contribuinte; os valores servem apenas como comparação de cenário.');
+    if (data.lessor === 'simples') warnings.push('Optante pelo Simples Nacional: valide a forma de recolhimento e eventual opção pelo regime regular de IBS/CBS.');
+    return {
+      gross: gross, taxableBase: taxableBase, socialReducer: socialReducer, rateReduction: rateReduction,
+      effectiveIbs: effectiveIbs, effectiveCbs: effectiveCbs, ibs: ibs, cbs: cbs, total: total,
+      annualTotal: total * data.months, annualGross: gross * data.months, net: gross - total,
+      credit: credit, effectiveBurden: gross ? total / gross * 100 : 0,
+      mode: transitional ? 'Regime transitório · art. 487' : (shortStay ? 'Curta duração · validar hotelaria' : (data.type === 'imovel' ? 'Regime específico de imóveis' : 'Regime regular · bem móvel')),
+      warnings: warnings
+    };
+  }
+  function updateRentalSimulator() {
+    var root = $('#rental-simulator');
+    if (!root) return;
+    if (!root.getAttribute('data-rental-type')) root.setAttribute('data-rental-type', Object.assign(rentalSimulationDefaults(), state.settings.rentalSimulation || {}).type);
+    var data = readRentalSimulation();
+    var result = calculateRentalSimulation(data);
+    var text = function (id, value) { var el = $('#' + id); if (el) el.textContent = value; };
+    $$('.rental-type-card').forEach(function (button) { var active = button.getAttribute('data-type') === data.type; button.classList.toggle('selected', active); button.setAttribute('aria-pressed', String(active)); });
+    $$('.rental-only-real-estate').forEach(function (el) { el.classList.toggle('is-hidden', data.type !== 'imovel'); });
+    var transitionBox = $('#rental-transition-conditions'); if (transitionBox) transitionBox.classList.toggle('active', data.transitional && data.type === 'imovel');
+    var rateStatus = $('#rental-rate-status');
+    if (rateStatus) rateStatus.textContent = data.year === '2026-test' ? 'Ano-teste 2026' : data.year === 'planning' ? 'Estimativa editável' : 'Personalizada';
+    text('rental-rate-note', data.year === '2026-test' ? 'Parâmetros nominais do ano-teste: IBS 0,1% e CBS 0,9%. A obrigação efetiva depende das regras de compensação/dispensa.' : data.year === 'planning' ? 'Referência de planejamento de 26,5% combinados, separada em parâmetros editáveis. Não representa alíquota definitiva.' : 'Parâmetros informados pelo usuário. Registre a fonte e a competência utilizada no relatório do cliente.');
+    text('rental-quick-total', money(result.total)); text('rental-quick-mode', result.mode);
+    text('rental-quick-gross', money(result.gross)); text('rental-quick-base', money(result.taxableBase));
+    text('rental-quick-reducer', money(result.socialReducer)); text('rental-quick-annual', money(result.annualTotal));
+    text('rental-calculated-at', new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    text('rental-report-mode', result.mode); text('rental-report-total', money(result.total)); text('rental-report-effective', number(result.effectiveBurden) + '%');
+    var detail = $('#rental-result-detail');
+    if (detail) detail.innerHTML = [
+      '<div><small>Receita mensal</small><strong>' + money(result.gross) + '</strong><span>Locação + encargos − desconto</span></div>',
+      '<div><small>Redutor social</small><strong>' + money(result.socialReducer) + '</strong><span>' + (result.socialReducer ? data.units + ' imóvel(is) residencial(is)' : 'Não aplicado ao cenário') + '</span></div>',
+      '<div><small>Base tributável</small><strong>' + money(result.taxableBase) + '</strong><span>Base mensal estimada</span></div>',
+      (data.transitional && data.type === 'imovel' ? '<div><small>IBS/CBS combinados</small><strong>3,65%</strong><span>Regime transitório, sem créditos</span></div>' : '<div><small>IBS estimado</small><strong>' + money(result.ibs) + '</strong><span>Alíquota efetiva: ' + number(result.effectiveIbs) + '%</span></div><div><small>CBS estimada</small><strong>' + money(result.cbs) + '</strong><span>Alíquota efetiva: ' + number(result.effectiveCbs) + '%</span></div>'),
+      '<div><small>Crédito potencial do locatário</small><strong>' + money(result.credit) + '</strong><span>Sujeito às regras de creditamento</span></div>',
+      '<div><small>Receita líquida após IBS/CBS</small><strong>' + money(result.net) + '</strong><span>Antes de outros tributos e custos</span></div>',
+      '<div><small>Projeção de ' + data.months + ' meses</small><strong>' + money(result.annualTotal) + '</strong><span>Sobre receita de ' + money(result.annualGross) + '</span></div>'
+    ].join('');
+    var alerts = $('#rental-alerts');
+    if (alerts) alerts.innerHTML = '<h3>Pontos de atenção</h3>' + result.warnings.map(function (warning) { return '<div><span>!</span><p>' + esc(warning) + '</p></div>'; }).join('');
+  }
+  function selectRentalType(type) {
+    var root = $('#rental-simulator'); if (!root) return;
+    root.setAttribute('data-rental-type', type === 'movel' ? 'movel' : 'imovel');
+    var purpose = $('#rental-purpose');
+    if (purpose) purpose.innerHTML = rentalPurposeOptions(type, type === 'movel' ? 'maquinas' : 'residencial');
+    var description = $('#rental-description');
+    if (description && (!description.value || description.value === 'Imóvel residencial' || description.value === 'Máquinas e equipamentos')) description.value = type === 'movel' ? 'Máquinas e equipamentos' : 'Imóvel residencial';
+    if (type === 'movel' && $('#rental-transitional')) $('#rental-transitional').checked = false;
+    updateRentalSimulator();
+  }
+  function setRentalStep(step) {
+    step = Math.max(1, Math.min(3, Number(step || 1)));
+    var root = $('#rental-simulator'); if (!root) return;
+    root.setAttribute('data-current-step', step);
+    $$('.rental-panel').forEach(function (panel) { panel.classList.toggle('active', Number(panel.getAttribute('data-rental-panel')) === step); });
+    $$('.rental-stepper button').forEach(function (button) { var buttonStep = Number(button.getAttribute('data-step')); button.classList.toggle('active', buttonStep === step); button.classList.toggle('complete', buttonStep < step); });
+    updateRentalSimulator();
+    var target = $('[data-rental-panel="' + step + '"]'); if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function saveRentalSimulation() {
+    var data = readRentalSimulation(); var result = calculateRentalSimulation(data);
+    state.settings.rentalSimulation = Object.assign({}, data, { savedAt: nowISO(), result: result });
+    persist(); audit('Simulação de locação salva', (data.type === 'imovel' ? 'Bem imóvel' : 'Bem móvel') + ' · ' + money(result.total) + ' de IBS/CBS por mês');
+    toast('Simulação salva', 'Dados, parâmetros e resultado foram armazenados permanentemente neste navegador.');
+  }
+  function resetRentalSimulation() {
+    if (!window.confirm('Limpar os dados desta simulação e restaurar os valores iniciais?')) return;
+    state.settings.rentalSimulation = rentalSimulationDefaults(); persist(); route(); toast('Simulação limpa', 'Os parâmetros iniciais foram restaurados.');
+  }
+  function exportRentalSimulation() {
+    var data = readRentalSimulation(); var result = calculateRentalSimulation(data);
+    downloadFile('simulacao-locacao-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.simulacao-locacao.v1', generatedAt: nowISO(), legalReview: '20/08/2026', data: data, result: result, sources: ['EC 132/2023', 'LC 214/2025 compilada', 'LC 227/2026'] }, null, 2));
+    audit('Simulação de locação exportada', (data.type === 'imovel' ? 'Bem imóvel' : 'Bem móvel') + ' · JSON'); toast('Relatório exportado', 'A memória da simulação foi salva em JSON.');
+  }
+  function benefitCardsForQuery(query, selected) {
+    var normalized = String(query || '').toLowerCase().replace(/[^a-z0-9á-ú\s]/gi, ' ').trim();
+    var tokens = normalized.split(/\s+/).filter(Boolean);
+    var digitsQuery = String(query || '').replace(/\D/g, '');
+    var chapter = digitsQuery.length >= 2 ? digitsQuery.slice(0, 2) : '';
+    var filtered = ICMS_BENEFIT_CATEGORIES.filter(function (item) {
+      if (!tokens.length) return true;
+      if (chapter && Array.isArray(item.chapters) && item.chapters.indexOf(chapter) >= 0) return true;
+      var searchable = (item.type + ' ' + item.scope + ' ' + item.ncm + ' ' + item.terms + ' ' + item.reference).toLowerCase();
+      return tokens.some(function (token) { return searchable.indexOf(token) >= 0; });
+    });
+    if (!filtered.length) return '<div class="empty-state icms-benefit-empty"><i>⌕</i><h3>Nenhuma correspondência no catálogo orientativo</h3><p>Consulte a legislação oficial de ' + esc(selected.name) + ' pelo NCM completo e pela descrição legal da mercadoria.</p><a class="primary-button" href="' + esc(selected.source) + '" target="_blank" rel="noopener noreferrer">Abrir portal oficial da UF ↗</a></div>';
+    return '<div class="icms-benefit-list">' + filtered.map(function (item) {
+      return '<article class="icms-benefit-card"><span class="icms-benefit-icon">' + item.icon + '</span><div><div class="icms-benefit-card-top"><span class="tag tag--info">' + esc(item.type) + '</span><small>' + esc(selected.uf + ' · ' + selected.name) + '</small></div><h3>' + esc(item.scope) + '</h3><p>' + esc(item.detail) + '</p><dl><div><dt>Referência NCM</dt><dd>' + esc(item.ncm) + '</dd></div><div><dt>Norma-base</dt><dd>' + esc(item.reference) + '</dd></div></dl><div class="icms-benefit-links"><a href="' + esc(item.url) + '" target="_blank" rel="noopener noreferrer">Norma CONFAZ ↗</a><a href="' + esc(selected.source) + '" target="_blank" rel="noopener noreferrer">Legislação de ' + selected.uf + ' ↗</a></div></div></article>';
+    }).join('') + '</div>';
+  }
+  function updateTaxBenefitsPanel() {
+    var select = $('#icms-benefit-state');
+    var target = $('#icms-state-result');
+    if (!select || !target) return;
+    var selected = icmsState(select.value);
+    var query = $('#icms-benefit-query') ? $('#icms-benefit-query').value : '';
+    state.settings.icmsBenefitState = selected.uf;
+    $$('.icms-map-state').forEach(function (button) { button.classList.toggle('active', button.getAttribute('data-uf') === selected.uf); });
+    target.innerHTML = '<section class="card icms-state-card"><header class="icms-state-hero"><div class="icms-state-title"><span>' + selected.uf + '</span><div><small>' + esc(selected.region) + '</small><h2>' + esc(selected.name) + '</h2><p>Alíquota modal e catálogo orientativo de benefícios fiscais</p></div></div><a class="secondary-button" href="' + esc(selected.source) + '" target="_blank" rel="noopener noreferrer">Portal oficial da UF ↗</a></header><div class="icms-state-metrics"><div><small>ICMS modal</small><strong>' + icmsPercent(selected.rate) + '</strong></div><div><small>FCP de referência</small><strong>' + (selected.fcp ? icmsPercent(selected.fcp) : 'Por produto') + '</strong></div><div><small>Carga combinada ref.</small><strong>' + icmsPercent(selected.rate + selected.fcp) + '</strong></div><div><small>Base revisada</small><strong>20/08/2026</strong></div></div><div class="info-banner icms-state-note"><span>!</span><div><strong>Validação obrigatória.</strong> ' + esc(selected.note || 'A alíquota e o benefício efetivos podem variar por NCM, descrição, operação, destinatário, regime especial e vigência da norma estadual.') + '</div></div><div class="icms-benefit-heading"><div><h2>Benefícios fiscais relacionados</h2><p>' + (query ? 'Resultado orientativo para “' + esc(query) + '”.' : 'Categorias mais consultadas; informe um NCM ou descrição para filtrar.') + '</p></div><span class="tag tag--warning">Confirmar enquadramento</span></div>' + benefitCardsForQuery(query, selected) + '</section>';
+    if ($('#icms-destination')) $('#icms-destination').value = selected.uf;
+    updateInterstateSimulation();
+  }
+  function updateInterstateSimulation() {
+    var originEl = $('#icms-origin'), destinationEl = $('#icms-destination'), target = $('#icms-interstate-result');
+    if (!originEl || !destinationEl || !target) return;
+    var origin = originEl.value, destination = destinationEl.value;
+    var imported = Boolean($('#icms-imported-product') && $('#icms-imported-product').checked);
+    var operationValue = Math.max(0, Number($('#icms-operation-value') && $('#icms-operation-value').value || 0));
+    var internal = icmsState(destination).rate + icmsState(destination).fcp;
+    var interstate = interstateRate(origin, destination, imported);
+    var sameState = origin === destination;
+    var difalRate = sameState ? 0 : Math.max(0, internal - interstate);
+    var difalValue = operationValue * difalRate / 100;
+    target.innerHTML = '<div class="icms-interstate-result"><div><small>' + (sameState ? 'Operação interna' : 'Alíquota interestadual') + '</small><strong>' + icmsPercent(interstate) + '</strong><span>' + origin + ' → ' + destination + (imported ? ' · importado' : '') + '</span></div><div><small>DIFAL estimado</small><strong>' + icmsPercent(difalRate) + '</strong><span>' + money(difalValue) + ' sobre ' + money(operationValue) + '</span></div></div><p>' + (sameState ? 'Origem e destino iguais: foi aplicada a carga interna de referência.' : 'Estimativa simples. Base por dentro, FCP específico, benefícios, consumidor/contribuinte e partilha podem alterar o resultado.') + '</p>';
+  }
+  function filterIcmsStateTable() {
+    var query = String($('#icms-table-search') && $('#icms-table-search').value || '').toLowerCase().trim();
+    var region = String($('#icms-table-region') && $('#icms-table-region').value || '');
+    $$('[data-icms-state-row]').forEach(function (row) {
+      var matchesText = !query || String(row.getAttribute('data-search') || '').indexOf(query) >= 0;
+      var matchesRegion = !region || row.getAttribute('data-region') === region;
+      row.classList.toggle('is-hidden', !(matchesText && matchesRegion));
+    });
+  }
+
+  function issCapital(uf) {
+    var capitals = window.ISS_CAPITALS || [];
+    return capitals.find(function (item) { return item.uf === uf; }) || capitals.find(function (item) { return item.uf === 'SP'; }) || capitals[0];
+  }
+  function issNormalize(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+  function issLegalRange(code) {
+    var exception = ['7.02', '7.05', '16.01'].indexOf(code) >= 0;
+    return {
+      min: exception ? 0 : 2,
+      max: 5,
+      label: exception ? 'Lei municipal · até 5%' : '2% a 5%',
+      note: exception ? 'Exceção ao piso federal de 2%' : 'Intervalo federal; confirmar a lei municipal'
+    };
+  }
+  function issEstimateLabel(code, operationValue) {
+    var range = issLegalRange(code);
+    if (!operationValue) return 'Informe o valor';
+    if (!range.min) return 'Até ' + money(operationValue * range.max / 100);
+    return money(operationValue * range.min / 100) + ' a ' + money(operationValue * range.max / 100);
+  }
+  function issGroupOptions(selected) {
+    return '<option value="">Todos os 40 grupos</option>' + Object.keys(window.ISS_SERVICE_GROUPS || {}).map(function (key) {
+      return '<option value="' + key + '"' + (String(selected) === key ? ' selected' : '') + '>' + key + ' — ' + esc(window.ISS_SERVICE_GROUPS[key]) + '</option>';
+    }).join('');
+  }
+  function renderIssBrazilMap(capitals, selectedUf) {
+    var paths = window.BRAZIL_STATE_PATHS || [];
+    var coords = window.BRAZIL_CAPITAL_COORDS || {};
+    var meta = window.BRAZIL_MAP_META || {};
+    var byUf = {};
+    var regionClasses = { Norte: 'north', Nordeste: 'northeast', 'Centro-Oeste': 'centerwest', Sudeste: 'southeast', Sul: 'south' };
+    capitals.forEach(function (item) { byUf[item.uf] = item; });
+    var statePaths = paths.map(function (statePath) {
+      var capital = byUf[statePath.uf] || { city: statePath.uf, region: '' };
+      var regionClass = regionClasses[capital.region] || 'other';
+      return '<path class="iss-state-shape iss-region-' + regionClass + (statePath.uf === selectedUf ? ' active' : '') + '" d="' + esc(statePath.d) + '" data-action="iss-select-capital" data-uf="' + statePath.uf + '" aria-label="Selecionar ' + esc(capital.city + ' — ' + statePath.uf) + '"><title>' + esc(capital.city + ' — ' + statePath.uf) + '</title></path>';
+    }).join('');
+    var markers = capitals.map(function (item) {
+      var point = coords[item.uf];
+      if (!point) return '';
+      return '<g class="iss-capital-marker' + (item.uf === selectedUf ? ' active' : '') + '" transform="translate(' + point.x + ' ' + point.y + ')" data-action="iss-select-capital" data-uf="' + item.uf + '" role="button" tabindex="0" aria-label="Selecionar ' + esc(item.city + ' — ' + item.uf) + '"><line x1="0" y1="0" x2="' + (point.dx * 0.72) + '" y2="' + (point.dy * 0.72) + '"></line><circle r="4.3"></circle><text x="' + point.dx + '" y="' + point.dy + '" text-anchor="' + point.anchor + '">' + esc(item.city + ' · ' + item.uf) + '</text></g>';
+    }).join('');
+    return '<svg class="iss-brazil-svg" viewBox="' + esc(meta.viewBox || '0 0 820 700') + '" role="img" aria-labelledby="iss-map-title iss-map-description" preserveAspectRatio="xMidYMid meet"><title id="iss-map-title">Mapa político do Brasil com as 27 capitais</title><desc id="iss-map-description">Mapa com limites das unidades federativas baseado na malha territorial do IBGE. Clique em um estado ou no nome de uma capital para consultar o ISS.</desc><g class="iss-state-layer">' + statePaths + '</g><g class="iss-capital-layer">' + markers + '</g></svg>';
+  }
+  function renderIssRates() {
+    var capitals = window.ISS_CAPITALS || [];
+    var catalog = window.ISS_SERVICE_CATALOG || [];
+    var selectedUf = state.settings.issCapital || 'SP';
+    var selected = issCapital(selectedUf);
+    var savedQuery = state.settings.issQuery || '';
+    var savedGroup = state.settings.issGroup || '';
+    var operationValue = Math.max(0, Number(state.settings.issOperationValue == null ? 10000 : state.settings.issOperationValue));
+    var capitalOptions = capitals.map(function (item) {
+      return '<option value="' + item.uf + '"' + (item.uf === selected.uf ? ' selected' : '') + '>' + item.city + ' — ' + item.uf + '</option>';
+    }).join('');
+    var mapMarkup = renderIssBrazilMap(capitals, selected.uf);
+    var rows = catalog.map(function (service) {
+      var range = issLegalRange(service.code);
+      var search = issNormalize(service.code + ' ' + service.description + ' ' + service.groupName);
+      return '<tr data-iss-row data-group="' + service.group + '" data-search="' + esc(search) + '"><td><span class="iss-code">' + service.code + '</span></td><td><b>' + esc(service.description) + '</b><small>' + esc(service.group + ' — ' + service.groupName) + '</small></td><td><strong>' + esc(range.label) + '</strong><small>' + esc(range.note) + '</small></td><td class="iss-estimate" data-iss-estimate="' + service.code + '">' + esc(issEstimateLabel(service.code, operationValue)) + '</td><td><a class="row-button" href="' + esc(selected.url) + '" target="_blank" rel="noopener noreferrer" title="Consultar legislação de ' + esc(selected.city) + '">↗</a></td></tr>';
+    }).join('');
+    return [
+      pageHeading('Alíquotas do ISS', 'Consulta dos 200 subitens vigentes da LC nº 116/2003, organizada para as 27 capitais brasileiras.', '<div class="page-actions iss-page-actions"><button class="secondary-button" data-action="iss-export-json">↧ Exportar JSON</button><button class="secondary-button" data-action="iss-print">▣ PDF / imprimir</button></div>'),
+      '<div class="info-banner iss-law-banner"><span>i</span><div><strong>Consulta municipal com validação oficial.</strong> A LC nº 116/2003 estabelece, em regra, alíquota mínima de 2% e máxima de 5%. A alíquota exata depende do código municipal, do serviço, do prestador, de benefícios, retenções e da vigência da lei da capital selecionada.</div><span class="tag tag--success">Base federal completa</span></div>',
+      '<section class="card iss-capital-card"><header class="card-header"><div><h2>Selecione a capital</h2><small>Clique em um estado ou no nome da capital para abrir a referência municipal correspondente</small></div><span class="tag tag--info">27 capitais</span></header><div class="card-body iss-capital-layout"><div class="iss-map">' + mapMarkup + '<span class="iss-map-hint">Clique em um estado ou capital</span><a class="iss-map-source" href="https://www.ibge.gov.br/geociencias/organizacao-do-territorio/malhas-territoriais/15774-malhas.html" target="_blank" rel="noopener noreferrer">Malha territorial: IBGE ↗</a></div><div class="iss-capital-panel"><label class="field"><span>Capital / Unidade Federada</span><select id="iss-capital-select">' + capitalOptions + '</select></label><div class="iss-selected-capital"><span>' + selected.uf + '</span><div><small>' + esc(selected.region) + '</small><h2>' + esc(selected.city) + '</h2><p>Portal oficial municipal para conferir código local, alíquota, retenção e benefícios.</p></div></div><div class="iss-capital-metrics"><div><small>Faixa federal geral</small><strong>2% a 5%</strong></div><div><small>Serviços listados</small><strong>' + catalog.length + '</strong></div><div><small>Revisão federal</small><strong>20/08/2026</strong></div></div><a class="primary-button iss-official-link" href="' + esc(selected.url) + '" target="_blank" rel="noopener noreferrer">Abrir portal oficial de ' + esc(selected.city) + ' ↗</a></div></div></section>',
+      '<section class="card iss-services-card"><header class="card-header"><div><h2>Códigos de serviço e alíquotas</h2><small>Lista federal completa; pesquise por código, atividade ou descrição</small></div><span class="tag tag--warning">Confirmar alíquota municipal</span></header><div class="card-body"><div class="iss-filters"><label class="field"><span>Pesquisar código ou serviço</span><input id="iss-service-query" inputmode="search" value="' + esc(savedQuery) + '" placeholder="Ex.: 17.19, contabilidade, engenharia"></label><label class="field"><span>Grupo da LC nº 116/2003</span><select id="iss-service-group">' + issGroupOptions(savedGroup) + '</select></label><label class="field"><span>Valor do serviço para estimativa (R$)</span><input id="iss-operation-value" type="number" min="0" step="0.01" value="' + operationValue + '"></label><button class="secondary-button" data-action="iss-clear-filters">Limpar filtros</button></div><div class="iss-table-summary"><span><b id="iss-visible-count">' + catalog.length + '</b> de ' + catalog.length + ' serviços exibidos</span><span>ISS estimado atualizado instantaneamente</span></div><div class="table-wrap iss-table-wrap"><table class="iss-rate-table"><thead><tr><th>Código LC 116</th><th>Tipo de serviço</th><th>Alíquota aplicável</th><th>ISS sobre o valor</th><th>Fonte</th></tr></thead><tbody>' + rows + '</tbody></table></div><p class="iss-table-note"><strong>Importante:</strong> os municípios podem desdobrar a lista federal em códigos próprios. Nos subitens 7.02, 7.05 e 16.01 há exceção legal ao piso de 2%. O resultado financeiro é um intervalo orientativo até a confirmação da lei municipal.</p></div></section>',
+      '<section class="card iss-sources"><header class="card-header"><div><h2>Fontes legais e consulta oficial</h2><small>Número da norma, data e link para conferência</small></div><span class="tag tag--success">Fontes oficiais</span></header><div class="card-body"><a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp116.htm" target="_blank" rel="noopener noreferrer"><b>Lei Complementar nº 116/2003</b><span>Publicada em 01/08/2003 · lista de serviços e limites do ISS ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp157.htm" target="_blank" rel="noopener noreferrer"><b>Lei Complementar nº 157/2016</b><span>Publicada em 30/12/2016 · piso de 2% e alterações da lista ↗</span></a><a href="' + esc(selected.url) + '" target="_blank" rel="noopener noreferrer"><b>' + esc(selected.city + ' — ' + selected.uf) + '</b><span>Portal municipal oficial para a alíquota vigente ↗</span></a><a href="https://www.econeteditora.com.br/agenda/oe-est/aliquota_iss/" target="_blank" rel="noopener noreferrer"><b>Referência visual solicitada</b><span>Econet · conteúdo sujeito a autenticação e licença própria ↗</span></a></div></section>'
+    ].join('');
+  }
+  function filterIssRates() {
+    var queryEl = $('#iss-service-query');
+    var groupEl = $('#iss-service-group');
+    var query = issNormalize(queryEl ? queryEl.value : '');
+    var group = groupEl ? groupEl.value : '';
+    var visible = 0;
+    $$('[data-iss-row]').forEach(function (row) {
+      var matchesQuery = !query || String(row.getAttribute('data-search') || '').indexOf(query) >= 0;
+      var matchesGroup = !group || row.getAttribute('data-group') === group;
+      var show = matchesQuery && matchesGroup;
+      row.classList.toggle('is-hidden', !show);
+      if (show) visible += 1;
+    });
+    if ($('#iss-visible-count')) $('#iss-visible-count').textContent = visible;
+    state.settings.issQuery = queryEl ? queryEl.value : '';
+    state.settings.issGroup = group;
+    storageSet(KEYS.settings, state.settings);
+  }
+  function updateIssEstimate() {
+    var input = $('#iss-operation-value');
+    if (!input) return;
+    var value = Math.max(0, parseLocaleNumber(input.value));
+    state.settings.issOperationValue = value;
+    $$('[data-iss-estimate]').forEach(function (cell) { cell.textContent = issEstimateLabel(cell.getAttribute('data-iss-estimate'), value); });
+    storageSet(KEYS.settings, state.settings);
+  }
+  function selectIssCapital(uf) {
+    var selected = issCapital(uf);
+    if (!selected) return;
+    state.settings.issCapital = selected.uf;
+    storageSet(KEYS.settings, state.settings);
+    audit('Capital consultada no ISS', selected.city + ' · ' + selected.uf);
+    route();
+  }
+  function exportIssRates() {
+    var selected = issCapital(state.settings.issCapital || 'SP');
+    var catalog = (window.ISS_SERVICE_CATALOG || []).map(function (service) {
+      return Object.assign({}, service, { federalRange: issLegalRange(service.code), municipalRateStatus: 'Confirmar na legislação municipal' });
+    });
+    downloadFile('aliquotas-iss-' + selected.uf.toLowerCase() + '-2026.json', JSON.stringify({ schema: 'gestao-fiscal.iss-capitais.v1', generatedAt: nowISO(), reviewedAt: '2026-08-20', capital: selected, federalSources: ['LC 116/2003', 'LC 157/2016'], disclaimer: 'A alíquota exata deve ser confirmada no código tributário e na tabela municipal vigente.', services: catalog }, null, 2));
+    audit('Consulta de ISS exportada', selected.city + ' · ' + catalog.length + ' serviços');
+    toast('Base de ISS exportada', 'Os 200 serviços e a fonte oficial de ' + selected.city + ' foram salvos em JSON.');
+  }
+
+  function cestNormalize(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  }
+  function cestDigits(value) {
+    return String(value || '').replace(/\D/g, '');
+  }
+  function cestSavedFilters() {
+    return Object.assign({ ncm: '', cest: '', keyword: '', segment: '', noNcm: false, doorToDoor: false }, state.settings.cestFilters || {});
+  }
+  function cestFiltersFromView() {
+    var fallback = cestSavedFilters();
+    return {
+      ncm: $('#cest-filter-ncm') ? $('#cest-filter-ncm').value : fallback.ncm,
+      cest: $('#cest-filter-code') ? $('#cest-filter-code').value : fallback.cest,
+      keyword: $('#cest-filter-keyword') ? $('#cest-filter-keyword').value : fallback.keyword,
+      segment: $('#cest-filter-segment') ? $('#cest-filter-segment').value : fallback.segment,
+      noNcm: Boolean($('#cest-filter-no-ncm') ? $('#cest-filter-no-ncm').checked : fallback.noNcm),
+      doorToDoor: Boolean($('#cest-filter-door') ? $('#cest-filter-door').checked : fallback.doorToDoor)
+    };
+  }
+  function cestFilteredRows(filters) {
+    var ncm = cestDigits(filters.ncm);
+    var code = cestDigits(filters.cest);
+    var keyword = cestNormalize(filters.keyword);
+    return (window.CEST_CATALOG || []).filter(function (item) {
+      if (ncm && cestDigits(item.ncm).indexOf(ncm) < 0) return false;
+      if (code && cestDigits(item.cest).indexOf(code) < 0) return false;
+      if (keyword && cestNormalize(item.description + ' ' + item.segmentName + ' ' + item.ncm + ' ' + item.cest).indexOf(keyword) < 0) return false;
+      if (filters.segment && item.segment !== filters.segment) return false;
+      if (filters.noNcm && !item.noNcm) return false;
+      if (filters.doorToDoor && !item.doorToDoor) return false;
+      return true;
+    });
+  }
+  function cestSegmentOptions(selected) {
+    return '<option value="">Todos os segmentos</option>' + (window.CEST_SEGMENTS || []).map(function (item) {
+      return '<option value="' + item.code + '"' + (item.code === selected ? ' selected' : '') + '>' + item.code + ' — ' + esc(item.name) + '</option>';
+    }).join('');
+  }
+  function renderCestConsultation() {
+    var meta = window.CEST_META || { recordCount: 0, segmentCount: 0, reviewedAt: '2026-08-20', sourceUrl: 'https://www.confaz.fazenda.gov.br/legislacao/convenios/2018/CV142_18' };
+    var filters = cestSavedFilters();
+    var doorCount = (window.CEST_CATALOG || []).filter(function (item) { return item.doorToDoor; }).length;
+    var noNcmCount = (window.CEST_CATALOG || []).filter(function (item) { return item.noNcm; }).length;
+    return [
+      pageHeading('Código Especificador da Substituição Tributária — CEST', 'Pesquise a base dos anexos do Convênio ICMS 142/2018 por NCM, CEST, palavra-chave ou segmento.', '<div class="page-actions cest-page-actions"><button class="secondary-button" data-action="cest-export-json">↧ JSON</button><button class="secondary-button" data-action="cest-export-csv">▦ CSV</button><button class="secondary-button" data-action="cest-print">▣ PDF / imprimir</button></div>'),
+      '<div class="info-banner cest-law-banner"><span>i</span><div><strong>Base oficial organizada para consulta rápida.</strong> O enquadramento exige correspondência simultânea entre a descrição da mercadoria e a classificação NCM/CEST. A existência do código no Convênio não confirma, sozinha, a aplicação de ICMS-ST em determinada UF.</div><span class="tag tag--success">Consulta local instantânea</span></div>',
+      '<section class="card cest-search-card"><header class="card-header"><div><h2>Consultar mercadoria</h2><small>Preencha um ou mais campos; os resultados são atualizados durante a digitação</small></div><span class="tag tag--info">Convênio ICMS 142/2018</span></header><div class="card-body"><form id="cest-search-form" class="cest-search-grid"><label class="field"><span>Código NCM</span><input id="cest-filter-ncm" inputmode="numeric" value="' + esc(filters.ncm) + '" placeholder="Ex.: 84212300"></label><label class="field"><span>Código CEST</span><input id="cest-filter-code" inputmode="numeric" value="' + esc(filters.cest) + '" placeholder="Ex.: 01.037.00"></label><label class="field cest-keyword-field"><span>Palavra-chave</span><input id="cest-filter-keyword" inputmode="search" value="' + esc(filters.keyword) + '" placeholder="Ex.: filtro de óleo, chocolate, pneu"></label><label class="field"><span>Segmento</span><select id="cest-filter-segment">' + cestSegmentOptions(filters.segment) + '</select></label><div class="cest-search-checks"><label class="check"><input id="cest-filter-no-ncm" type="checkbox"' + (filters.noNcm ? ' checked' : '') + '> Mercadorias sem classificação NCM</label><label class="check"><input id="cest-filter-door" type="checkbox"' + (filters.doorToDoor ? ' checked' : '') + '> Venda pelo sistema porta a porta</label></div><div class="cest-search-actions"><button class="secondary-button" type="button" data-action="cest-clear">Limpar</button><button class="primary-button" type="submit">⌕ Buscar na base</button></div></form></div></section>',
+      '<section class="cest-metrics"><article><span>▦</span><div><strong>' + Number(meta.recordCount || 0).toLocaleString('pt-BR') + '</strong><small>registros oficiais</small></div></article><article><span>▤</span><div><strong>' + Number(meta.segmentCount || 0) + '</strong><small>segmentos CEST</small></div></article><article><span>⌕</span><div><strong id="cest-metric-matches">—</strong><small>resultados encontrados</small></div></article><article><span>✓</span><div><strong>' + esc(String(meta.reviewedAt || '2026-08-20').split('-').reverse().join('/')) + '</strong><small>última conferência</small></div></article></section>',
+      '<section class="card cest-results-card"><header class="card-header"><div><h2>Resultado da consulta</h2><small id="cest-result-status">Preparando a base...</small></div><span class="tag tag--success" id="cest-filter-status">Base completa</span></header><div class="card-body"><div class="table-wrap cest-table-wrap"><table class="cest-table"><thead><tr><th>CEST</th><th>NCM/SH</th><th>Descrição da mercadoria</th><th>Segmento</th><th>Anexo</th><th></th></tr></thead><tbody id="cest-results-body"><tr><td colspan="6">Carregando registros...</td></tr></tbody></table></div><div class="cest-pagination" id="cest-pagination"></div><p class="cest-result-note">A pesquisa considera a grafia informada nos anexos oficiais. Para concluir o enquadramento, confira também a legislação da UF de origem e destino, protocolos, convênios aplicáveis e eventuais regimes especiais.</p></div></section>',
+      '<section class="card cest-guide"><header class="card-header"><div><h2>Como interpretar o resultado</h2><small>CEST e NCM exercem funções diferentes</small></div></header><div class="card-body"><article><span>01</span><div><b>Confira a NCM</b><p>Valide a classificação fiscal atual da mercadoria no Sistema Classif da Receita Federal.</p></div></article><article><span>02</span><div><b>Compare a descrição</b><p>O enquadramento não deve ser feito apenas pelo número: a descrição legal precisa abranger o produto.</p></div></article><article><span>03</span><div><b>Consulte a legislação estadual</b><p>O Convênio relaciona bens passíveis de ST; cada UF define a aplicação em suas operações.</p></div></article></div></section>',
+      '<section class="card cest-sources"><header class="card-header"><div><h2>Fontes oficiais e rastreabilidade</h2><small>Base processada localmente para resposta rápida</small></div><span class="tag tag--success">' + Number(meta.recordCount || 0).toLocaleString('pt-BR') + ' registros</span></header><div class="card-body"><a href="' + esc(meta.sourceUrl) + '" target="_blank" rel="noopener noreferrer"><b>Convênio ICMS 142/2018 — texto e anexos</b><span>CONFAZ · fonte principal da base CEST ↗</span></a><a href="https://www.confaz.fazenda.gov.br/legislacao/substituicao-tributaria" target="_blank" rel="noopener noreferrer"><b>Substituição Tributária</b><span>CONFAZ · convênios, protocolos e informações estaduais ↗</span></a><a href="https://www.gov.br/receitafederal/pt-br/assuntos/aduana-e-comercio-exterior/classificacao-fiscal-de-mercadorias/download-ncm-nomenclatura-comum-do-mercosul" target="_blank" rel="noopener noreferrer"><b>Tabela NCM vigente</b><span>Receita Federal · download e Sistema Classif ↗</span></a><a href="https://www.econeteditora.com.br/icms_st/cest_v142.php" target="_blank" rel="noopener noreferrer"><b>Referência visual solicitada</b><span>Econet · conteúdo sujeito a autenticação e licença própria ↗</span></a></div></section>',
+      '<div class="cest-base-foot"><span>Base local: ' + Number(meta.recordCount || 0).toLocaleString('pt-BR') + ' registros · ' + noNcmCount + ' sem NCM · ' + doorCount + ' de venda porta a porta</span><span>Fonte conferida em 20/08/2026</span></div>'
+    ].join('');
+  }
+  function renderCestResults(resetPage) {
+    if (!$('#cest-results-body')) return;
+    var filters = cestFiltersFromView();
+    var rows = cestFilteredRows(filters);
+    var pageSize = 50;
+    if (resetPage || !state.cestPage) state.cestPage = 1;
+    var pages = Math.max(1, Math.ceil(rows.length / pageSize));
+    state.cestPage = Math.max(1, Math.min(pages, state.cestPage));
+    var start = (state.cestPage - 1) * pageSize;
+    var slice = rows.slice(start, start + pageSize);
+    $('#cest-results-body').innerHTML = slice.length ? slice.map(function (item) {
+      return '<tr><td><button class="cest-code-button" data-action="cest-detail" data-cest="' + item.cest + '">' + item.cest + '</button></td><td><code>' + (item.ncm ? esc(item.ncm) : '<span class="tag tag--warning">Sem NCM</span>') + '</code></td><td><b>' + esc(item.description) + '</b></td><td><span class="cest-segment"><i>' + item.segment + '</i>' + esc(item.segmentName) + '</span></td><td>' + esc(item.annex) + '</td><td><button class="row-button" data-action="cest-detail" data-cest="' + item.cest + '" title="Ver detalhes">⌕</button></td></tr>';
+    }).join('') : '<tr><td colspan="6"><div class="empty-state cest-empty"><i>⌕</i><h3>Nenhuma mercadoria encontrada</h3><p>Revise o NCM, o CEST ou a palavra-chave e tente novamente.</p></div></td></tr>';
+    var end = Math.min(start + pageSize, rows.length);
+    $('#cest-result-status').textContent = rows.length ? 'Exibindo ' + (start + 1) + '–' + end + ' de ' + rows.length.toLocaleString('pt-BR') + ' resultado(s)' : 'Nenhum resultado para os filtros informados';
+    $('#cest-metric-matches').textContent = rows.length.toLocaleString('pt-BR');
+    var activeCount = [filters.ncm, filters.cest, filters.keyword, filters.segment, filters.noNcm, filters.doorToDoor].filter(Boolean).length;
+    $('#cest-filter-status').textContent = activeCount ? activeCount + ' filtro(s) ativo(s)' : 'Base completa';
+    $('#cest-pagination').innerHTML = '<span>Página <b>' + state.cestPage + '</b> de ' + pages + '</span><div><button class="secondary-button" data-action="cest-page" data-page="' + (state.cestPage - 1) + '"' + (state.cestPage <= 1 ? ' disabled' : '') + '>← Anterior</button><button class="secondary-button" data-action="cest-page" data-page="' + (state.cestPage + 1) + '"' + (state.cestPage >= pages ? ' disabled' : '') + '>Próxima →</button></div>';
+    state.settings.cestFilters = filters;
+    storageSet(KEYS.settings, state.settings);
+  }
+  function clearCestFilters() {
+    ['cest-filter-ncm', 'cest-filter-code', 'cest-filter-keyword'].forEach(function (id) { if ($('#' + id)) $('#' + id).value = ''; });
+    if ($('#cest-filter-segment')) $('#cest-filter-segment').value = '';
+    if ($('#cest-filter-no-ncm')) $('#cest-filter-no-ncm').checked = false;
+    if ($('#cest-filter-door')) $('#cest-filter-door').checked = false;
+    renderCestResults(true);
+    if ($('#cest-filter-ncm')) $('#cest-filter-ncm').focus();
+  }
+  function openCestDetail(code) {
+    var item = (window.CEST_CATALOG || []).find(function (row) { return row.cest === code; });
+    if (!item) return;
+    var meta = window.CEST_META || {};
+    openModal('Detalhes do CEST ' + item.cest, '<div class="cest-detail"><div class="cest-detail-hero"><span>' + item.segment + '</span><div><small>' + esc(item.segmentName) + '</small><h3>' + item.cest + '</h3><p>' + esc(item.annex + ' · item ' + item.item) + '</p></div></div><dl><div><dt>NCM/SH</dt><dd>' + (item.ncm ? esc(item.ncm) : 'Sem classificação NCM informada no anexo') + '</dd></div><div><dt>Descrição oficial</dt><dd>' + esc(item.description) + '</dd></div><div><dt>Venda porta a porta</dt><dd>' + (item.doorToDoor ? 'Sim' : 'Não') + '</dd></div><div><dt>Fonte</dt><dd>Convênio ICMS 142/2018 · conferido em 20/08/2026</dd></div></dl><div class="warning-banner"><span>!</span><div><strong>Validação estadual necessária.</strong> Confirme se a UF internalizou o segmento e se a descrição corresponde exatamente à mercadoria.</div></div></div>', '<button class="secondary-button" data-action="cest-copy" data-cest="' + item.cest + '">Copiar CEST</button><a class="primary-button" href="' + esc(meta.sourceUrl || 'https://www.confaz.fazenda.gov.br/legislacao/convenios/2018/CV142_18') + '" target="_blank" rel="noopener noreferrer">Abrir fonte oficial ↗</a>');
+  }
+  function copyCestCode(code) {
+    var done = function () { toast('CEST copiado', code + ' foi enviado para a área de transferência.'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done).catch(function () { window.prompt('Copie o código CEST:', code); });
+    else window.prompt('Copie o código CEST:', code);
+  }
+  function exportCestResults(type) {
+    var filters = cestFiltersFromView();
+    var rows = cestFilteredRows(filters);
+    if (!rows.length) { toast('Nada para exportar', 'A consulta atual não possui resultados.', 'warning'); return; }
+    if (type === 'csv') {
+      var csvCell = function (value) { return '"' + String(value == null ? '' : value).replace(/"/g, '""') + '"'; };
+      var csv = ['CEST;NCM/SH;Descrição;Segmento;Anexo'].concat(rows.map(function (item) { return [item.cest, item.ncm, item.description, item.segment + ' - ' + item.segmentName, item.annex].map(csvCell).join(';'); })).join('\r\n');
+      downloadFile('consulta-cest-' + todayISO() + '.csv', '\uFEFF' + csv, 'text/csv;charset=utf-8');
+    } else {
+      downloadFile('consulta-cest-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.cest.v1', generatedAt: nowISO(), source: window.CEST_META, filters: filters, count: rows.length, results: rows, disclaimer: 'Confirme a descrição, a NCM e a legislação da UF antes de aplicar ICMS-ST.' }, null, 2));
+    }
+    audit('Consulta CEST exportada', rows.length + ' registro(s) · ' + type.toUpperCase());
+    toast('Consulta CEST exportada', rows.length.toLocaleString('pt-BR') + ' registro(s) foram salvos em ' + type.toUpperCase() + '.');
+  }
+
+  function accountingUi() {
+    if (!state.accountingUi) state.accountingUi = { view: 'presentation', letter: '', query: '', category: '', applicability: '', favoritesOnly: false, textScale: Number(state.settings.accountingTextScale || 1) };
+    return state.accountingUi;
+  }
+  function accountingNormalize(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  }
+  function accountingEntries() {
+    var base = Array.isArray(window.GESTAO_FISCAL_ACCOUNTING_ENTRIES) ? window.GESTAO_FISCAL_ACCOUNTING_ENTRIES : [];
+    var custom = Array.isArray(state.settings.customAccountingEntries) ? state.settings.customAccountingEntries : [];
+    return base.concat(custom).slice().sort(function (a, b) { return a.title.localeCompare(b.title, 'pt-BR'); });
+  }
+  function accountingFavoriteIds() {
+    if (!Array.isArray(state.settings.accountingFavorites)) state.settings.accountingFavorites = [];
+    return state.settings.accountingFavorites;
+  }
+  function accountingFilteredEntries() {
+    var ui = accountingUi(), favorites = accountingFavoriteIds(), query = accountingNormalize(ui.query);
+    return accountingEntries().filter(function (entry) {
+      var first = accountingNormalize(entry.title).charAt(0).toUpperCase();
+      var haystack = accountingNormalize([entry.title, entry.category, entry.applicability, entry.keywords, entry.history, entry.note, entry.debit && entry.debit.map(function (line) { return line.account; }).join(' '), entry.credit && entry.credit.map(function (line) { return line.account; }).join(' ')].join(' '));
+      return (!ui.letter || first === ui.letter) && (!query || haystack.indexOf(query) >= 0) && (!ui.category || entry.category === ui.category) && (!ui.applicability || entry.applicability === ui.applicability) && (!ui.favoritesOnly || favorites.indexOf(entry.id) >= 0);
+    });
+  }
+  function accountingResultsHtml() {
+    var entries = accountingFilteredEntries(), ui = accountingUi(), favorites = accountingFavoriteIds();
+    if (ui.view === 'presentation' && !ui.query && !ui.letter && !ui.category && !ui.applicability && !ui.favoritesOnly) entries = entries.slice(0, 12);
+    var cards = entries.map(function (entry) {
+      var favorite = favorites.indexOf(entry.id) >= 0;
+      var debit = entry.debit && entry.debit[0] ? entry.debit[0].account : 'Conta a definir';
+      var credit = entry.credit && entry.credit[0] ? entry.credit[0].account : 'Conta a definir';
+      return '<article class="accounting-entry-card"><button class="accounting-favorite' + (favorite ? ' active' : '') + '" data-action="accounting-favorite" data-id="' + esc(entry.id) + '" title="' + (favorite ? 'Remover dos favoritos' : 'Adicionar à biblioteca') + '" aria-label="' + (favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos') + '">' + (favorite ? '★' : '☆') + '</button><button class="accounting-entry-open" data-action="accounting-open" data-id="' + esc(entry.id) + '"><span class="accounting-entry-letter">' + esc(accountingNormalize(entry.title).charAt(0).toUpperCase()) + '</span><div><small>' + esc(entry.category) + ' · ' + esc(entry.applicability) + '</small><h3>' + esc(entry.title) + '</h3><p><b>D</b> ' + esc(debit) + '</p><p><b>C</b> ' + esc(credit) + '</p></div><i>→</i></button></article>';
+    }).join('');
+    return '<div class="accounting-results-head"><div><b id="accounting-result-count">' + entries.length.toLocaleString('pt-BR') + ' lançamento(s)</b><span>' + (ui.favoritesOnly ? 'Minha biblioteca' : ui.letter ? 'Letra ' + esc(ui.letter) : ui.query ? 'Resultado da busca' : ui.view === 'presentation' ? 'Modelos em destaque' : 'Índice completo') + '</span></div><small>Selecione um item para visualizar o lançamento completo</small></div><div class="accounting-entry-grid">' + (cards || '<div class="empty-state accounting-empty"><i>⌕</i><h3>Nenhum lançamento encontrado</h3><p>Altere a letra, os filtros ou o texto pesquisado.</p><button class="secondary-button" data-action="accounting-clear">Limpar filtros</button></div>') + '</div>';
+  }
+  function accountingPresentationHtml() {
+    var total = accountingEntries().length, favoriteCount = accountingFavoriteIds().length;
+    return '<section class="accounting-presentation"><div><span class="eyebrow">Biblioteca contábil do escritório</span><h2>Encontre o modelo, confira as contas e gere o lançamento.</h2><p>Consulte o índice alfabético, pesquise por conta ou operação e use um valor de exemplo para montar débito, crédito e histórico em poucos segundos.</p><div class="accounting-presentation-actions"><button class="primary-button" data-action="accounting-tab" data-view="search">⌕ Pesquisar lançamento</button><button class="secondary-button" data-action="accounting-favorites-only">★ Abrir minha biblioteca</button></div></div><div class="accounting-presentation-metrics"><article><strong>' + total.toLocaleString('pt-BR') + '</strong><span>modelos orientativos</span></article><article><strong>26</strong><span>letras disponíveis</span></article><article><strong>' + favoriteCount.toLocaleString('pt-BR') + '</strong><span>favoritos salvos</span></article><article><strong>100%</strong><span>pesquisa local imediata</span></article></div></section>';
+  }
+  function renderAccountingEntries() {
+    var ui = accountingUi(), entries = accountingEntries();
+    var categories = Array.from(new Set(entries.map(function (entry) { return entry.category; }))).sort(function (a, b) { return a.localeCompare(b, 'pt-BR'); });
+    var letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(function (letter) { return '<button data-action="accounting-letter" data-letter="' + letter + '" class="' + (ui.letter === letter ? 'active' : '') + '">' + letter + '</button>'; }).join('');
+    var categoryOptions = '<option value="">Todas as categorias</option>' + categories.map(function (category) { return '<option value="' + esc(category) + '"' + (ui.category === category ? ' selected' : '') + '>' + esc(category) + '</option>'; }).join('');
+    return [
+      pageHeading('Lançamentos Contábeis', 'Índice alfabético com modelos de débito, crédito, histórico, referências e exemplos de valor.', '<button class="secondary-button" data-action="accounting-text-down" title="Reduzir texto">A−</button><button class="secondary-button" data-action="accounting-text-up" title="Ampliar texto">A+</button><button class="secondary-button" data-action="accounting-export">↧ Exportar biblioteca</button><button class="primary-button" data-action="accounting-new">＋ Novo lançamento</button>'),
+      '<div class="info-banner accounting-notice"><span>▤</span><div><strong>Biblioteca própria, rápida e editável.</strong> Os modelos são orientativos e não reproduzem conteúdo proprietário de terceiros. Ajuste o plano de contas, a natureza da operação e os tributos antes de contabilizar.</div><span class="live-badge"><i></i> Resposta instantânea</span></div>',
+      '<div class="accounting-page" style="--accounting-scale:' + Number(ui.textScale || 1) + '">',
+      accountingPresentationHtml(),
+      '<section class="card accounting-index-card"><header class="accounting-index-tabs"><button data-action="accounting-tab" data-view="presentation" class="' + (ui.view === 'presentation' && !ui.letter ? 'active' : '') + '">Apresentação</button>' + letters + '<button data-action="accounting-tab" data-view="search" class="' + (ui.view === 'search' ? 'active' : '') + '">Busca</button></header><div class="card-body">',
+      '<div class="accounting-filters"><label class="filter-field accounting-search-field"><span>Buscar por lançamento, conta ou assunto</span><div><i>⌕</i><input id="accounting-query" value="' + esc(ui.query) + '" placeholder="Ex.: venda a prazo, depreciação, ICMS..." autocomplete="off"><button data-action="accounting-clear-query" aria-label="Limpar pesquisa">×</button></div></label><label class="filter-field"><span>Categoria</span><select id="accounting-category">' + categoryOptions + '</select></label><label class="filter-field"><span>Aplicação</span><select id="accounting-applicability"><option value="">Todas</option><option' + (ui.applicability === 'Empresas em geral' ? ' selected' : '') + '>Empresas em geral</option><option' + (ui.applicability === 'Terceiro Setor' ? ' selected' : '') + '>Terceiro Setor</option><option' + (ui.applicability === 'Cooperativas' ? ' selected' : '') + '>Cooperativas</option></select></label><label class="accounting-favorite-filter"><input id="accounting-favorites-filter" type="checkbox"' + (ui.favoritesOnly ? ' checked' : '') + '><span>★ Somente favoritos</span></label><button class="secondary-button" data-action="accounting-clear">Limpar</button></div>',
+      '<div id="accounting-results">' + accountingResultsHtml() + '</div></div></section>',
+      '<section class="card accounting-sources-card"><header class="card-header"><div><h2>Referências e uso responsável</h2><small>Base conceitual dos modelos</small></div><span class="tag tag--success">Conferido em 20/08/2026</span></header><div class="card-body"><div><a href="https://www.cpc.org.br/Arquivos/Documentos/573_CPC00(R2).pdf" target="_blank" rel="noopener noreferrer"><b>CPC 00 (R2)</b><span>Estrutura Conceitual para Relatório Financeiro ↗</span></a><a href="https://www.cpc.org.br/Arquivos/Documentos/312_CPC_26_R1_rev%2014.pdf" target="_blank" rel="noopener noreferrer"><b>CPC 26 (R1)</b><span>Apresentação das Demonstrações Contábeis ↗</span></a><a href="https://portalrestore.cfc.org.br/tecnica/normas-brasileiras-de-contabilidade/normas-simplificadas-para-pmes/" target="_blank" rel="noopener noreferrer"><b>CFC — Normas para PMEs</b><span>ITG 1000, NBC TG 1000, NBC TG 1001 e NBC TG 1002 ↗</span></a></div><p>Os nomes de contas são sugestões. A escrituração definitiva deve refletir o plano de contas da entidade, documentação idônea, regime tributário, política contábil e julgamento do profissional responsável.</p></div></section>',
+      '</div>'
+    ].join('');
+  }
+  function refreshAccountingResults(focusSearch) {
+    var target = $('#accounting-results');
+    if (target) target.innerHTML = accountingResultsHtml();
+    var page = $('.accounting-page');
+    if (page) page.style.setProperty('--accounting-scale', accountingUi().textScale || 1);
+    if (focusSearch && $('#accounting-query')) { $('#accounting-query').focus(); $('#accounting-query').setSelectionRange($('#accounting-query').value.length, $('#accounting-query').value.length); }
+  }
+  function accountingFind(id) { return accountingEntries().find(function (entry) { return entry.id === id; }); }
+  function accountingValueLines(lines, value, side) {
+    return (lines || []).map(function (line) { return '<div class="accounting-journal-line"><span class="accounting-side ' + side.toLowerCase() + '">' + side + '</span><b>' + esc(line.account) + '</b><strong data-accounting-amount data-factor="' + Number(line.factor || 1) + '">' + money(value * Number(line.factor || 1)) + '</strong></div>'; }).join('');
+  }
+  function openAccountingEntry(id) {
+    var entry = accountingFind(id); if (!entry) return;
+    var favorite = accountingFavoriteIds().indexOf(entry.id) >= 0, value = 1000;
+    var customActions = entry.custom ? '<button class="danger-button" data-action="accounting-delete" data-id="' + esc(entry.id) + '">Excluir modelo</button><button class="secondary-button" data-action="accounting-edit" data-id="' + esc(entry.id) + '">Editar</button>' : '';
+    var body = '<div class="accounting-detail"><div class="accounting-detail-intro"><span class="tag tag--info">' + esc(entry.category) + '</span><span class="tag">' + esc(entry.applicability) + '</span><p>' + esc(entry.history) + '</p></div><label class="field accounting-example-value"><span>Valor do exemplo</span><div class="input-prefix"><b>R$</b><input id="accounting-example-value" type="number" min="0" step="0.01" value="' + value + '"></div><small>Altere o valor: débitos e créditos são atualizados imediatamente.</small></label><section class="accounting-journal"><header><span>Partida sugerida</span><strong id="accounting-journal-total">' + money(value) + '</strong></header>' + accountingValueLines(entry.debit, value, 'D') + accountingValueLines(entry.credit, value, 'C') + '</section><div class="accounting-history-box"><small>Histórico sugerido</small><p id="accounting-history-text">' + esc(entry.history) + '</p></div><div class="info-banner info-banner--warning"><span>!</span><div><strong>Ponto de atenção.</strong> ' + esc(entry.note) + '</div></div><div class="accounting-source"><span>Referência técnica</span><a href="' + esc(entry.sourceUrl || '#') + '" target="_blank" rel="noopener noreferrer"><b>' + esc(entry.sourceCode || 'Referência') + '</b> · ' + esc(entry.source || '') + ' ↗</a></div></div>';
+    openModal(entry.title, body, customActions + '<button class="secondary-button" data-action="accounting-favorite" data-id="' + esc(entry.id) + '">' + (favorite ? '★ Remover favorito' : '☆ Adicionar à biblioteca') + '</button><button class="secondary-button" data-action="accounting-copy" data-id="' + esc(entry.id) + '">Copiar lançamento</button><button class="primary-button" data-action="accounting-export-entry" data-id="' + esc(entry.id) + '">↧ Exportar JSON</button>');
+  }
+  function updateAccountingExample() {
+    if (!$('#accounting-example-value')) return;
+    var value = Math.max(0, Number($('#accounting-example-value').value || 0));
+    $$('#modal-layer [data-accounting-amount]').forEach(function (element) { element.textContent = money(value * Number(element.getAttribute('data-factor') || 1)); });
+    if ($('#accounting-journal-total')) $('#accounting-journal-total').textContent = money(value);
+  }
+  function toggleAccountingFavorite(id) {
+    var favorites = accountingFavoriteIds(), index = favorites.indexOf(id), added = index < 0;
+    if (added) favorites.push(id); else favorites.splice(index, 1);
+    storageSet(KEYS.settings, state.settings);
+    refreshAccountingResults(false);
+    if (!$('#modal-layer').classList.contains('is-hidden')) openAccountingEntry(id);
+    toast(added ? 'Adicionado à biblioteca' : 'Removido dos favoritos', accountingFind(id) ? accountingFind(id).title : 'Lançamento atualizado.');
+  }
+  function accountingCopy(id) {
+    var entry = accountingFind(id); if (!entry) return;
+    var value = $('#accounting-example-value') ? Math.max(0, Number($('#accounting-example-value').value || 0)) : 1000;
+    var line = function (side, item) { return side + ' — ' + item.account + ': ' + money(value * Number(item.factor || 1)); };
+    var text = [entry.title].concat((entry.debit || []).map(function (item) { return line('D', item); }), (entry.credit || []).map(function (item) { return line('C', item); }), ['Histórico: ' + entry.history]).join('\n');
+    var done = function () { toast('Lançamento copiado', 'Débito, crédito e histórico foram enviados para a área de transferência.'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(function () { window.prompt('Copie o lançamento:', text); });
+    else window.prompt('Copie o lançamento:', text);
+  }
+  function exportAccountingEntry(id) {
+    var entry = accountingFind(id); if (!entry) return;
+    var value = $('#accounting-example-value') ? Math.max(0, Number($('#accounting-example-value').value || 0)) : 1000;
+    downloadFile('lancamento-' + accountingNormalize(entry.title).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '.json', JSON.stringify({ schema: 'gestao-fiscal.lancamento-contabil.v1', generatedAt: nowISO(), exampleValue: value, entry: entry, disclaimer: 'Modelo orientativo. Ajuste ao plano de contas e valide com o profissional responsável.' }, null, 2));
+    audit('Lançamento contábil exportado', entry.title);
+  }
+  function exportAccountingLibrary() {
+    var entries = accountingFilteredEntries();
+    downloadFile('biblioteca-lancamentos-contabeis-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.lancamentos-contabeis.v1', generatedAt: nowISO(), count: entries.length, favorites: accountingFavoriteIds(), entries: entries, sources: window.GESTAO_FISCAL_ACCOUNTING_SOURCES || {}, disclaimer: 'Biblioteca orientativa e editável; não substitui análise contábil.' }, null, 2));
+    audit('Biblioteca contábil exportada', entries.length + ' lançamento(s)');
+    toast('Biblioteca exportada', entries.length.toLocaleString('pt-BR') + ' lançamento(s) foram salvos em JSON.');
+  }
+  function openAccountingForm(entry) {
+    if (!isAdmin()) { toast('Acesso de consulta', 'Somente administradores podem criar ou editar modelos.', 'warning'); return; }
+    entry = entry || {};
+    var body = '<form id="accounting-entry-form"><input id="accounting-custom-id" type="hidden" value="' + esc(entry.id || '') + '"><div class="form-grid"><label class="field"><span>Título *</span><input id="accounting-custom-title" value="' + esc(entry.title || '') + '" required></label><label class="field"><span>Categoria *</span><input id="accounting-custom-category" value="' + esc(entry.category || '') + '" placeholder="Ex.: Financeiro" required></label><label class="field"><span>Aplicação</span><select id="accounting-custom-applicability"><option' + ((entry.applicability || 'Empresas em geral') === 'Empresas em geral' ? ' selected' : '') + '>Empresas em geral</option><option' + (entry.applicability === 'Terceiro Setor' ? ' selected' : '') + '>Terceiro Setor</option><option' + (entry.applicability === 'Cooperativas' ? ' selected' : '') + '>Cooperativas</option></select></label><label class="field"><span>Referência técnica</span><input id="accounting-custom-source" value="' + esc(entry.source || 'Política contábil interna') + '"></label><label class="field"><span>Conta debitada *</span><input id="accounting-custom-debit" value="' + esc(entry.debit && entry.debit[0] ? entry.debit[0].account : '') + '" required></label><label class="field"><span>Conta creditada *</span><input id="accounting-custom-credit" value="' + esc(entry.credit && entry.credit[0] ? entry.credit[0].account : '') + '" required></label></div><label class="field"><span>Histórico sugerido *</span><textarea id="accounting-custom-history" rows="3" required>' + esc(entry.history || '') + '</textarea></label><label class="field"><span>Ponto de atenção</span><textarea id="accounting-custom-note" rows="2">' + esc(entry.note || '') + '</textarea></label><label class="field"><span>Link da fonte</span><input id="accounting-custom-url" type="url" value="' + esc(entry.sourceUrl || '') + '" placeholder="https://..."></label></form>';
+    openModal(entry.id ? 'Editar lançamento do escritório' : 'Novo lançamento do escritório', body, '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="accounting-save-custom">▣ Salvar modelo</button>');
+  }
+  function saveAccountingCustom() {
+    var form = $('#accounting-entry-form'); if (!form || !form.reportValidity()) return;
+    if (!Array.isArray(state.settings.customAccountingEntries)) state.settings.customAccountingEntries = [];
+    var id = $('#accounting-custom-id').value || ('custom-' + Date.now());
+    var entry = {
+      id: id, title: $('#accounting-custom-title').value.trim(), category: $('#accounting-custom-category').value.trim(), applicability: $('#accounting-custom-applicability').value,
+      debit: [{ account: $('#accounting-custom-debit').value.trim(), factor: 1 }], credit: [{ account: $('#accounting-custom-credit').value.trim(), factor: 1 }], history: $('#accounting-custom-history').value.trim(), note: $('#accounting-custom-note').value.trim() || 'Valide o documento, a competência e o plano de contas antes de contabilizar.',
+      sourceCode: 'Interno', source: $('#accounting-custom-source').value.trim() || 'Política contábil interna', sourceUrl: $('#accounting-custom-url').value.trim(), keywords: '', custom: true, updatedAt: nowISO()
+    };
+    entry.keywords = [entry.title, entry.category, entry.applicability, entry.debit[0].account, entry.credit[0].account, entry.history].join(' ');
+    var index = state.settings.customAccountingEntries.findIndex(function (item) { return item.id === id; });
+    if (index >= 0) state.settings.customAccountingEntries[index] = entry; else state.settings.customAccountingEntries.push(entry);
+    storageSet(KEYS.settings, state.settings); audit(index >= 0 ? 'Lançamento contábil editado' : 'Lançamento contábil criado', entry.title); closeModal(); route(); toast('Modelo salvo', entry.title + ' já está disponível no índice.');
+  }
+  function deleteAccountingCustom(id) {
+    var entry = accountingFind(id); if (!entry || !entry.custom || !isAdmin()) return;
+    if (!window.confirm('Excluir o modelo “' + entry.title + '”?')) return;
+    state.settings.customAccountingEntries = (state.settings.customAccountingEntries || []).filter(function (item) { return item.id !== id; });
+    state.settings.accountingFavorites = accountingFavoriteIds().filter(function (favoriteId) { return favoriteId !== id; });
+    storageSet(KEYS.settings, state.settings); audit('Lançamento contábil excluído', entry.title); closeModal(); route(); toast('Modelo excluído', 'O lançamento personalizado foi removido.');
+  }
+
+  function formsUi() {
+    if (!state.formsUi) state.formsUi = { query: '', category: '', type: '', favoritesOnly: false };
+    return state.formsUi;
+  }
+  function formsCatalog() { return Array.isArray(window.GESTAO_FISCAL_FORMS) ? window.GESTAO_FISCAL_FORMS : []; }
+  function formsFavorites() {
+    if (!Array.isArray(state.settings.formsFavorites)) state.settings.formsFavorites = [];
+    return state.settings.formsFavorites;
+  }
+  function formsDrafts() {
+    if (!state.settings.formDrafts || typeof state.settings.formDrafts !== 'object') state.settings.formDrafts = {};
+    return state.settings.formDrafts;
+  }
+  function formsFiltered() {
+    var ui = formsUi(), query = accountingNormalize(ui.query), favorites = formsFavorites();
+    return formsCatalog().filter(function (item) {
+      var haystack = accountingNormalize([item.title, item.description, item.category, item.type, item.issuer, item.tags].join(' '));
+      return (!query || haystack.indexOf(query) >= 0) && (!ui.category || item.category === ui.category) && (!ui.type || item.type.indexOf(ui.type) >= 0) && (!ui.favoritesOnly || favorites.indexOf(item.id) >= 0);
+    });
+  }
+  function formFields(item) {
+    var common = [
+      { section: 'Identificação do documento', id: 'documentDate', label: 'Data de emissão', type: 'date', required: true },
+      { section: 'Identificação do documento', id: 'cityState', label: 'Cidade / UF', placeholder: 'Ex.: São Paulo / SP', required: true },
+      { section: 'Identificação do documento', id: 'organization', label: 'Empresa, órgão ou declarante', required: true },
+      { section: 'Identificação do documento', id: 'organizationDocument', label: 'CNPJ/CPF do declarante', placeholder: 'Somente números ou formatado', required: true },
+      { section: 'Identificação do documento', id: 'responsibleName', label: 'Responsável pelo preenchimento', required: true },
+      { section: 'Identificação do documento', id: 'responsibleContact', label: 'Telefone ou e-mail', required: true }
+    ];
+    var sets = {
+      cat: [
+        { section: 'Informações do emitente', id: 'catType', label: 'Tipo de CAT', type: 'select', options: ['Inicial','Reabertura','Comunicação de óbito'], required: true },
+        { section: 'Informações do emitente', id: 'issuerType', label: 'Emitente', type: 'select', options: ['Empregador','Sindicato','Médico','Segurado ou dependente','Autoridade pública'], required: true },
+        { section: 'Dados do trabalhador', id: 'workerName', label: 'Nome do trabalhador', required: true },
+        { section: 'Dados do trabalhador', id: 'workerCpf', label: 'CPF', required: true },
+        { section: 'Dados do trabalhador', id: 'workerBirth', label: 'Data de nascimento', type: 'date' },
+        { section: 'Dados do trabalhador', id: 'workerPis', label: 'PIS/PASEP/NIT' },
+        { section: 'Dados do trabalhador', id: 'workerRole', label: 'Ocupação / CBO' },
+        { section: 'Dados do acidente', id: 'incidentDate', label: 'Data do acidente', type: 'date', required: true },
+        { section: 'Dados do acidente', id: 'incidentTime', label: 'Hora do acidente', type: 'time' },
+        { section: 'Dados do acidente', id: 'incidentPlace', label: 'Local e endereço do acidente', required: true },
+        { section: 'Dados do acidente', id: 'incidentKind', label: 'Tipo do acidente', type: 'select', options: ['Típico','Trajeto','Doença ocupacional'] },
+        { section: 'Dados do acidente', id: 'bodyPart', label: 'Parte do corpo atingida' },
+        { section: 'Dados do acidente', id: 'causeAgent', label: 'Agente causador' },
+        { section: 'Dados do acidente', id: 'incidentDescription', label: 'Descrição detalhada da situação', type: 'textarea', required: true },
+        { section: 'Atendimento médico', id: 'medicalUnit', label: 'Unidade de atendimento' },
+        { section: 'Atendimento médico', id: 'medicalDate', label: 'Data e hora do atendimento' },
+        { section: 'Atendimento médico', id: 'injury', label: 'Natureza da lesão / diagnóstico provável' },
+        { section: 'Atendimento médico', id: 'cid', label: 'CID-10' },
+        { section: 'Atendimento médico', id: 'doctor', label: 'Médico e CRM/UF' },
+        { section: 'Atendimento médico', id: 'medicalNotes', label: 'Observações médicas', type: 'textarea' }
+      ],
+      periods: [
+        { section: 'Pessoa declarada', id: 'beneficiaryName', label: 'Nome completo', required: true },
+        { section: 'Pessoa declarada', id: 'beneficiaryCpf', label: 'CPF', required: true },
+        { section: 'Pessoa declarada', id: 'beneficiaryNit', label: 'NIT/PIS/PASEP' },
+        { section: 'Período declarado', id: 'periodStart', label: 'Início', type: 'date', required: true },
+        { section: 'Período declarado', id: 'periodEnd', label: 'Fim', type: 'date', required: true },
+        { section: 'Período declarado', id: 'role', label: 'Cargo, função ou atividade' },
+        { section: 'Período declarado', id: 'remuneration', label: 'Remuneração / base contributiva' },
+        { section: 'Período declarado', id: 'purpose', label: 'Finalidade da declaração', type: 'textarea', required: true },
+        { section: 'Período declarado', id: 'supportingDocuments', label: 'Documentos comprobatórios', type: 'textarea' }
+      ],
+      employment: [
+        { section: 'Empregado', id: 'workerName', label: 'Nome completo', required: true },
+        { section: 'Empregado', id: 'workerCpf', label: 'CPF', required: true },
+        { section: 'Empregado', id: 'workerCtps', label: 'CTPS / série' },
+        { section: 'Vínculo', id: 'periodStart', label: 'Data de admissão', type: 'date', required: true },
+        { section: 'Vínculo', id: 'periodEnd', label: 'Data de saída, se houver', type: 'date' },
+        { section: 'Vínculo', id: 'role', label: 'Função exercida', required: true },
+        { section: 'Vínculo', id: 'remuneration', label: 'Última remuneração' },
+        { section: 'Vínculo', id: 'employmentNotes', label: 'Jornada e demais informações', type: 'textarea' }
+      ],
+      gps: [
+        { section: 'Dados da contribuição', id: 'taxpayerName', label: 'Nome do contribuinte', required: true },
+        { section: 'Dados da contribuição', id: 'taxpayerId', label: 'CNPJ/CEI/CAEPF/NIT/PIS/PASEP', required: true },
+        { section: 'Dados da contribuição', id: 'paymentCode', label: 'Código de pagamento', required: true },
+        { section: 'Dados da contribuição', id: 'competence', label: 'Competência', type: 'month', required: true },
+        { section: 'Valores', id: 'principal', label: 'Valor do INSS (R$)', type: 'number', required: true },
+        { section: 'Valores', id: 'otherEntities', label: 'Outras entidades (R$)', type: 'number' },
+        { section: 'Valores', id: 'interestPenalty', label: 'Atualização, multa e juros (R$)', type: 'number' },
+        { section: 'Valores', id: 'total', label: 'Total conferido (R$)', type: 'number', required: true }
+      ],
+      incident: [
+        { section: 'Controlador e incidente', id: 'controllerName', label: 'Nome do controlador', required: true },
+        { section: 'Controlador e incidente', id: 'controllerCnpj', label: 'CNPJ do controlador', required: true },
+        { section: 'Controlador e incidente', id: 'dpoName', label: 'Encarregado de dados', required: true },
+        { section: 'Controlador e incidente', id: 'dpoContact', label: 'Contato do encarregado', required: true },
+        { section: 'Controlador e incidente', id: 'knowledgeDate', label: 'Data e hora do conhecimento', type: 'datetime-local', required: true },
+        { section: 'Controlador e incidente', id: 'incidentStatus', label: 'Situação', type: 'select', options: ['Confirmado','Em investigação','Contido','Encerrado'], required: true },
+        { section: 'Avaliação do incidente', id: 'incidentNature', label: 'Natureza do incidente', type: 'textarea', required: true },
+        { section: 'Avaliação do incidente', id: 'personalData', label: 'Categorias de dados pessoais afetados', type: 'textarea', required: true },
+        { section: 'Avaliação do incidente', id: 'affectedPeople', label: 'Quantidade estimada de titulares' },
+        { section: 'Avaliação do incidente', id: 'vulnerableGroups', label: 'Crianças, idosos ou grupos vulneráveis afetados' },
+        { section: 'Riscos e resposta', id: 'risks', label: 'Riscos e possíveis impactos', type: 'textarea', required: true },
+        { section: 'Riscos e resposta', id: 'securityMeasures', label: 'Medidas técnicas e de segurança existentes', type: 'textarea', required: true },
+        { section: 'Riscos e resposta', id: 'mitigation', label: 'Medidas adotadas ou previstas', type: 'textarea', required: true },
+        { section: 'Riscos e resposta', id: 'holdersCommunication', label: 'Comunicação aos titulares', type: 'textarea' },
+        { section: 'Riscos e resposta', id: 'delayReason', label: 'Motivo de eventual demora', type: 'textarea' }
+      ],
+      benefit: [
+        { section: 'Segurado ou beneficiário', id: 'beneficiaryName', label: 'Nome completo', required: true },
+        { section: 'Segurado ou beneficiário', id: 'beneficiaryCpf', label: 'CPF', required: true },
+        { section: 'Segurado ou beneficiário', id: 'beneficiaryNit', label: 'NIT/PIS/PASEP' },
+        { section: 'Segurado ou beneficiário', id: 'birthDate', label: 'Data de nascimento', type: 'date' },
+        { section: 'Pedido', id: 'benefitNumber', label: 'Número do benefício, se houver' },
+        { section: 'Pedido', id: 'requestReason', label: 'Motivo e detalhes do requerimento', type: 'textarea', required: true },
+        { section: 'Pedido', id: 'eventDate', label: 'Data do evento ou início', type: 'date' },
+        { section: 'Pedido', id: 'attachments', label: 'Documentos anexados / pendentes', type: 'textarea' },
+        { section: 'Pedido', id: 'representative', label: 'Representante legal, se houver' }
+      ],
+      refund: [
+        { section: 'Contribuinte', id: 'taxpayerName', label: 'Nome / razão social', required: true },
+        { section: 'Contribuinte', id: 'taxpayerId', label: 'CPF/CNPJ/NIT', required: true },
+        { section: 'Pagamento', id: 'competence', label: 'Competência', type: 'month', required: true },
+        { section: 'Pagamento', id: 'paymentDate', label: 'Data do pagamento', type: 'date', required: true },
+        { section: 'Pagamento', id: 'paymentCode', label: 'Código / identificador' },
+        { section: 'Pagamento', id: 'paidValue', label: 'Valor pago (R$)', type: 'number', required: true },
+        { section: 'Pedido', id: 'refundValue', label: 'Valor solicitado (R$)', type: 'number', required: true },
+        { section: 'Pedido', id: 'requestReason', label: 'Fundamentação do pagamento indevido', type: 'textarea', required: true },
+        { section: 'Pedido', id: 'attachments', label: 'Comprovantes relacionados', type: 'textarea' }
+      ],
+      ppp: [
+        { section: 'Trabalhador', id: 'workerName', label: 'Nome do trabalhador', required: true },
+        { section: 'Trabalhador', id: 'workerCpf', label: 'CPF', required: true },
+        { section: 'Trabalhador', id: 'workerSocialId', label: 'Matrícula no eSocial' },
+        { section: 'Trabalhador', id: 'admissionDate', label: 'Data de admissão', type: 'date' },
+        { section: 'Atividade', id: 'period', label: 'Período de atividade', required: true },
+        { section: 'Atividade', id: 'sectorRole', label: 'Setor, cargo e função', required: true },
+        { section: 'Atividade', id: 'activities', label: 'Descrição das atividades', type: 'textarea', required: true },
+        { section: 'Registros ambientais', id: 'riskFactors', label: 'Fatores de risco e intensidade/concentração', type: 'textarea', required: true },
+        { section: 'Registros ambientais', id: 'epiEpc', label: 'EPC/EPI, eficácia e CA', type: 'textarea' },
+        { section: 'Responsáveis', id: 'environmentProfessional', label: 'Responsável pelos registros ambientais / conselho' },
+        { section: 'Responsáveis', id: 'medicalProfessional', label: 'Responsável pela monitoração biológica / CRM' },
+        { section: 'Responsáveis', id: 'legalRepresentative', label: 'Representante legal da empresa', required: true }
+      ],
+      agreement: [
+        { section: 'Convenente', id: 'conveningParty', label: 'Nome / razão social', required: true },
+        { section: 'Convenente', id: 'conveningDocument', label: 'CNPJ e matrícula/identificação', required: true },
+        { section: 'Convênio', id: 'scope', label: 'Objeto e abrangência do convênio', type: 'textarea', required: true },
+        { section: 'Convênio', id: 'employees', label: 'Empregados abrangidos / quantidade' },
+        { section: 'Convênio', id: 'startEnd', label: 'Vigência pretendida' },
+        { section: 'Convênio', id: 'obligations', label: 'Responsabilidades e controles', type: 'textarea', required: true }
+      ],
+      justification: [
+        { section: 'Requerente', id: 'beneficiaryName', label: 'Nome completo', required: true },
+        { section: 'Requerente', id: 'beneficiaryCpf', label: 'CPF', required: true },
+        { section: 'Requerente', id: 'beneficiaryNit', label: 'NIT/PIS/PASEP' },
+        { section: 'Justificação', id: 'facts', label: 'Fatos que pretende comprovar', type: 'textarea', required: true },
+        { section: 'Justificação', id: 'materialEvidence', label: 'Início de prova material apresentado', type: 'textarea', required: true },
+        { section: 'Testemunhas', id: 'witnesses', label: 'Nome, CPF e contato das testemunhas', type: 'textarea', required: true }
+      ],
+      responsibility: [
+        { section: 'Representante', id: 'representativeName', label: 'Nome do representante', required: true },
+        { section: 'Representante', id: 'representativeCpf', label: 'CPF', required: true },
+        { section: 'Representante', id: 'representationType', label: 'Tipo de representação', type: 'select', options: ['Procurador','Tutor','Curador','Guardião','Administrador provisório','Outro'], required: true },
+        { section: 'Beneficiários', id: 'beneficiaries', label: 'Nome e CPF dos beneficiários representados', type: 'textarea', required: true },
+        { section: 'Compromisso', id: 'responsibilityNotes', label: 'Observações e limites da representação', type: 'textarea' }
+      ],
+      earnings: [
+        { section: 'Fonte pagadora', id: 'payerName', label: 'Nome empresarial', required: true },
+        { section: 'Fonte pagadora', id: 'payerCnpj', label: 'CNPJ', required: true },
+        { section: 'Beneficiário', id: 'beneficiaryName', label: 'Nome completo', required: true },
+        { section: 'Beneficiário', id: 'beneficiaryCpf', label: 'CPF', required: true },
+        { section: 'Ano-calendário', id: 'calendarYear', label: 'Ano-calendário', type: 'number', required: true },
+        { section: 'Rendimentos tributáveis', id: 'taxableIncome', label: 'Total dos rendimentos (R$)', type: 'number', required: true },
+        { section: 'Rendimentos tributáveis', id: 'socialSecurity', label: 'Contribuição previdenciária oficial (R$)', type: 'number' },
+        { section: 'Rendimentos tributáveis', id: 'irrf', label: 'IRRF (R$)', type: 'number' },
+        { section: 'Rendimentos isentos', id: 'exemptIncome', label: 'Rendimentos isentos e não tributáveis', type: 'textarea' },
+        { section: 'Informações complementares', id: 'additionalInfo', label: '13º, plano de saúde, pensão e outras informações', type: 'textarea' }
+      ],
+      'earnings-company': [
+        { section: 'Fonte pagadora', id: 'payerName', label: 'Nome empresarial', required: true },
+        { section: 'Fonte pagadora', id: 'payerCnpj', label: 'CNPJ', required: true },
+        { section: 'Beneficiário', id: 'beneficiaryName', label: 'Razão social', required: true },
+        { section: 'Beneficiário', id: 'beneficiaryCnpj', label: 'CNPJ', required: true },
+        { section: 'Ano-calendário', id: 'calendarYear', label: 'Ano-calendário', type: 'number', required: true },
+        { section: 'Valores', id: 'grossIncome', label: 'Rendimentos pagos ou creditados (R$)', type: 'number', required: true },
+        { section: 'Valores', id: 'incomeTax', label: 'Imposto de renda retido/recolhido (R$)', type: 'number' },
+        { section: 'Valores', id: 'csll', label: 'CSLL retida (R$)', type: 'number' },
+        { section: 'Valores', id: 'pisCofins', label: 'PIS/Cofins retidos (R$)', type: 'number' },
+        { section: 'Detalhamento', id: 'monthlyBreakdown', label: 'Detalhamento mensal / notas fiscais', type: 'textarea' }
+      ],
+      clearance: [
+        { section: 'Prestador', id: 'providerName', label: 'Prestador do serviço', required: true },
+        { section: 'Prestador', id: 'providerCnpj', label: 'CNPJ', required: true },
+        { section: 'Consumidor', id: 'consumerName', label: 'Nome / razão social', required: true },
+        { section: 'Consumidor', id: 'consumerDocument', label: 'CPF/CNPJ' },
+        { section: 'Quitação', id: 'calendarYear', label: 'Ano de referência', type: 'number', required: true },
+        { section: 'Quitação', id: 'accountId', label: 'Matrícula, contrato ou unidade consumidora' },
+        { section: 'Quitação', id: 'paidMonths', label: 'Meses quitados', placeholder: 'Janeiro a dezembro ou liste as exceções', required: true },
+        { section: 'Quitação', id: 'exceptions', label: 'Parcelamentos, débitos discutidos ou ressalvas', type: 'textarea' }
+      ],
+      promissory: [
+        { section: 'Título', id: 'promissoryNumber', label: 'Número da nota promissória' },
+        { section: 'Título', id: 'amount', label: 'Valor (R$)', type: 'number', required: true },
+        { section: 'Título', id: 'amountWords', label: 'Valor por extenso', required: true },
+        { section: 'Título', id: 'dueDate', label: 'Data de vencimento', type: 'date', required: true },
+        { section: 'Beneficiário', id: 'beneficiaryName', label: 'Nome / razão social', required: true },
+        { section: 'Beneficiário', id: 'beneficiaryDocument', label: 'CPF/CNPJ' },
+        { section: 'Emitente', id: 'issuerName', label: 'Nome / razão social', required: true },
+        { section: 'Emitente', id: 'issuerDocument', label: 'CPF/CNPJ', required: true },
+        { section: 'Emitente', id: 'issuerAddress', label: 'Endereço completo' },
+        { section: 'Pagamento', id: 'paymentPlace', label: 'Local de pagamento', required: true },
+        { section: 'Pagamento', id: 'paymentTerms', label: 'Condições e observações', type: 'textarea' }
+      ]
+    };
+    return common.concat(sets[item.template] || sets.benefit);
+  }
+  function formDefaultDraft(item) {
+    var client = currentClient() || {}, user = currentUser || {};
+    return { documentDate: todayISO(), organization: client.name || '', organizationDocument: client.document || '', responsibleName: user.name || '', responsibleContact: user.email || '', payerName: client.name || '', payerCnpj: client.document || '', providerName: client.name || '', providerCnpj: client.document || '', controllerName: client.name || '', controllerCnpj: client.document || '', taxpayerName: client.name || '', taxpayerId: client.document || '', calendarYear: String(new Date().getFullYear()) };
+  }
+  function formDraft(item) { return Object.assign(formDefaultDraft(item), formsDrafts()[item.id] || {}); }
+  function formControl(field, value) {
+    var attrs = ' id="form-field-' + esc(field.id) + '" data-form-field="' + esc(field.id) + '"' + (field.required ? ' required' : '') + (field.placeholder ? ' placeholder="' + esc(field.placeholder) + '"' : '');
+    if (field.type === 'textarea') return '<textarea' + attrs + ' rows="3">' + esc(value || '') + '</textarea>';
+    if (field.type === 'select') return '<select' + attrs + '><option value="">Selecione</option>' + (field.options || []).map(function (option) { return '<option' + (String(value || '') === option ? ' selected' : '') + '>' + esc(option) + '</option>'; }).join('') + '</select>';
+    return '<input' + attrs + ' type="' + esc(field.type || 'text') + '" value="' + esc(value == null ? '' : value) + '"' + (field.type === 'number' ? ' step="0.01" inputmode="decimal"' : '') + '>';
+  }
+  function formsResultsHtml() {
+    var forms = formsFiltered(), favorites = formsFavorites();
+    if (!forms.length) return '<div class="empty-state forms-empty"><i>⌕</i><h3>Nenhum formulário encontrado</h3><p>Revise a busca ou limpe os filtros.</p><button class="secondary-button" data-action="forms-clear">Limpar filtros</button></div>';
+    var categories = ['Trabalhista / Previdenciário','Federal'];
+    return categories.map(function (category) {
+      var group = forms.filter(function (item) { return item.category === category; }); if (!group.length) return '';
+      return '<section class="forms-group"><header><div><span>' + (category === 'Federal' ? 'BR' : 'INSS') + '</span><h2>' + esc(category) + '</h2></div><b>' + group.length + ' documento(s)</b></header><div class="forms-list">' + group.map(function (item) {
+        var favorite = favorites.indexOf(item.id) >= 0, draftSaved = Boolean(formsDrafts()[item.id]);
+        return '<article class="forms-item"><button class="forms-star' + (favorite ? ' active' : '') + '" data-action="forms-favorite" data-id="' + esc(item.id) + '" title="Favoritar">' + (favorite ? '★' : '☆') + '</button><div class="forms-icon">▧</div><div class="forms-copy"><div><span class="tag tag--info">' + esc(item.type) + '</span>' + (draftSaved ? '<span class="tag tag--success">Rascunho salvo</span>' : '') + '</div><h3>' + esc(item.title) + '</h3><p>' + esc(item.description) + '</p><small>' + esc(item.issuer) + ' · atualizado em ' + esc(item.updated) + '</small></div><div class="forms-actions"><button class="primary-button" data-action="forms-open" data-id="' + esc(item.id) + '">Preencher</button>' + (item.downloadUrl ? '<a class="secondary-button" href="' + esc(item.downloadUrl) + '" target="_blank" rel="noopener noreferrer">Baixar oficial ↧</a>' : '') + '<a class="secondary-button" href="' + esc(item.officialUrl) + '" target="_blank" rel="noopener noreferrer">Fonte oficial ↗</a></div></article>';
+      }).join('') + '</div></section>';
+    }).join('');
+  }
+  function renderFormsCenter() {
+    var ui = formsUi(), forms = formsCatalog(), favorites = formsFavorites(), draftCount = Object.keys(formsDrafts()).length;
+    return [
+      pageHeading('Central de Formulários', 'Formulários federais, trabalhistas e previdenciários para consultar, preencher e baixar.', '<button class="secondary-button" data-action="forms-export-index">↧ Baixar índice</button><button class="secondary-button" data-action="forms-download-pack">▤ Baixar modelos em DOC</button>'),
+      '<div class="info-banner forms-notice"><span>▧</span><div><strong>Modelos próprios com acesso às fontes oficiais.</strong> Preencha e salve uma cópia em DOC ou use Imprimir/PDF. Quando o órgão exigir portal ou formulário oficial, utilize o botão da fonte antes de protocolar.</div><span class="live-badge"><i></i> Download imediato</span></div>',
+      '<div class="forms-page"><section class="forms-hero"><div><span class="eyebrow">Documentos organizados em um só lugar</span><h2>Localize, preencha e entregue com mais segurança.</h2><p>Os dados dos rascunhos ficam salvos no armazenamento da plataforma e são incluídos no backup geral.</p></div><div class="forms-hero-metrics"><article><strong>' + forms.length + '</strong><span>formulários</span></article><article><strong>2</strong><span>categorias</span></article><article><strong>' + favorites.length + '</strong><span>favoritos</span></article><article><strong>' + draftCount + '</strong><span>rascunhos</span></article></div></section>',
+      '<section class="card forms-catalog-card"><header class="forms-category-tabs"><button data-action="forms-category" data-category="" class="' + (!ui.category ? 'active' : '') + '">Todos</button><button data-action="forms-category" data-category="Trabalhista / Previdenciário" class="' + (ui.category === 'Trabalhista / Previdenciário' ? 'active' : '') + '">Trabalhista / Previdenciário</button><button data-action="forms-category" data-category="Federal" class="' + (ui.category === 'Federal' ? 'active' : '') + '">Federal</button></header><div class="card-body"><div class="forms-filters"><label class="filter-field forms-search"><span>Pesquisar formulário</span><div><i>⌕</i><input id="forms-query" value="' + esc(ui.query) + '" placeholder="Ex.: CAT, PPP, rendimentos, incapacidade..."><button data-action="forms-clear-query" aria-label="Limpar pesquisa">×</button></div></label><label class="filter-field"><span>Tipo</span><select id="forms-type"><option value="">Todos os tipos</option><option value="preench"' + (ui.type === 'preench' ? ' selected' : '') + '>Preenchíveis</option><option value="on-line"' + (ui.type === 'on-line' ? ' selected' : '') + '>Serviços on-line</option><option value="PDF oficial"' + (ui.type === 'PDF oficial' ? ' selected' : '') + '>PDF oficial</option></select></label><label class="forms-favorite-filter"><input id="forms-favorites-filter" type="checkbox"' + (ui.favoritesOnly ? ' checked' : '') + '><span>★ Somente favoritos</span></label><button class="secondary-button" data-action="forms-clear">Limpar</button></div><div id="forms-results">' + formsResultsHtml() + '</div></div></section>',
+      '<section class="card forms-legal-card"><header class="card-header"><div><h2>Portais oficiais utilizados</h2><small>Consulte a versão vigente antes do protocolo</small></div><span class="tag tag--success">Conferido em 20/08/2026</span></header><div class="card-body"><a href="https://www.gov.br/inss/pt-br/centrais-de-conteudo/formularios/formularios" target="_blank" rel="noopener noreferrer"><b>INSS — formulários para serviços e benefícios</b><span>Lista oficial atualizada ↗</span></a><a href="https://meu.inss.gov.br/" target="_blank" rel="noopener noreferrer"><b>Meu INSS</b><span>Requerimentos e serviços on-line ↗</span></a><a href="https://www.gov.br/anpd/pt-br/canais_atendimento/agente-de-tratamento/comunicado-de-incidente-de-seguranca-cis" target="_blank" rel="noopener noreferrer"><b>ANPD — comunicação de incidente</b><span>Procedimento oficial vigente ↗</span></a><a href="https://www.gov.br/receitafederal/pt-br" target="_blank" rel="noopener noreferrer"><b>Receita Federal</b><span>Serviços e normas federais ↗</span></a></div></section></div>'
+    ].join('');
+  }
+  function refreshFormsResults(focusSearch) {
+    if ($('#forms-results')) $('#forms-results').innerHTML = formsResultsHtml();
+    if (focusSearch && $('#forms-query')) { $('#forms-query').focus(); $('#forms-query').setSelectionRange($('#forms-query').value.length, $('#forms-query').value.length); }
+  }
+  function formCatalogFind(id) { return formsCatalog().find(function (item) { return item.id === id; }); }
+  function openFormDocument(id) {
+    var item = formCatalogFind(id); if (!item) return;
+    var draft = formDraft(item), fields = formFields(item), grouped = [];
+    fields.forEach(function (field) { var group = grouped.find(function (entry) { return entry.section === field.section; }); if (!group) { group = { section: field.section, fields: [] }; grouped.push(group); } group.fields.push(field); });
+    var body = '<form id="forms-fill-form" data-form-id="' + esc(item.id) + '"><div class="info-banner"><span>i</span><div><strong>' + esc(item.type) + '.</strong> Este preenchimento cria um documento de apoio. Confira a fonte oficial e não informe dados pessoais em dispositivo compartilhado.</div></div><div class="forms-document-meta"><span>' + esc(item.category) + '</span><b>' + esc(item.issuer) + '</b><small>Referência atualizada em ' + esc(item.updated) + '</small></div>' + grouped.map(function (group) { return '<fieldset class="forms-fieldset"><legend>' + esc(group.section) + '</legend><div class="form-grid">' + group.fields.map(function (field) { return '<label class="field' + (field.type === 'textarea' ? ' form-field-wide' : '') + '"><span>' + esc(field.label) + (field.required ? ' *' : '') + '</span>' + formControl(field, draft[field.id]) + '</label>'; }).join('') + '</div></fieldset>'; }).join('') + '<label class="check forms-consent"><input id="forms-confirm-data" type="checkbox"> Confirmo que revisei os dados e consultarei o canal oficial antes do protocolo.</label></form>';
+    openModal(item.title, body, '<button class="secondary-button" data-action="forms-clear-draft" data-id="' + esc(item.id) + '">Limpar</button><button class="secondary-button" data-action="forms-save-draft" data-id="' + esc(item.id) + '">▣ Salvar rascunho</button><button class="secondary-button" data-action="forms-download-doc" data-id="' + esc(item.id) + '">↧ Baixar DOC</button><button class="primary-button" data-action="forms-print" data-id="' + esc(item.id) + '">▣ Imprimir / PDF</button>');
+  }
+  function readFormModal(item) {
+    var data = {};
+    $$('#forms-fill-form [data-form-field]').forEach(function (element) { data[element.getAttribute('data-form-field')] = element.value; });
+    return data;
+  }
+  function saveFormDraft(id, silent) {
+    var item = formCatalogFind(id), form = $('#forms-fill-form'); if (!item || !form) return false;
+    formsDrafts()[id] = readFormModal(item); storageSet(KEYS.settings, state.settings);
+    if (!silent) { audit('Rascunho de formulário salvo', item.title); toast('Rascunho salvo', 'Os dados ficam no armazenamento protegido da plataforma.'); }
+    return true;
+  }
+  function formDocumentHtml(item, data, combined) {
+    var fields = formFields(item), sections = [];
+    fields.forEach(function (field) { var group = sections.find(function (entry) { return entry.section === field.section; }); if (!group) { group = { section: field.section, rows: [] }; sections.push(group); } group.rows.push('<tr><th>' + esc(field.label) + '</th><td>' + esc(data[field.id] || '—').replace(/\n/g, '<br>') + '</td></tr>'); });
+    var style = 'body{font-family:Arial,sans-serif;color:#172333;margin:34px;font-size:12px}h1{font-size:20px;margin:0 0 5px;color:#00265c}h2{font-size:13px;background:#e4ebf3;padding:8px;margin:18px 0 0;border:1px solid #bcc8d7}p{line-height:1.5}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cfd5dc;padding:8px;text-align:left;vertical-align:top}th{width:32%;background:#f7f8fa}.meta{color:#606975;margin-bottom:18px}.warning{margin-top:20px;padding:10px;border:1px solid #d9b95b;background:#fff9e7}.signatures{display:flex;gap:40px;margin-top:55px}.signatures div{flex:1;border-top:1px solid #333;text-align:center;padding-top:6px}@media print{body{margin:12mm}}';
+    var content = '<article><h1>' + esc(item.title) + '</h1><p class="meta">' + esc(item.category) + ' · ' + esc(item.issuer) + ' · gerado em ' + esc(new Date().toLocaleString('pt-BR')) + '</p>' + sections.map(function (section) { return '<h2>' + esc(section.section) + '</h2><table>' + section.rows.join('') + '</table>'; }).join('') + '<p class="warning"><b>Atenção:</b> documento de apoio gerado pelo ContTech ERP. Confirme o formulário, a versão e o canal exigidos pelo órgão competente antes de assinar ou protocolar.</p><div class="signatures"><div>Responsável pelo preenchimento</div><div>Assinatura / validação</div></div></article>';
+    if (combined) return content;
+    return '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>' + esc(item.title) + '</title><style>' + style + '</style></head><body>' + content + '</body></html>';
+  }
+  function formsRequireReview() {
+    if ($('#forms-fill-form') && !$('#forms-fill-form').reportValidity()) return false;
+    if ($('#forms-confirm-data') && !$('#forms-confirm-data').checked) { toast('Confirme a revisão', 'Marque a confirmação antes de baixar ou imprimir.', 'warning'); return false; }
+    return true;
+  }
+  function downloadFormDoc(id) {
+    var item = formCatalogFind(id); if (!item || !formsRequireReview()) return;
+    saveFormDraft(id, true); var data = readFormModal(item), html = formDocumentHtml(item, data, false);
+    downloadFile('formulario-' + id + '-' + todayISO() + '.doc', '\uFEFF' + html, 'application/msword;charset=utf-8');
+    audit('Formulário baixado', item.title + ' · DOC'); toast('Documento gerado', 'O formulário preenchido foi baixado em formato DOC.');
+  }
+  function printFormDocument(id) {
+    var item = formCatalogFind(id); if (!item || !formsRequireReview()) return;
+    saveFormDraft(id, true); var popup = window.open('', '_blank');
+    if (!popup) { toast('Janela bloqueada', 'Permita pop-ups para abrir a impressão em PDF.', 'warning'); return; }
+    popup.opener = null;
+    popup.document.open(); popup.document.write(formDocumentHtml(item, readFormModal(item), false)); popup.document.close(); popup.focus(); window.setTimeout(function () { popup.print(); }, 180);
+    audit('Formulário preparado para impressão', item.title);
+  }
+  function clearFormDraft(id) {
+    var item = formCatalogFind(id); if (!item) return;
+    if (formsDrafts()[id] && !window.confirm('Limpar todos os dados salvos deste formulário?')) return;
+    delete formsDrafts()[id]; storageSet(KEYS.settings, state.settings); openFormDocument(id); toast('Formulário limpo', 'Um novo documento em branco foi preparado.');
+  }
+  function toggleFormFavorite(id) {
+    var favorites = formsFavorites(), index = favorites.indexOf(id), added = index < 0;
+    if (added) favorites.push(id); else favorites.splice(index, 1);
+    storageSet(KEYS.settings, state.settings); refreshFormsResults(false); toast(added ? 'Formulário favoritado' : 'Favorito removido', formCatalogFind(id).title);
+  }
+  function exportFormsIndex() {
+    var forms = formsFiltered();
+    downloadFile('indice-formularios-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.formularios.v1', generatedAt: nowISO(), count: forms.length, favorites: formsFavorites(), forms: forms, meta: window.GESTAO_FISCAL_FORMS_META || {} }, null, 2));
+    audit('Índice de formulários exportado', forms.length + ' item(ns)'); toast('Índice baixado', forms.length + ' formulário(s) foram incluídos no JSON.');
+  }
+  function downloadFormsPack() {
+    var forms = formsFiltered(); if (!forms.length) { toast('Nada para baixar', 'A consulta atual não possui formulários.', 'warning'); return; }
+    var style = '<style>body{font-family:Arial,sans-serif;color:#172333;margin:32px}h1{color:#00265c}.form{page-break-after:always}.form:last-child{page-break-after:auto}h2{font-size:15px;background:#e4ebf3;padding:8px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cad1d9;padding:7px;text-align:left}th{width:32%}.notice{padding:10px;background:#fff8df;border:1px solid #ddc26b}</style>';
+    var content = forms.map(function (item) { return '<section class="form">' + formDocumentHtml(item, formsDrafts()[item.id] || formDefaultDraft(item), true) + '</section>'; }).join('');
+    downloadFile('modelos-formularios-' + todayISO() + '.doc', '\uFEFF<!doctype html><html><head><meta charset="utf-8">' + style + '</head><body><h1>Central de Formulários — ContTech ERP</h1><p class="notice">Modelos de apoio. Confira a versão oficial antes do protocolo.</p>' + content + '</body></html>', 'application/msword;charset=utf-8');
+    audit('Pacote de formulários baixado', forms.length + ' modelo(s) em DOC'); toast('Pacote gerado', forms.length + ' modelo(s) foram reunidos em um arquivo DOC.');
+  }
+
+  function contractsUi() {
+    if (!state.contractsUi) state.contractsUi = { query: '', category: '', group: '', favoritesOnly: false, page: 1 };
+    return state.contractsUi;
+  }
+  function contractsCatalog() {
+    var base = Array.isArray(window.GESTAO_FISCAL_CONTRACTS) ? window.GESTAO_FISCAL_CONTRACTS : [];
+    var custom = Array.isArray(state.settings.customContractTemplates) ? state.settings.customContractTemplates : [];
+    return base.concat(custom);
+  }
+  function contractsFavorites() {
+    if (!Array.isArray(state.settings.contractFavorites)) state.settings.contractFavorites = [];
+    return state.settings.contractFavorites;
+  }
+  function contractDrafts() {
+    if (!state.settings.contractDrafts || typeof state.settings.contractDrafts !== 'object') state.settings.contractDrafts = {};
+    return state.settings.contractDrafts;
+  }
+  function contractsFiltered() {
+    var ui = contractsUi(), query = accountingNormalize(ui.query), favorites = contractsFavorites();
+    return contractsCatalog().filter(function (item) {
+      var haystack = accountingNormalize([item.title,item.category,item.group,item.template,item.description,item.source,item.keywords].join(' '));
+      return (!query || haystack.indexOf(query) >= 0) && (!ui.category || item.category === ui.category) && (!ui.group || item.group === ui.group) && (!ui.favoritesOnly || favorites.indexOf(item.id) >= 0);
+    }).sort(function (a,b) { return a.title.localeCompare(b.title,'pt-BR'); });
+  }
+  function contractDefaultClauses(item) {
+    if (item && item.defaultClauses) return item.defaultClauses;
+    var clauses;
+    if (item.category === 'Contratos Trabalhistas') {
+      clauses = [
+        'CLÁUSULA 1ª — OBJETO E FUNÇÃO. O(A) EMPREGADO(A) exercerá a função de {{funcao}}, desempenhando as atividades descritas em {{objeto}}, observados os limites legais e as orientações compatíveis com o cargo.',
+        'CLÁUSULA 2ª — INÍCIO E DURAÇÃO. O vínculo tem início em {{dataInicio}} e vigorará {{duracao}}, respeitadas as hipóteses legais aplicáveis à modalidade deste instrumento.',
+        'CLÁUSULA 3ª — LOCAL E MODALIDADE. Os serviços serão prestados em {{localTrabalho}}, na modalidade {{modalidade}}, sem prejuízo de deslocamentos compatíveis e previamente comunicados.',
+        'CLÁUSULA 4ª — JORNADA. A jornada será de {{jornada}}, com intervalos, descansos, controle de ponto e compensações conforme a legislação e o instrumento coletivo aplicável.',
+        'CLÁUSULA 5ª — REMUNERAÇÃO. Pela prestação dos serviços será paga remuneração de {{valor}}, na forma {{pagamento}}, acrescida dos benefícios e adicionais legalmente devidos.',
+        'CLÁUSULA 6ª — DEVERES E POLÍTICAS. O(A) EMPREGADO(A) compromete-se a cumprir as normas internas, regras de segurança e saúde, políticas de uso de recursos, proteção de dados e orientações lícitas do EMPREGADOR.',
+        'CLÁUSULA 7ª — CONFIDENCIALIDADE E DADOS. Informações confidenciais e dados pessoais serão utilizados apenas para finalidades legítimas, com acesso limitado e medidas de segurança proporcionais, inclusive após o encerramento quando houver obrigação de sigilo.',
+        'CLÁUSULA 8ª — EQUIPAMENTOS E RESPONSABILIDADE. Bens entregues deverão ser utilizados para as finalidades autorizadas, conservados e devolvidos, sem transferência automática ao trabalhador de riscos inerentes à atividade econômica.',
+        'CLÁUSULA 9ª — ALTERAÇÃO E RESCISÃO. Qualquer alteração observará a legislação trabalhista, o consentimento quando exigido e a vedação de prejuízo ao trabalhador. A rescisão seguirá a modalidade, os prazos e as verbas legalmente aplicáveis.',
+        'CLÁUSULA 10ª — NORMAS APLICÁVEIS. Integram este instrumento a CLT, a legislação especial, as normas de saúde e segurança e os acordos ou convenções coletivas aplicáveis.'
+      ];
+    } else if (item.category === 'Contratos Societários') {
+      clauses = [
+        'CLÁUSULA 1ª — DENOMINAÇÃO, SEDE E PRAZO. A sociedade adotará o nome {{empresa}}, com sede em {{enderecoEmpresa}}, e prazo de duração {{duracao}}.',
+        'CLÁUSULA 2ª — OBJETO SOCIAL. A sociedade terá por objeto {{objeto}}, observadas as licenças, registros profissionais e autorizações exigíveis.',
+        'CLÁUSULA 3ª — CAPITAL SOCIAL. O capital social será de {{valor}}, dividido e integralizado conforme a seguinte composição: {{participacoes}}.',
+        'CLÁUSULA 4ª — RESPONSABILIDADE. A responsabilidade dos sócios observará o tipo jurídico adotado e a legislação aplicável, inclusive quanto à integralização do capital e às hipóteses de responsabilidade pessoal.',
+        'CLÁUSULA 5ª — ADMINISTRAÇÃO. A administração caberá a {{administrador}}, com poderes e limitações descritos neste instrumento e dever de diligência, lealdade e prestação de contas.',
+        'CLÁUSULA 6ª — DELIBERAÇÕES. As deliberações serão tomadas nos quóruns legais ou contratuais, documentadas em atas e livros quando exigidos e levadas a registro nos casos aplicáveis.',
+        'CLÁUSULA 7ª — RESULTADOS. O exercício social encerrar-se-á em {{exercicioSocial}}. Lucros e perdas serão apurados por escrituração regular e destinados conforme deliberação válida e disponibilidade patrimonial.',
+        'CLÁUSULA 8ª — QUOTAS, AÇÕES E DIREITOS. A cessão, transferência, preferência, retirada, exclusão, sucessão ou ingresso observará este instrumento, a legislação e os atos de registro competentes.',
+        'CLÁUSULA 9ª — DISSOLUÇÃO E LIQUIDAÇÃO. A dissolução, liquidação e extinção ocorrerão nas hipóteses legais ou deliberadas, com nomeação de liquidante, apuração do patrimônio e prestação final de contas.',
+        'CLÁUSULA 10ª — REGISTRO E FORO. O instrumento será submetido ao órgão de registro competente. Fica eleito o foro de {{foro}}, ressalvadas competências legais inderrogáveis.'
+      ];
+    } else {
+      clauses = [
+        'CLÁUSULA 1ª — OBJETO. O presente contrato tem por objeto {{objeto}}, conforme escopo, especificações e critérios de aceite definidos entre as partes.',
+        'CLÁUSULA 2ª — PRAZO. O contrato inicia-se em {{dataInicio}} e vigorará até {{dataFim}}, podendo ser renovado por acordo escrito.',
+        'CLÁUSULA 3ª — PREÇO E PAGAMENTO. O valor contratado é de {{valor}}, a ser pago na forma {{pagamento}}, mediante documento fiscal e cumprimento das condições ajustadas.',
+        'CLÁUSULA 4ª — OBRIGAÇÕES DA CONTRATADA. Compete à CONTRATADA executar o objeto com diligência, qualidade, pessoal habilitado, documentação regular e observância das normas técnicas e legais aplicáveis.',
+        'CLÁUSULA 5ª — OBRIGAÇÕES DA CONTRATANTE. Compete à CONTRATANTE fornecer informações, acessos e aprovações necessárias, receber e conferir as entregas e efetuar os pagamentos devidos.',
+        'CLÁUSULA 6ª — TRIBUTOS E ENCARGOS. Cada parte será responsável pelos tributos, encargos e obrigações que a lei lhe atribuir, sem criação de vínculo diverso daquele expressamente contratado.',
+        'CLÁUSULA 7ª — CONFIDENCIALIDADE E PROTEÇÃO DE DADOS. As partes protegerão informações confidenciais e dados pessoais, limitarão o tratamento às finalidades do contrato e adotarão medidas de segurança compatíveis com os riscos.',
+        'CLÁUSULA 8ª — PROPRIEDADE INTELECTUAL. Direitos preexistentes permanecem com seus titulares. A titularidade e a licença dos materiais produzidos seguirão o escopo e a remuneração definidos neste instrumento.',
+        'CLÁUSULA 9ª — RESPONSABILIDADE E FORÇA MAIOR. Cada parte responderá pelos danos que causar, observadas a causalidade e as limitações legalmente admitidas. Eventos inevitáveis deverão ser comunicados e mitigados.',
+        'CLÁUSULA 10ª — RESCISÃO. O contrato poderá ser rescindido por inadimplemento não sanado, impossibilidade superveniente ou denúncia com aviso de {{aviso}}, preservados valores vencidos e obrigações pós-contratuais.',
+        'CLÁUSULA 11ª — COMUNICAÇÕES E ASSINATURAS. Comunicações ocorrerão pelos contatos indicados. As partes admitem assinatura física ou eletrônica juridicamente válida.',
+        'CLÁUSULA 12ª — FORO. Fica eleito o foro de {{foro}}, sem prejuízo de eventual método de solução consensual e de competências legais inderrogáveis.'
+      ];
+    }
+    var special = {
+      'intermittent': 'CLÁUSULA ESPECIAL — CONVOCAÇÃO. A convocação, a resposta, o período de inatividade e o pagamento ao final de cada prestação obedecerão ao art. 452-A da CLT.',
+      'internship': 'CLÁUSULA ESPECIAL — ESTÁGIO. O estágio tem finalidade educativa, exige matrícula e frequência, plano de atividades, supervisão, seguro e acompanhamento da instituição de ensino, sem vínculo quando cumprida a Lei nº 11.788/2008.',
+      'apprenticeship': 'CLÁUSULA ESPECIAL — APRENDIZAGEM. A formação técnico-profissional, a entidade formadora, a jornada, o programa e o prazo observarão os arts. 428 a 433 da CLT.',
+      'temporary': 'CLÁUSULA ESPECIAL — TEMPORARIEDADE. O motivo justificador, a duração e as responsabilidades das empresas deverão atender à Lei nº 6.019/1974.',
+      'privacy-employment': 'CLÁUSULA ESPECIAL — PRIVACIDADE. A base legal, finalidade, dados, compartilhamentos, prazo de retenção, segurança e direitos do titular deverão constar de aviso de privacidade compatível com a LGPD.',
+      'data-processing': 'CLÁUSULA ESPECIAL — CONTROLADOR E OPERADOR. As partes definirão instruções documentadas, suboperadores, segurança, incidentes, direitos dos titulares, transferências e devolução ou eliminação dos dados.',
+      'technology': 'CLÁUSULA ESPECIAL — TECNOLOGIA. Escopo funcional, níveis de serviço, ambientes, propriedade do código, licenças de terceiros, suporte, segurança e continuidade deverão ser detalhados em anexos.',
+      'sale': 'CLÁUSULA ESPECIAL — ENTREGA E GARANTIAS. O bem, sua condição, entrega, transferência de riscos, garantias, vícios e documentação serão descritos de forma individualizada.',
+      'lease': 'CLÁUSULA ESPECIAL — LOCAÇÃO. O bem, aluguel, reajuste, garantia, encargos, vistoria, conservação e devolução observarão a legislação aplicável e o laudo anexado.',
+      'loan': 'CLÁUSULA ESPECIAL — CRÉDITO. Principal, juros, atualização, vencimentos, mora, garantias e quitação deverão ser discriminados, vedada cobrança contrária à lei.',
+      'franchise': 'CLÁUSULA ESPECIAL — FRANQUIA. A Circular de Oferta de Franquia deverá ser entregue no prazo legal antes da assinatura ou pagamento, com taxas, território, suporte, propriedade intelectual e regras de saída.',
+      'investment': 'CLÁUSULA ESPECIAL — INVESTIMENTO. A natureza do aporte, conversão, valuation, governança, direitos de informação, preferência, diluição e eventos de liquidez deverão ser definidos sem simular relação diversa.',
+      'corporate-minutes': 'CLÁUSULA ESPECIAL — DELIBERAÇÃO. A convocação, presenças, mesa, ordem do dia, votos, impedimentos, quórum e resultado serão registrados com fidelidade.',
+      'company-amendment': 'CLÁUSULA ESPECIAL — CONSOLIDAÇÃO. Identifique as cláusulas alteradas, aprove a nova redação e avalie a consolidação do contrato social conforme o Manual do DREI.',
+      'reorganization': 'CLÁUSULA ESPECIAL — REORGANIZAÇÃO. Laudos, protocolo, justificação, aprovações, direitos de credores, efeitos contábeis e registros serão tratados por profissionais habilitados.'
+    };
+    if (special[item.template]) clauses.splice(Math.max(clauses.length - 1,1),0,special[item.template]);
+    if (/teletrabalho/i.test(item.title) && item.template === 'employment') clauses.splice(5,0,'CLÁUSULA ESPECIAL — TELETRABALHO. Atividades, infraestrutura, despesas, comunicação, prevenção de doenças e acidentes e retorno ao presencial serão definidos nos termos dos arts. 75-A a 75-E da CLT.');
+    return clauses.join('\n\n');
+  }
+  function contractFields(item) {
+    var partyFields = [
+      { section: 'Partes', id: 'partyAName', label: item.category === 'Contratos Trabalhistas' ? 'Empregador / contratante' : 'Parte A / contratante', required: true },
+      { section: 'Partes', id: 'partyADocument', label: 'CPF/CNPJ da Parte A', required: true },
+      { section: 'Partes', id: 'partyAAddress', label: 'Endereço completo da Parte A', required: true },
+      { section: 'Partes', id: 'partyARepresentative', label: 'Representante da Parte A' },
+      { section: 'Partes', id: 'partyBName', label: item.category === 'Contratos Trabalhistas' ? 'Empregado / contratado' : 'Parte B / contratada', required: true },
+      { section: 'Partes', id: 'partyBDocument', label: 'CPF/CNPJ da Parte B', required: true },
+      { section: 'Partes', id: 'partyBAddress', label: 'Endereço completo da Parte B', required: true },
+      { section: 'Partes', id: 'partyBRepresentative', label: 'Representante da Parte B' }
+    ];
+    if (item.category === 'Contratos Societários') return [
+      { section: 'Sociedade', id: 'empresa', label: 'Nome empresarial', required: true },
+      { section: 'Sociedade', id: 'nomeFantasia', label: 'Nome fantasia' },
+      { section: 'Sociedade', id: 'cnpj', label: 'CNPJ, se existente' },
+      { section: 'Sociedade', id: 'nire', label: 'NIRE, se existente' },
+      { section: 'Sociedade', id: 'enderecoEmpresa', label: 'Sede completa', required: true },
+      { section: 'Sócios e administração', id: 'socios', label: 'Qualificação completa dos sócios/acionistas', type: 'textarea', required: true },
+      { section: 'Sócios e administração', id: 'participacoes', label: 'Quotas, ações e forma de integralização', type: 'textarea', required: true },
+      { section: 'Sócios e administração', id: 'administrador', label: 'Administrador(es) e poderes', type: 'textarea', required: true },
+      { section: 'Objeto e capital', id: 'objeto', label: 'Objeto social e CNAEs', type: 'textarea', required: true },
+      { section: 'Objeto e capital', id: 'valor', label: 'Capital social', required: true },
+      { section: 'Objeto e capital', id: 'duracao', label: 'Prazo de duração', value: 'indeterminado' },
+      { section: 'Objeto e capital', id: 'exercicioSocial', label: 'Encerramento do exercício', value: '31 de dezembro de cada ano' },
+      { section: 'Fechamento', id: 'foro', label: 'Foro / comarca', required: true },
+      { section: 'Fechamento', id: 'localData', label: 'Local e data da assinatura', required: true },
+      { section: 'Fechamento', id: 'witnesses', label: 'Testemunhas — nome e CPF', type: 'textarea' }
+    ];
+    var common = partyFields.concat([
+      { section: 'Objeto e vigência', id: 'objeto', label: 'Objeto, atividades ou escopo', type: 'textarea', required: true },
+      { section: 'Objeto e vigência', id: 'dataInicio', label: 'Data de início', type: 'date', required: true },
+      { section: 'Objeto e vigência', id: 'dataFim', label: 'Data final, se aplicável', type: 'date' },
+      { section: 'Objeto e vigência', id: 'duracao', label: 'Prazo / duração', value: 'por prazo indeterminado' },
+      { section: 'Valores e execução', id: 'valor', label: 'Valor / remuneração', required: true },
+      { section: 'Valores e execução', id: 'pagamento', label: 'Forma, vencimento e condição de pagamento', required: true },
+      { section: 'Valores e execução', id: 'localTrabalho', label: 'Local de execução', required: true },
+      { section: 'Valores e execução', id: 'modalidade', label: 'Modalidade', value: 'presencial' },
+      { section: 'Fechamento', id: 'aviso', label: 'Aviso para rescisão', value: '30 dias' },
+      { section: 'Fechamento', id: 'foro', label: 'Foro / comarca', required: true },
+      { section: 'Fechamento', id: 'localData', label: 'Local e data da assinatura', required: true },
+      { section: 'Fechamento', id: 'witnesses', label: 'Testemunhas — nome e CPF', type: 'textarea' }
+    ]);
+    if (item.category === 'Contratos Trabalhistas') common.splice(8,0,{ section: 'Condições de trabalho', id: 'funcao', label: 'Cargo ou função', required: true },{ section: 'Condições de trabalho', id: 'jornada', label: 'Jornada, horários e intervalos', required: true },{ section: 'Condições de trabalho', id: 'beneficios', label: 'Benefícios e adicionais', type: 'textarea' });
+    if (['technology','data-processing'].indexOf(item.template) >= 0) common.splice(common.length - 4,0,{ section: 'Tecnologia e dados', id: 'serviceLevels', label: 'Níveis de serviço, suporte e disponibilidade', type: 'textarea' },{ section: 'Tecnologia e dados', id: 'dataSecurity', label: 'Dados tratados e medidas de segurança', type: 'textarea' },{ section: 'Tecnologia e dados', id: 'intellectualProperty', label: 'Propriedade intelectual e licenças', type: 'textarea' });
+    if (item.template === 'sale') common.splice(common.length - 4,0,{ section: 'Bem e entrega', id: 'asset', label: 'Descrição completa do bem', type: 'textarea', required: true },{ section: 'Bem e entrega', id: 'delivery', label: 'Entrega, riscos, vistoria e garantias', type: 'textarea', required: true });
+    if (item.template === 'lease') common.splice(common.length - 4,0,{ section: 'Bem e garantia', id: 'asset', label: 'Descrição do imóvel ou bem', type: 'textarea', required: true },{ section: 'Bem e garantia', id: 'adjustment', label: 'Reajuste, encargos e garantia locatícia', type: 'textarea', required: true });
+    return common;
+  }
+  function contractDefaultDraft(item) {
+    var client = currentClient() || {}, user = currentUser || {};
+    return { partyAName: client.name || '', partyADocument: client.document || '', partyAAddress: client.city || '', partyARepresentative: user.name || '', empresa: client.name || '', cnpj: client.document || '', enderecoEmpresa: client.city || '', objeto: item.title, dataInicio: todayISO(), duracao: 'por prazo indeterminado', modalidade: 'presencial', aviso: '30 dias', exercicioSocial: '31 de dezembro de cada ano', localData: (client.city || '') + ', ' + TODAY, clausesText: contractDefaultClauses(item) };
+  }
+  function contractDraft(item) { return Object.assign(contractDefaultDraft(item), contractDrafts()[item.id] || {}); }
+  function contractControl(field,value) {
+    var attrs = ' data-contract-field="' + esc(field.id) + '"' + (field.required ? ' required' : '') + (field.placeholder ? ' placeholder="' + esc(field.placeholder) + '"' : '');
+    if (field.type === 'textarea') return '<textarea' + attrs + ' rows="3">' + esc(value || field.value || '') + '</textarea>';
+    return '<input' + attrs + ' type="' + esc(field.type || 'text') + '" value="' + esc(value == null ? (field.value || '') : value) + '">';
+  }
+  function contractsResultsHtml() {
+    var ui = contractsUi(), rows = contractsFiltered(), pageSize = 30, pages = Math.max(1,Math.ceil(rows.length/pageSize)); ui.page = Math.max(1,Math.min(pages,Number(ui.page || 1)));
+    var start = (ui.page - 1) * pageSize, slice = rows.slice(start,start + pageSize), favorites = contractsFavorites();
+    if (!slice.length) return '<div class="empty-state contracts-empty"><i>⌕</i><h3>Nenhum modelo encontrado</h3><p>Revise a pesquisa ou limpe os filtros.</p><button class="secondary-button" data-action="contracts-clear">Limpar filtros</button></div>';
+    var groups = [];
+    slice.forEach(function (item) { var group = groups.find(function (entry) { return entry.name === item.group; }); if (!group) { group = { name: item.group, items: [] }; groups.push(group); } group.items.push(item); });
+    var list = groups.map(function (group) { return '<section class="contracts-group"><header><h2>' + esc(group.name) + '</h2><span>' + group.items.length + ' nesta página</span></header><div class="contracts-grid">' + group.items.map(function (item) {
+      var favorite = favorites.indexOf(item.id) >= 0, draft = Boolean(contractDrafts()[item.id]);
+      return '<article class="contract-card"><button class="contract-star' + (favorite ? ' active' : '') + '" data-action="contracts-favorite" data-id="' + esc(item.id) + '" title="Favoritar">' + (favorite ? '★' : '☆') + '</button><div class="contract-card-icon">▨</div><div class="contract-card-copy"><span>' + esc(item.category.replace('Contratos ','')) + '</span><h3>' + esc(item.title) + '</h3><p>' + esc(item.description) + '</p><small>' + esc(item.sourceCode) + ' · revisado em ' + esc(item.updated) + '</small>' + (draft ? '<em>Rascunho salvo</em>' : '') + '</div><button class="primary-button" data-action="contracts-open" data-id="' + esc(item.id) + '">Preencher contrato →</button></article>';
+    }).join('') + '</div></section>'; }).join('');
+    return '<div class="contracts-result-status"><div><b>' + rows.length.toLocaleString('pt-BR') + ' modelo(s) encontrados</b><span>Exibindo ' + (start + 1) + '–' + Math.min(start + pageSize,rows.length) + '</span></div><div><button class="secondary-button" data-action="contracts-page" data-page="' + (ui.page - 1) + '"' + (ui.page <= 1 ? ' disabled' : '') + '>← Anterior</button><span>Página ' + ui.page + ' de ' + pages + '</span><button class="secondary-button" data-action="contracts-page" data-page="' + (ui.page + 1) + '"' + (ui.page >= pages ? ' disabled' : '') + '>Próxima →</button></div></div>' + list;
+  }
+  function renderContractsLibrary() {
+    var ui = contractsUi(), all = contractsCatalog(), favorites = contractsFavorites(), drafts = Object.keys(contractDrafts()).length;
+    var categories = ['Contratos Trabalhistas','Contratos Comerciais','Contratos Societários'];
+    var categoryCards = categories.map(function (category,index) { var count = all.filter(function (item) { return item.category === category; }).length; return '<button class="contracts-category-card' + (ui.category === category ? ' active' : '') + '" data-action="contracts-category" data-category="' + esc(category) + '"><span>' + (index + 1) + '</span><div><b>' + esc(category) + '</b><small>' + count + ' modelos disponíveis</small></div><i>→</i></button>'; }).join('');
+    var groups = Array.from(new Set(all.filter(function (item) { return !ui.category || item.category === ui.category; }).map(function (item) { return item.group; }))).sort(function (a,b) { return a.localeCompare(b,'pt-BR'); });
+    var groupOptions = '<option value="">Todos os assuntos</option>' + groups.map(function (group) { return '<option value="' + esc(group) + '"' + (ui.group === group ? ' selected' : '') + '>' + esc(group) + '</option>'; }).join('');
+    return [
+      pageHeading('Modelos e Contratos', 'Biblioteca editável de contratos trabalhistas, comerciais e societários.', '<button class="secondary-button" data-action="contracts-export">↧ Exportar catálogo</button><button class="secondary-button" data-action="contracts-download-pack">▨ Baixar pacote DOC</button><button class="primary-button" data-action="contracts-new">＋ Novo modelo</button>'),
+      '<div class="info-banner contracts-notice"><span>⚖</span><div><strong>Modelos próprios para personalização.</strong> Preencha as partes e condições, revise as cláusulas e baixe em DOC ou PDF. A assinatura ou o registro deve ocorrer somente após análise jurídica e conferência da legislação aplicável.</div><span class="live-badge"><i></i> Geração imediata</span></div>',
+      '<div class="contracts-page"><section class="contracts-hero"><div><span class="eyebrow">Biblioteca contratual profissional</span><h2>Do cadastro das partes ao documento pronto para revisão.</h2><p>Todos os rascunhos, favoritos e modelos próprios permanecem no armazenamento da plataforma e integram o backup geral.</p><div class="contracts-hero-stats"><span><b>' + all.length + '</b> modelos</span><span><b>' + favorites.length + '</b> favoritos</span><span><b>' + drafts + '</b> rascunhos</span></div></div><div class="contracts-seal"><span>§</span><b>Cláusulas editáveis</b><small>DOC · impressão · PDF</small></div></section>',
+      '<section class="contracts-category-grid"><button class="contracts-category-card' + (!ui.category ? ' active' : '') + '" data-action="contracts-category" data-category=""><span>✓</span><div><b>Todos os modelos</b><small>' + all.length + ' contratos na biblioteca</small></div><i>→</i></button>' + categoryCards + '</section>',
+      '<section class="card contracts-library-card"><header class="card-header"><div><h2>Índice de modelos</h2><small>Pesquise pelo nome, assunto ou fundamento</small></div><span class="tag tag--success">Atualizado em 20/08/2026</span></header><div class="card-body"><div class="contracts-filters"><label class="filter-field contracts-search"><span>Pesquisar contrato</span><div><i>⌕</i><input id="contracts-query" value="' + esc(ui.query) + '" placeholder="Ex.: teletrabalho, prestação de serviços, sociedade limitada..."><button data-action="contracts-clear-query" aria-label="Limpar pesquisa">×</button></div></label><label class="filter-field"><span>Assunto</span><select id="contracts-group">' + groupOptions + '</select></label><label class="contracts-favorite-filter"><input id="contracts-favorites-filter" type="checkbox"' + (ui.favoritesOnly ? ' checked' : '') + '><span>★ Somente favoritos</span></label><button class="secondary-button" data-action="contracts-clear">Limpar</button></div><div id="contracts-results">' + contractsResultsHtml() + '</div></div></section>',
+      '<section class="card contracts-sources-card"><header class="card-header"><div><h2>Referências jurídicas oficiais</h2><small>Valide sempre a versão e a situação concreta</small></div></header><div class="card-body"><a href="https://www.planalto.gov.br/ccivil_03/decreto-lei/del5452compilado.htm" target="_blank" rel="noopener noreferrer"><b>CLT</b><span>Contratos e relações de trabalho ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/2002/l10406compilada.htm" target="_blank" rel="noopener noreferrer"><b>Código Civil</b><span>Contratos e sociedades ↗</span></a><a href="https://www.gov.br/empresas-e-negocios/pt-br/drei/legislacao/instrucoes-normativas" target="_blank" rel="noopener noreferrer"><b>DREI</b><span>Manuais de registro empresarial ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709compilado.htm" target="_blank" rel="noopener noreferrer"><b>LGPD</b><span>Tratamento e proteção de dados ↗</span></a></div></section></div>'
+    ].join('');
+  }
+  function refreshContractsResults(focusSearch) {
+    if ($('#contracts-results')) $('#contracts-results').innerHTML = contractsResultsHtml();
+    if (focusSearch && $('#contracts-query')) { $('#contracts-query').focus(); $('#contracts-query').setSelectionRange($('#contracts-query').value.length,$('#contracts-query').value.length); }
+  }
+  function contractFind(id) { return contractsCatalog().find(function (item) { return item.id === id; }); }
+  function openContractEditor(id) {
+    var item = contractFind(id); if (!item) return; var draft = contractDraft(item), fields = contractFields(item), groups = [];
+    fields.forEach(function (field) { var group = groups.find(function (entry) { return entry.name === field.section; }); if (!group) { group = { name: field.section, fields: [] }; groups.push(group); } group.fields.push(field); });
+    var body = '<form id="contract-editor-form" data-contract-id="' + esc(item.id) + '"><div class="contract-editor-summary"><span>▨</span><div><b>' + esc(item.group) + '</b><p>' + esc(item.description) + '</p><a href="' + esc(item.sourceUrl) + '" target="_blank" rel="noopener noreferrer">' + esc(item.source) + ' ↗</a></div></div>' + groups.map(function (group) { return '<fieldset class="contract-fieldset"><legend>' + esc(group.name) + '</legend><div class="form-grid">' + group.fields.map(function (field) { return '<label class="field' + (field.type === 'textarea' ? ' contract-field-wide' : '') + '"><span>' + esc(field.label) + (field.required ? ' *' : '') + '</span>' + contractControl(field,draft[field.id]) + '</label>'; }).join('') + '</div></fieldset>'; }).join('') + '<fieldset class="contract-fieldset contract-clauses-fieldset"><legend>Cláusulas editáveis</legend><p>Você pode alterar todo o texto. Os marcadores entre chaves serão substituídos automaticamente pelos dados informados.</p><textarea id="contract-clauses-text" data-contract-field="clausesText" rows="18">' + esc(draft.clausesText || contractDefaultClauses(item)) + '</textarea></fieldset><label class="check contract-review-check"><input id="contract-review-confirm" type="checkbox"> Confirmo que revisei os dados e que o documento passará por análise jurídica antes da assinatura ou do registro.</label></form>';
+    openModal(item.title,body,'<button class="secondary-button" data-action="contracts-clear-draft" data-id="' + esc(item.id) + '">Limpar</button><button class="secondary-button" data-action="contracts-save-draft" data-id="' + esc(item.id) + '">▣ Salvar rascunho</button><button class="secondary-button" data-action="contracts-download-doc" data-id="' + esc(item.id) + '">↧ Baixar DOC</button><button class="primary-button" data-action="contracts-print" data-id="' + esc(item.id) + '">▣ Imprimir / PDF</button>');
+  }
+  function readContractEditor() {
+    var data = {}; $$('#contract-editor-form [data-contract-field]').forEach(function (element) { data[element.getAttribute('data-contract-field')] = element.value; }); return data;
+  }
+  function saveContractDraft(id,silent) {
+    var item = contractFind(id), form = $('#contract-editor-form'); if (!item || !form) return false;
+    contractDrafts()[id] = readContractEditor(); storageSet(KEYS.settings,state.settings);
+    if (!silent) { audit('Rascunho de contrato salvo',item.title); toast('Rascunho salvo','O contrato poderá ser retomado nesta biblioteca.'); }
+    return true;
+  }
+  function resolveContractTokens(text,data) {
+    return String(text || '').replace(/\{\{([^}]+)\}\}/g,function (all,key) { var value = data[key]; return value == null || value === '' ? '[PREENCHER: ' + key + ']' : value; });
+  }
+  function contractDocumentHtml(item,data,fragment) {
+    var partyIntro;
+    if (item.category === 'Contratos Societários') partyIntro = '<p><b>ATO SOCIETÁRIO:</b> ' + esc(data.empresa || 'Sociedade a identificar') + ', CNPJ ' + esc(data.cnpj || 'a informar') + ', com sede em ' + esc(data.enderecoEmpresa || 'endereço a informar') + '.</p>';
+    else partyIntro = '<p><b>PARTE A:</b> ' + esc(data.partyAName || 'a identificar') + ', CPF/CNPJ ' + esc(data.partyADocument || 'a informar') + ', com endereço em ' + esc(data.partyAAddress || 'a informar') + '.</p><p><b>PARTE B:</b> ' + esc(data.partyBName || 'a identificar') + ', CPF/CNPJ ' + esc(data.partyBDocument || 'a informar') + ', com endereço em ' + esc(data.partyBAddress || 'a informar') + '.</p>';
+    var clauses = resolveContractTokens(data.clausesText || contractDefaultClauses(item),data).split(/\n\s*\n/).filter(Boolean).map(function (clause) { return '<p class="clause">' + esc(clause).replace(/\n/g,'<br>') + '</p>'; }).join('');
+    var signatureNames = item.category === 'Contratos Societários' ? '<div>Sócio/representante</div><div>Sócio/representante</div>' : '<div>' + esc(data.partyAName || 'Parte A') + '</div><div>' + esc(data.partyBName || 'Parte B') + '</div>';
+    var content = '<article class="document"><header><span>CONTTECH ERP</span><h1>' + esc(item.title) + '</h1><p>' + esc(item.category) + ' · ' + esc(item.group) + '</p></header><section class="parties">' + partyIntro + '</section><p>As partes acima qualificadas celebram o presente instrumento, mediante as cláusulas e condições seguintes:</p><section class="clauses">' + clauses + '</section><p class="closing">' + esc(data.localData || 'Local e data a preencher') + '.</p><div class="signatures">' + signatureNames + '</div><div class="witnesses"><b>Testemunhas</b><p>' + esc(data.witnesses || '1. Nome/CPF: ____________________    2. Nome/CPF: ____________________').replace(/\n/g,'<br>') + '</p></div><aside><b>Aviso:</b> modelo orientativo gerado pelo ContTech ERP. A revisão jurídica, a adequação à situação concreta e a conferência de exigências de assinatura, reconhecimento, registro e tributos são indispensáveis.</aside><footer>Referência: ' + esc(item.source) + ' · modelo revisado em ' + esc(item.updated) + '</footer></article>';
+    if (fragment) return content;
+    var style = 'body{font-family:Arial,sans-serif;color:#17212f;margin:34px;font-size:12px;line-height:1.55}.document{max-width:820px;margin:auto}header{text-align:center;border-bottom:2px solid #002c6b;padding-bottom:14px}header span{font-size:10px;color:#002c6b;font-weight:bold;letter-spacing:.12em}h1{font-size:21px;margin:6px 0;text-transform:uppercase}header p{color:#606975;margin:0}.parties{background:#f2f4f7;border:1px solid #d3d9e1;padding:10px 14px;margin:18px 0}.clause{text-align:justify;margin:14px 0}.closing{margin-top:28px}.signatures{display:flex;gap:40px;margin-top:60px}.signatures div{flex:1;border-top:1px solid #333;text-align:center;padding-top:7px}.witnesses{margin-top:28px;border-top:1px solid #ccd2d9;padding-top:10px}aside{margin-top:28px;padding:10px;border:1px solid #d8bc61;background:#fff8df;font-size:10px}footer{margin-top:20px;color:#717982;font-size:9px}@media print{body{margin:13mm}}';
+    return '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>' + esc(item.title) + '</title><style>' + style + '</style></head><body>' + content + '</body></html>';
+  }
+  function contractReviewValid() {
+    if ($('#contract-editor-form') && !$('#contract-editor-form').reportValidity()) return false;
+    if ($('#contract-review-confirm') && !$('#contract-review-confirm').checked) { toast('Confirme a revisão','Marque a confirmação antes de baixar ou imprimir.','warning'); return false; }
+    return true;
+  }
+  function downloadContractDoc(id) {
+    var item = contractFind(id); if (!item || !contractReviewValid()) return; saveContractDraft(id,true); var data = readContractEditor();
+    downloadFile('contrato-' + accountingNormalize(item.title).replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') + '.doc','\uFEFF' + contractDocumentHtml(item,data,false),'application/msword;charset=utf-8');
+    audit('Contrato baixado',item.title + ' · DOC'); toast('Contrato gerado','O documento foi baixado em formato DOC para revisão.');
+  }
+  function printContract(id) {
+    var item = contractFind(id); if (!item || !contractReviewValid()) return; saveContractDraft(id,true); var popup = window.open('','_blank');
+    if (!popup) { toast('Janela bloqueada','Permita pop-ups para abrir a impressão em PDF.','warning'); return; } popup.opener = null; popup.document.open(); popup.document.write(contractDocumentHtml(item,readContractEditor(),false)); popup.document.close(); popup.focus(); window.setTimeout(function () { popup.print(); },180); audit('Contrato preparado para impressão',item.title);
+  }
+  function clearContractDraft(id) {
+    var item = contractFind(id); if (!item) return; if (contractDrafts()[id] && !window.confirm('Limpar os dados salvos deste contrato?')) return; delete contractDrafts()[id]; storageSet(KEYS.settings,state.settings); openContractEditor(id); toast('Contrato limpo','Um novo rascunho foi preparado.');
+  }
+  function toggleContractFavorite(id) {
+    var favorites = contractsFavorites(), index = favorites.indexOf(id), added = index < 0; if (added) favorites.push(id); else favorites.splice(index,1); storageSet(KEYS.settings,state.settings); refreshContractsResults(false); toast(added ? 'Contrato favoritado' : 'Favorito removido',contractFind(id).title);
+  }
+  function exportContractsCatalog() {
+    var rows = contractsFiltered(); downloadFile('catalogo-modelos-contratos-' + todayISO() + '.json',JSON.stringify({ schema:'gestao-fiscal.contratos.v1',generatedAt:nowISO(),count:rows.length,favorites:contractsFavorites(),contracts:rows,sources:window.GESTAO_FISCAL_CONTRACT_SOURCES || {},meta:window.GESTAO_FISCAL_CONTRACTS_META || {} },null,2)); audit('Catálogo de contratos exportado',rows.length + ' modelo(s)'); toast('Catálogo exportado',rows.length + ' modelo(s) foram incluídos no JSON.');
+  }
+  function downloadContractsPack() {
+    var rows = contractsFiltered(); if (!rows.length) { toast('Nada para baixar','A consulta atual não possui modelos.','warning'); return; }
+    if (rows.length > 80 && !window.confirm('O pacote contém ' + rows.length + ' modelos e pode gerar um arquivo grande. Continuar?')) return;
+    var style = '<style>body{font-family:Arial,sans-serif;color:#17212f;margin:28px}.document{page-break-after:always}.document:last-child{page-break-after:auto}.document>header{text-align:center;border-bottom:2px solid #002c6b}.document h1{font-size:19px}.parties{background:#f2f4f7;padding:10px}.clause{text-align:justify}.signatures{display:flex;gap:30px;margin-top:50px}.signatures div{flex:1;border-top:1px solid #333;text-align:center}.document aside{background:#fff8df;padding:9px}.document footer{font-size:9px;color:#656d78}</style>';
+    var documents = rows.map(function (item) { return contractDocumentHtml(item,contractDefaultDraft(item),true); }).join('');
+    downloadFile('pacote-modelos-contratos-' + todayISO() + '.doc','\uFEFF<!doctype html><html><head><meta charset="utf-8">' + style + '</head><body>' + documents + '</body></html>','application/msword;charset=utf-8'); audit('Pacote de contratos baixado',rows.length + ' modelo(s)'); toast('Pacote gerado',rows.length + ' contratos foram reunidos em DOC.');
+  }
+  function openCustomContractForm() {
+    if (!isAdmin()) { toast('Acesso de consulta','Somente administradores podem criar modelos próprios.','warning'); return; }
+    var body = '<form id="custom-contract-form"><div class="form-grid"><label class="field"><span>Título *</span><input id="custom-contract-title" required></label><label class="field"><span>Categoria *</span><select id="custom-contract-category"><option>Contratos Trabalhistas</option><option>Contratos Comerciais</option><option>Contratos Societários</option></select></label><label class="field"><span>Assunto *</span><input id="custom-contract-group" placeholder="Ex.: Contratos internos" required></label><label class="field"><span>Referência</span><input id="custom-contract-source" placeholder="Política interna ou norma"></label></div><label class="field"><span>Descrição</span><textarea id="custom-contract-description" rows="2"></textarea></label><label class="field"><span>Cláusulas iniciais *</span><textarea id="custom-contract-clauses" rows="12" required>CLÁUSULA 1ª — OBJETO. Descreva o objeto do contrato.\n\nCLÁUSULA 2ª — PRAZO E VALOR. Defina vigência, valor e pagamento.\n\nCLÁUSULA 3ª — OBRIGAÇÕES. Defina as obrigações das partes.\n\nCLÁUSULA 4ª — RESCISÃO E FORO. Defina encerramento e solução de controvérsias.</textarea></label></form>';
+    openModal('Novo modelo de contrato do escritório',body,'<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="contracts-save-custom">▣ Criar modelo</button>');
+  }
+  function saveCustomContract() {
+    var form = $('#custom-contract-form'); if (!form || !form.reportValidity() || !isAdmin()) return; if (!Array.isArray(state.settings.customContractTemplates)) state.settings.customContractTemplates = [];
+    var category = $('#custom-contract-category').value, item = { id:'custom-contract-' + Date.now(),title:$('#custom-contract-title').value.trim(),category:category,group:$('#custom-contract-group').value.trim(),template:category === 'Contratos Societários' ? 'limited-company' : category === 'Contratos Trabalhistas' ? 'employment' : 'services',sourceCode:'INTERNO',source:$('#custom-contract-source').value.trim() || 'Modelo interno do escritório',sourceUrl:'#',description:$('#custom-contract-description').value.trim() || 'Modelo contratual próprio e editável.',updated:TODAY,keywords:'modelo interno',custom:true,defaultClauses:$('#custom-contract-clauses').value.trim() };
+    state.settings.customContractTemplates.push(item); contractDrafts()[item.id] = Object.assign(contractDefaultDraft(item),{ clausesText:item.defaultClauses }); storageSet(KEYS.settings,state.settings); audit('Modelo de contrato criado',item.title); closeModal(); route(); toast('Modelo criado',item.title + ' foi adicionado à biblioteca.');
+  }
+
+  var MEI_CONTROL_MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+  var MEI_CONTROL_REVENUE_ACCOUNTS = ['Venda dinheiro', 'Vendas PIX', 'Vendas cartão de débito', 'Vendas cartão de crédito', 'Vendas cartão de crédito parcelado', 'Vendas boleto'];
+  var MEI_CONTROL_EXPENSE_GROUPS = [
+    { key: 'locacao', label: 'Locação', accounts: ['Água', 'Aluguel', 'Condomínio', 'Consertos / Manutenção', 'Energia', 'Financiamento da loja', 'Funcionário', 'Gás', 'Internet', 'IPTU', 'Telefone / Celular', 'Outros'] },
+    { key: 'materia-prima', label: 'Matéria-prima', accounts: ['Embalagens', 'Insumos', 'Materiais gráficos', 'Outros'] },
+    { key: 'entregas', label: 'Entregas', accounts: ['Combustível', 'Logística', 'Meio de transporte'] },
+    { key: 'outros', label: 'Outros', accounts: ['Equipamentos do dia a dia', 'Impostos', 'Mensalidade de plataformas online', 'Publicidade'] }
+  ];
+  var MEI_CONTROL_COLORS = ['#003685', '#2c6fd6', '#e38a21', '#8b62c7', '#d14d5a', '#5f6e82', '#d3aa26'];
+
+  function meiControlStore() {
+    if (!state.settings.meiControl || !Array.isArray(state.settings.meiControl.entries)) {
+      var demoClient = state.clients.some(function (client) { return client.id === 'cli-ime-03'; }) ? 'cli-ime-03' : state.selectedClientId;
+      state.settings.meiControl = {
+        version: 1,
+        ui: { clientId: demoClient || 'all', year: '2026', month: '', view: 'dashboard', query: '' },
+        entries: [
+          { id: 'mei-receita-demo-1', type: 'revenue', date: '2026-01-08', account: 'Venda dinheiro', counterparty: 'Exemplo 1', gross: 30, feeRate: 0, clientId: demoClient, notes: 'Lançamento demonstrativo da planilha.', createdAt: '2026-01-08T12:00:00-03:00' },
+          { id: 'mei-receita-demo-2', type: 'revenue', date: '2026-06-10', account: 'Vendas cartão de débito', counterparty: 'Exemplo 2', gross: 50, feeRate: 0, clientId: demoClient, notes: 'Lançamento demonstrativo da planilha.', createdAt: '2026-06-10T12:00:00-03:00' },
+          { id: 'mei-receita-demo-3', type: 'revenue', date: '2026-01-16', account: 'Vendas cartão de crédito', counterparty: 'Exemplo 3', gross: 20, feeRate: 0, clientId: demoClient, notes: 'Lançamento demonstrativo da planilha.', createdAt: '2026-01-16T12:00:00-03:00' },
+          { id: 'mei-receita-demo-4', type: 'revenue', date: '2026-02-04', account: 'Vendas cartão de crédito parcelado', counterparty: 'Exemplo 4', gross: 20, feeRate: 0, clientId: demoClient, notes: 'Lançamento demonstrativo da planilha.', createdAt: '2026-02-04T12:00:00-03:00' },
+          { id: 'mei-despesa-demo-1', type: 'expense', date: '2026-01-12', group: 'materia-prima', account: 'Insumos', counterparty: 'Exemplo A', amount: 600, clientId: demoClient, notes: 'Lançamento demonstrativo da planilha.', createdAt: '2026-01-12T12:00:00-03:00' },
+          { id: 'mei-despesa-demo-2', type: 'expense', date: '2026-03-06', group: 'locacao', account: 'Aluguel', counterparty: 'Exemplo B', amount: 400, clientId: demoClient, notes: 'Lançamento demonstrativo da planilha.', createdAt: '2026-03-06T12:00:00-03:00' },
+          { id: 'mei-despesa-demo-3', type: 'expense', date: '2026-06-15', group: 'outros', account: 'Impostos', counterparty: 'Exemplo C', amount: 500, clientId: demoClient, notes: 'Lançamento demonstrativo da planilha.', createdAt: '2026-06-15T12:00:00-03:00' }
+        ]
+      };
+      storageSet(KEYS.settings, state.settings);
+    }
+    if (!state.settings.meiControl.ui) state.settings.meiControl.ui = { clientId: state.selectedClientId || 'all', year: '2026', month: '', view: 'dashboard', query: '' };
+    return state.settings.meiControl;
+  }
+  function meiControlUi() {
+    var ui = meiControlStore().ui;
+    if (['dashboard', 'revenue', 'expense', 'flow'].indexOf(ui.view) < 0) ui.view = 'dashboard';
+    return ui;
+  }
+  function meiEntryNet(entry) {
+    if (entry.type !== 'revenue') return Math.max(0, Number(entry.amount || 0));
+    var gross = Math.max(0, Number(entry.gross || 0));
+    var fee = Math.min(100, Math.max(0, Number(entry.feeRate || 0)));
+    return gross - gross * fee / 100;
+  }
+  function meiEntryMonth(entry) { return Number(String(entry.date || '').slice(5, 7)) || 0; }
+  function meiEntryYear(entry) { return String(entry.date || '').slice(0, 4); }
+  function meiExpenseGroup(key) { return MEI_CONTROL_EXPENSE_GROUPS.find(function (group) { return group.key === key; }) || MEI_CONTROL_EXPENSE_GROUPS[3]; }
+  function meiClientName(id) {
+    var client = state.clients.find(function (item) { return item.id === id; });
+    return client ? client.name : 'Cliente não localizado';
+  }
+  function meiYearEntries() {
+    var store = meiControlStore(), ui = meiControlUi();
+    return store.entries.filter(function (entry) {
+      return meiEntryYear(entry) === String(ui.year || '2026') && (ui.clientId === 'all' || !ui.clientId || entry.clientId === ui.clientId);
+    });
+  }
+  function meiScopeEntries() {
+    var ui = meiControlUi();
+    return meiYearEntries().filter(function (entry) { return !ui.month || meiEntryMonth(entry) === Number(ui.month); });
+  }
+  function meiVisibleEntries(type) {
+    var query = String(meiControlUi().query || '').trim().toLocaleLowerCase('pt-BR');
+    return meiScopeEntries().filter(function (entry) {
+      var matchesType = !type || entry.type === type;
+      var haystack = [entry.account, entry.counterparty, entry.notes, meiClientName(entry.clientId), entry.group ? meiExpenseGroup(entry.group).label : ''].join(' ').toLocaleLowerCase('pt-BR');
+      return matchesType && (!query || haystack.indexOf(query) >= 0);
+    }).sort(function (a, b) { return String(b.date || '').localeCompare(String(a.date || '')) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')); });
+  }
+  function meiSummary(entries) {
+    var result = { revenueGross: 0, revenueNet: 0, expenses: 0, balance: 0, margin: 0, count: entries.length };
+    entries.forEach(function (entry) {
+      if (entry.type === 'revenue') { result.revenueGross += Number(entry.gross || 0); result.revenueNet += meiEntryNet(entry); }
+      else result.expenses += meiEntryNet(entry);
+    });
+    result.balance = result.revenueNet - result.expenses;
+    result.margin = result.revenueNet ? result.balance / result.revenueNet * 100 : 0;
+    return result;
+  }
+  function meiMonthlySeries(entries) {
+    var series = MEI_CONTROL_MONTHS.map(function (month, index) { return { month: month, short: month.slice(0, 3), number: index + 1, revenueGross: 0, revenue: 0, expense: 0, balance: 0 }; });
+    entries.forEach(function (entry) {
+      var month = series[meiEntryMonth(entry) - 1];
+      if (!month) return;
+      if (entry.type === 'revenue') { month.revenueGross += Number(entry.gross || 0); month.revenue += meiEntryNet(entry); }
+      else month.expense += meiEntryNet(entry);
+    });
+    series.forEach(function (month) { month.balance = month.revenue - month.expense; });
+    return series;
+  }
+  function meiDistribution(entries, type) {
+    var values = {};
+    entries.filter(function (entry) { return entry.type === type; }).forEach(function (entry) {
+      var label = type === 'revenue' ? entry.account : meiExpenseGroup(entry.group).label;
+      values[label] = (values[label] || 0) + meiEntryNet(entry);
+    });
+    return Object.keys(values).map(function (label) { return { label: label, value: values[label] }; }).sort(function (a, b) { return b.value - a.value; });
+  }
+  function meiPeriodLabel() {
+    var ui = meiControlUi();
+    return (ui.month ? MEI_CONTROL_MONTHS[Number(ui.month) - 1] + ' de ' : 'Ano de ') + ui.year;
+  }
+  function meiYearOptions() {
+    var options = [];
+    for (var year = 2023; year <= 2050; year += 1) options.push('<option value="' + year + '"' + (String(year) === String(meiControlUi().year) ? ' selected' : '') + '>' + year + '</option>');
+    return options.join('');
+  }
+  function meiMonthOptions() {
+    return '<option value="">Todos os meses</option>' + MEI_CONTROL_MONTHS.map(function (month, index) { return '<option value="' + (index + 1) + '"' + (Number(meiControlUi().month) === index + 1 ? ' selected' : '') + '>' + month + '</option>'; }).join('');
+  }
+  function meiClientOptions(selected, includeAll) {
+    return (includeAll ? '<option value="all"' + (selected === 'all' ? ' selected' : '') + '>Todos os clientes</option>' : '') + state.clients.map(function (client) { return '<option value="' + esc(client.id) + '"' + (client.id === selected ? ' selected' : '') + '>' + esc(client.name) + '</option>'; }).join('');
+  }
+  function meiViewTabs() {
+    var active = meiControlUi().view;
+    return '<div class="mei-view-tabs" role="tablist" aria-label="Áreas do controle financeiro">' + [
+      ['dashboard', '▦', 'Dashboard'], ['revenue', '↗', 'Receitas'], ['expense', '↘', 'Despesas'], ['flow', '⇄', 'Fluxo mensal']
+    ].map(function (item) { return '<button role="tab" aria-selected="' + (active === item[0] ? 'true' : 'false') + '" class="' + (active === item[0] ? 'active' : '') + '" data-action="mei-view" data-view="' + item[0] + '"><span>' + item[1] + '</span>' + item[2] + '</button>'; }).join('') + '</div>';
+  }
+  function renderMeiKpis(summary) {
+    var marginClass = summary.balance >= 0 ? 'positive' : 'negative';
+    return '<section class="mei-kpis" aria-label="Indicadores financeiros"><article><span class="revenue">↗</span><div><small>Receita líquida</small><strong>' + money(summary.revenueNet) + '</strong><em>Bruta: ' + money(summary.revenueGross) + '</em></div></article><article><span class="expense">↘</span><div><small>Despesas</small><strong>' + money(summary.expenses) + '</strong><em>No período filtrado</em></div></article><article><span class="' + marginClass + '">＝</span><div><small>Saldo</small><strong class="' + marginClass + '">' + money(summary.balance) + '</strong><em>Receitas menos despesas</em></div></article><article><span class="' + marginClass + '">%</span><div><small>Margem</small><strong class="' + marginClass + '">' + summary.margin.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%</strong><em>Sobre a receita líquida</em></div></article><article><span>▤</span><div><small>Lançamentos</small><strong>' + summary.count + '</strong><em>Receitas e despesas</em></div></article></section>';
+  }
+  function renderMeiDistribution(entries, type) {
+    var items = meiDistribution(entries, type), total = items.reduce(function (sum, item) { return sum + item.value; }, 0), cursor = 0;
+    var gradient = items.length && total ? 'conic-gradient(' + items.map(function (item, index) { var start = cursor; cursor += item.value / total * 100; return MEI_CONTROL_COLORS[index % MEI_CONTROL_COLORS.length] + ' ' + start.toFixed(2) + '% ' + cursor.toFixed(2) + '%'; }).join(',') + ')' : '#e7ebef';
+    var list = items.length ? items.map(function (item, index) { var percentage = total ? item.value / total * 100 : 0; return '<li><i style="background:' + MEI_CONTROL_COLORS[index % MEI_CONTROL_COLORS.length] + '"></i><span><b>' + esc(item.label) + '</b><small>' + money(item.value) + '</small></span><em>' + percentage.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%</em></li>'; }).join('') : '<li class="mei-distribution-empty">Nenhum valor lançado neste período.</li>';
+    return '<section class="card mei-distribution-card"><header class="card-header"><div><h2>' + (type === 'revenue' ? '↗ Receitas por meio de pagamento' : '↘ Despesas por grupo') + '</h2><small>' + meiControlUi().year + ' · valores líquidos</small></div><strong>' + money(total) + '</strong></header><div class="card-body mei-distribution-body"><div class="mei-donut" style="background:' + gradient + '"><span><small>Total</small><b>' + money(total) + '</b></span></div><ul>' + list + '</ul></div></section>';
+  }
+  function renderMeiChartCards() {
+    return '<div class="mei-chart-grid"><section class="card mei-chart-card"><header class="card-header"><div><h2>▥ Receitas × despesas</h2><small>Comparativo mensal do ano selecionado</small></div><span class="mei-chart-legend"><i class="revenue"></i>Receitas <i class="expense"></i>Despesas</span></header><div class="mei-chart-body"><canvas id="mei-overview-chart" role="img" aria-label="Gráfico mensal de receitas e despesas"></canvas></div></section><section class="card mei-chart-card"><header class="card-header"><div><h2>⌁ Resultado mensal</h2><small>Saldo líquido de cada mês</small></div><span class="tag tag--info">Atualização instantânea</span></header><div class="mei-chart-body"><canvas id="mei-balance-chart" role="img" aria-label="Gráfico do saldo financeiro mensal"></canvas></div></section></div>';
+  }
+  function meiTransactionRows(entries, limit) {
+    var shown = typeof limit === 'number' ? entries.slice(0, limit) : entries;
+    return shown.map(function (entry) {
+      var isRevenue = entry.type === 'revenue', gross = isRevenue ? Number(entry.gross || 0) : Number(entry.amount || 0), fee = isRevenue ? gross - meiEntryNet(entry) : 0;
+      return '<tr><td>' + dateBR(entry.date) + '</td><td><span class="tag ' + (isRevenue ? 'tag--success' : 'tag--danger') + '">' + (isRevenue ? 'Receita' : 'Despesa') + '</span></td><td><b>' + esc(entry.account || '—') + '</b><small class="mei-table-note">' + (isRevenue ? 'Meio de pagamento' : esc(meiExpenseGroup(entry.group).label)) + '</small></td><td>' + esc(entry.counterparty || '—') + '<small class="mei-table-note">' + esc(meiClientName(entry.clientId)) + '</small></td><td>' + money(gross) + '</td><td>' + (isRevenue && fee ? '-' + money(fee) + ' (' + Number(entry.feeRate || 0).toLocaleString('pt-BR') + '%)' : '—') + '</td><td><strong class="' + (isRevenue ? 'mei-money-positive' : 'mei-money-negative') + '">' + (isRevenue ? '+' : '-') + money(meiEntryNet(entry)) + '</strong></td><td><div class="row-actions"><button class="row-button" data-action="mei-edit-entry" data-id="' + esc(entry.id) + '" title="Editar lançamento">✎</button><button class="row-button" data-action="mei-delete-entry" data-id="' + esc(entry.id) + '" title="Excluir lançamento">×</button></div></td></tr>';
+    }).join('');
+  }
+  function renderMeiTransactions(type, limit, title) {
+    var entries = meiVisibleEntries(type), rows = meiTransactionRows(entries, limit);
+    return '<section class="card mei-transactions-card" id="mei-transactions-region"><header class="card-header"><div><h2>▤ ' + esc(title || 'Lançamentos') + '</h2><small>' + entries.length + ' registro(s) encontrado(s)</small></div>' + (type ? '<button class="primary-button" data-action="mei-new-entry" data-type="' + type + '">＋ ' + (type === 'revenue' ? 'Nova receita' : 'Nova despesa') + '</button>' : '') + '</header><div class="table-wrap"><table class="data-table mei-ledger-table"><thead><tr><th>Data</th><th>Tipo</th><th>Conta</th><th>Cliente / fornecedor</th><th>Valor bruto</th><th>Taxa</th><th>Valor líquido</th><th>Ações</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty-state"><i>▤</i><h3>Nenhum lançamento encontrado</h3><p>Use os botões de receita e despesa para iniciar o controle financeiro.</p></div></td></tr>') + '</tbody></table></div>' + (typeof limit === 'number' && entries.length > limit ? '<footer class="mei-card-footer"><span>Exibindo os ' + limit + ' lançamentos mais recentes</span><button class="link-button" data-action="mei-view" data-view="' + (entries[0] && entries[0].type === 'expense' ? 'expense' : 'revenue') + '">Ver todos →</button></footer>' : '') + '</section>';
+  }
+  function renderMeiFlowTable() {
+    var series = meiMonthlySeries(meiYearEntries()), totals = series.reduce(function (sum, month) { sum.revenueGross += month.revenueGross; sum.revenue += month.revenue; sum.expense += month.expense; sum.balance += month.balance; return sum; }, { revenueGross: 0, revenue: 0, expense: 0, balance: 0 });
+    var rows = series.map(function (month) { return '<tr><td><b>' + month.month + '</b></td><td>' + money(month.revenueGross) + '</td><td class="mei-money-positive">' + money(month.revenue) + '</td><td class="mei-money-negative">' + money(month.expense) + '</td><td class="' + (month.balance >= 0 ? 'mei-money-positive' : 'mei-money-negative') + '"><strong>' + money(month.balance) + '</strong></td></tr>'; }).join('');
+    return '<section class="card mei-flow-card"><header class="card-header"><div><h2>⇄ Fluxo mensal de ' + esc(meiControlUi().year) + '</h2><small>Receita bruta, taxas, receita líquida, despesas e saldo</small></div><span class="tag tag--success">12 meses</span></header><div class="table-wrap"><table class="data-table mei-flow-table"><thead><tr><th>Mês</th><th>Receita bruta</th><th>Receita líquida</th><th>Despesas</th><th>Saldo</th></tr></thead><tbody>' + rows + '</tbody><tfoot><tr><td>Total do ano</td><td>' + money(totals.revenueGross) + '</td><td>' + money(totals.revenue) + '</td><td>' + money(totals.expense) + '</td><td class="' + (totals.balance >= 0 ? 'mei-money-positive' : 'mei-money-negative') + '">' + money(totals.balance) + '</td></tr></tfoot></table></div></section>';
+  }
+  function renderMeiControlContent() {
+    var ui = meiControlUi(), yearEntries = meiYearEntries();
+    if (ui.view === 'revenue') return '<div class="mei-analysis-grid">' + renderMeiDistribution(yearEntries, 'revenue') + '<section class="card mei-guide-card"><header class="card-header"><h2>✓ Controle de receitas</h2></header><div class="card-body"><p>Registre o meio de pagamento, o valor bruto e a taxa. O valor líquido é calculado automaticamente e alimenta todos os painéis.</p><button class="primary-button" data-action="mei-new-entry" data-type="revenue">＋ Cadastrar receita</button></div></section></div>' + renderMeiTransactions('revenue', null, 'Receitas');
+    if (ui.view === 'expense') return '<div class="mei-analysis-grid">' + renderMeiDistribution(yearEntries, 'expense') + '<section class="card mei-guide-card"><header class="card-header"><h2>✓ Controle de despesas</h2></header><div class="card-body"><p>As despesas seguem os grupos da planilha: locação, matéria-prima, entregas e outros. Cada lançamento atualiza o saldo imediatamente.</p><button class="primary-button" data-action="mei-new-entry" data-type="expense">＋ Cadastrar despesa</button></div></section></div>' + renderMeiTransactions('expense', null, 'Despesas');
+    if (ui.view === 'flow') return renderMeiChartCards() + renderMeiFlowTable();
+    return renderMeiChartCards() + '<div class="mei-analysis-grid">' + renderMeiDistribution(yearEntries, 'revenue') + renderMeiDistribution(yearEntries, 'expense') + '</div>' + renderMeiTransactions('', 8, 'Movimentações recentes');
+  }
+  function renderMeiControl() {
+    var ui = meiControlUi(), summary = meiSummary(meiScopeEntries()), yearSummary = meiSummary(meiYearEntries());
+    var clientOptions = meiClientOptions(ui.clientId || 'all', true);
+    return [
+      '<div class="mei-control-page" id="mei-control-page">',
+      pageHeading('Controle de MEI', 'Receitas, despesas, fluxo mensal e gráficos integrados ao cadastro de clientes.', '<div class="page-actions"><button class="secondary-button" data-action="mei-export-json">↧ JSON</button><button class="secondary-button" data-action="mei-export-csv">↧ CSV</button><button class="primary-button" data-action="mei-new-entry" data-type="revenue">＋ Receita</button><button class="primary-button mei-expense-button" data-action="mei-new-entry" data-type="expense">＋ Despesa</button></div>'),
+      '<section class="mei-control-hero"><div><span class="eyebrow eyebrow--light">Controle financeiro do microempreendedor</span><h2>Seu caixa mensal, organizado em um só painel.</h2><p>Os dados seguem a estrutura da planilha enviada e permanecem salvos na plataforma. Cadastre uma movimentação e veja totais, fluxo e gráficos atualizados na mesma hora.</p><div class="mei-hero-tags"><span>✓ Dados persistentes</span><span>✓ Cálculo líquido automático</span><span>✓ Visão por cliente</span></div></div><div class="mei-hero-balance"><small>Saldo anual · ' + esc(ui.year) + '</small><strong class="' + (yearSummary.balance >= 0 ? 'positive' : 'negative') + '">' + money(yearSummary.balance) + '</strong><span>' + yearSummary.count + ' lançamento(s) no ano</span></div></section>',
+      '<section class="card mei-filter-card"><div class="mei-filters"><label class="filter-field"><span>Cliente</span><select id="mei-client-filter">' + clientOptions + '</select></label><label class="filter-field"><span>Ano</span><select id="mei-year-filter">' + meiYearOptions() + '</select></label><label class="filter-field"><span>Mês dos indicadores</span><select id="mei-month-filter">' + meiMonthOptions() + '</select></label><label class="filter-field mei-query-field"><span>Pesquisar lançamentos</span><input id="mei-query" value="' + esc(ui.query || '') + '" placeholder="Conta, cliente ou fornecedor"></label><button class="secondary-button" data-action="mei-clear-filters">Limpar filtros</button></div></section>',
+      meiViewTabs(),
+      '<div class="info-banner mei-period-banner"><span>◷</span><div><strong>' + esc(meiPeriodLabel()) + '.</strong> Os indicadores abaixo consideram ' + summary.count + ' lançamento(s). Os gráficos e o fluxo mantêm a visão completa do ano para facilitar a comparação mensal.</div></div>',
+      renderMeiKpis(summary),
+      renderMeiControlContent(),
+      '</div>'
+    ].join('');
+  }
+  function refreshMeiControl(keepScroll, refocusQuery) {
+    var main = $('#main-content');
+    if (!main || state.route !== 'controle-mei') return;
+    var scroll = window.scrollY;
+    main.innerHTML = renderMeiControl();
+    bindViewControls();
+    if (keepScroll) window.scrollTo(0, scroll);
+    if (refocusQuery) { var query = $('#mei-query'); if (query) { query.focus(); query.setSelectionRange(query.value.length, query.value.length); } }
+  }
+  function meiExpenseAccountOptions(selectedGroup, selectedAccount) {
+    return MEI_CONTROL_EXPENSE_GROUPS.map(function (group) { return '<optgroup label="' + esc(group.label) + '">' + group.accounts.map(function (account) { var value = group.key + '|' + account; return '<option value="' + esc(value) + '"' + (group.key === selectedGroup && account === selectedAccount ? ' selected' : '') + '>' + esc(account) + '</option>'; }).join('') + '</optgroup>'; }).join('');
+  }
+  function openMeiEntryForm(type, id) {
+    var store = meiControlStore(), existing = store.entries.find(function (entry) { return entry.id === id; });
+    var entryType = existing ? existing.type : (type === 'expense' ? 'expense' : 'revenue');
+    var entry = existing || { id: '', type: entryType, date: todayISO(), account: entryType === 'revenue' ? MEI_CONTROL_REVENUE_ACCOUNTS[0] : MEI_CONTROL_EXPENSE_GROUPS[0].accounts[0], group: entryType === 'expense' ? MEI_CONTROL_EXPENSE_GROUPS[0].key : '', counterparty: '', gross: 0, amount: 0, feeRate: 0, clientId: meiControlUi().clientId === 'all' ? state.selectedClientId : meiControlUi().clientId, notes: '' };
+    var accountOptions = entryType === 'revenue' ? MEI_CONTROL_REVENUE_ACCOUNTS.map(function (account) { return '<option' + (account === entry.account ? ' selected' : '') + '>' + esc(account) + '</option>'; }).join('') : meiExpenseAccountOptions(entry.group, entry.account);
+    var value = entryType === 'revenue' ? Number(entry.gross || 0) : Number(entry.amount || 0);
+    var body = '<form id="mei-entry-form"><input id="mei-entry-id" type="hidden" value="' + esc(entry.id) + '"><input id="mei-entry-type" type="hidden" value="' + entryType + '"><div class="mei-entry-kind ' + entryType + '"><span>' + (entryType === 'revenue' ? '↗' : '↘') + '</span><div><b>' + (entryType === 'revenue' ? 'Receita' : 'Despesa') + '</b><small>' + (entryType === 'revenue' ? 'Entrada financeira e meio de pagamento' : 'Saída financeira e grupo da despesa') + '</small></div></div><div class="form-grid"><label class="field"><span>Data *</span><input id="mei-entry-date" data-mei-entry-input type="date" value="' + esc(entry.date) + '" required></label><label class="field"><span>Cliente da plataforma *</span><select id="mei-entry-client" required>' + meiClientOptions(entry.clientId || state.selectedClientId, false) + '</select></label><label class="field"><span>' + (entryType === 'revenue' ? 'Meio de pagamento' : 'Conta / categoria') + ' *</span><select id="mei-entry-account" required>' + accountOptions + '</select></label><label class="field"><span>' + (entryType === 'revenue' ? 'Cliente / pagador' : 'Fornecedor') + '</span><input id="mei-entry-counterparty" value="' + esc(entry.counterparty || '') + '" maxlength="120" placeholder="Nome para identificação"></label><label class="field"><span>' + (entryType === 'revenue' ? 'Valor bruto (R$)' : 'Valor da despesa (R$)') + ' *</span><input id="mei-entry-value" data-mei-entry-input type="number" min="0.01" step="0.01" value="' + value + '" required></label>' + (entryType === 'revenue' ? '<label class="field"><span>Taxa do meio de pagamento (%)</span><input id="mei-entry-fee" data-mei-entry-input type="number" min="0" max="100" step="0.01" value="' + Number(entry.feeRate || 0) + '"></label>' : '') + '<label class="field field--full"><span>Observações</span><textarea id="mei-entry-notes" maxlength="600" placeholder="Detalhes do lançamento">' + esc(entry.notes || '') + '</textarea></label></div><div class="mei-entry-preview"><div><small>Valor informado</small><b id="mei-entry-preview-gross">' + money(value) + '</b></div><div><small>' + (entryType === 'revenue' ? 'Taxa descontada' : 'Classificação') + '</small><b id="mei-entry-preview-fee">' + (entryType === 'revenue' ? money(value - meiEntryNet(entry)) : esc(meiExpenseGroup(entry.group).label)) + '</b></div><div><small>' + (entryType === 'revenue' ? 'Receita líquida' : 'Despesa total') + '</small><strong id="mei-entry-preview-net">' + money(entryType === 'revenue' ? meiEntryNet(entry) : value) + '</strong></div></div></form>';
+    openModal(existing ? 'Editar lançamento do MEI' : (entryType === 'revenue' ? 'Cadastrar receita' : 'Cadastrar despesa'), body, '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="mei-save-entry">▣ Salvar lançamento</button>');
+    var form = $('#mei-entry-form');
+    if (form) form.addEventListener('submit', function (event) { event.preventDefault(); saveMeiEntry(); });
+    updateMeiEntryPreview();
+  }
+  function updateMeiEntryPreview() {
+    var form = $('#mei-entry-form');
+    if (!form) return;
+    var type = $('#mei-entry-type').value, value = Math.max(0, Number($('#mei-entry-value').value || 0)), feeRate = type === 'revenue' && $('#mei-entry-fee') ? Math.min(100, Math.max(0, Number($('#mei-entry-fee').value || 0))) : 0, fee = value * feeRate / 100, net = value - fee;
+    $('#mei-entry-preview-gross').textContent = money(value);
+    $('#mei-entry-preview-fee').textContent = type === 'revenue' ? money(fee) : meiExpenseGroup(String($('#mei-entry-account').value || '').split('|')[0]).label;
+    $('#mei-entry-preview-net').textContent = money(net);
+  }
+  function saveMeiEntry() {
+    var form = $('#mei-entry-form');
+    if (!form || !form.reportValidity()) return;
+    var store = meiControlStore(), id = $('#mei-entry-id').value, type = $('#mei-entry-type').value, value = Math.max(0, Number($('#mei-entry-value').value || 0));
+    if (!value) { toast('Informe um valor válido', 'O lançamento precisa ser maior do que zero.', 'error'); return; }
+    var accountValue = $('#mei-entry-account').value, accountParts = accountValue.split('|'), existing = store.entries.find(function (entry) { return entry.id === id; });
+    var payload = { type: type, date: $('#mei-entry-date').value, clientId: $('#mei-entry-client').value, counterparty: $('#mei-entry-counterparty').value.trim(), notes: $('#mei-entry-notes').value.trim(), updatedAt: nowISO() };
+    if (type === 'revenue') Object.assign(payload, { account: accountValue, group: '', gross: value, feeRate: Math.min(100, Math.max(0, Number($('#mei-entry-fee').value || 0))), amount: 0 });
+    else Object.assign(payload, { group: accountParts[0], account: accountParts.slice(1).join('|'), amount: value, gross: 0, feeRate: 0 });
+    if (existing) Object.assign(existing, payload);
+    else store.entries.unshift(Object.assign({ id: uid('mei'), createdAt: nowISO() }, payload));
+    persist();
+    audit(existing ? 'Lançamento do MEI atualizado' : 'Lançamento do MEI cadastrado', (type === 'revenue' ? 'Receita' : 'Despesa') + ' · ' + payload.account + ' · ' + money(type === 'revenue' ? meiEntryNet(payload) : payload.amount));
+    closeModal();
+    refreshMeiControl(true);
+    toast(existing ? 'Lançamento atualizado' : 'Lançamento cadastrado', 'O fluxo mensal, os indicadores e os gráficos foram recalculados.');
+  }
+  function deleteMeiEntry(id) {
+    var store = meiControlStore(), entry = store.entries.find(function (item) { return item.id === id; });
+    if (!entry || !window.confirm('Excluir este lançamento de ' + money(meiEntryNet(entry)) + '?')) return;
+    store.entries = store.entries.filter(function (item) { return item.id !== id; });
+    persist(); audit('Lançamento do MEI excluído', entry.account + ' · ' + money(meiEntryNet(entry))); refreshMeiControl(true); toast('Lançamento excluído', 'Os totais e os gráficos foram atualizados.', 'warning');
+  }
+  function meiCsvCell(value) { return '"' + String(value == null ? '' : value).replace(/"/g, '""') + '"'; }
+  function exportMeiControl(format) {
+    var ui = meiControlUi(), entries = meiScopeEntries(), summary = meiSummary(entries), monthly = meiMonthlySeries(meiYearEntries());
+    if (format === 'json') {
+      downloadFile('controle-mei-' + ui.year + '-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.controle-mei.v1', exportedAt: nowISO(), filters: ui, summary: summary, monthlyFlow: monthly, entries: entries }, null, 2));
+    } else {
+      var rows = [['Data', 'Tipo', 'Cliente da plataforma', 'Grupo', 'Conta', 'Cliente/Fornecedor', 'Valor bruto', 'Taxa %', 'Valor líquido', 'Observações']].concat(entries.map(function (entry) { return [entry.date, entry.type === 'revenue' ? 'Receita' : 'Despesa', meiClientName(entry.clientId), entry.type === 'expense' ? meiExpenseGroup(entry.group).label : '', entry.account, entry.counterparty || '', entry.type === 'revenue' ? Number(entry.gross || 0).toFixed(2) : Number(entry.amount || 0).toFixed(2), entry.type === 'revenue' ? Number(entry.feeRate || 0).toFixed(2) : '', meiEntryNet(entry).toFixed(2), entry.notes || '']; }));
+      downloadFile('controle-mei-' + ui.year + '-' + todayISO() + '.csv', '\uFEFF' + rows.map(function (row) { return row.map(meiCsvCell).join(';'); }).join('\r\n'), 'text/csv;charset=utf-8');
+    }
+    audit('Controle de MEI exportado', entries.length + ' lançamento(s) · ' + format.toUpperCase()); toast('Controle exportado', 'Foram incluídos ' + entries.length + ' lançamento(s) do período selecionado.');
+  }
+  function meiCompactMoney(value) {
+    var amount = Math.abs(Number(value || 0));
+    if (amount >= 1000000) return 'R$ ' + (amount / 1000000).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' mi';
+    if (amount >= 1000) return 'R$ ' + (amount / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' mil';
+    return money(amount);
+  }
+  function meiPrepareCanvas(id, height) {
+    var canvas = document.getElementById(id);
+    if (!canvas) return null;
+    var width = Math.max(300, Math.round(canvas.getBoundingClientRect().width || canvas.parentElement.clientWidth || 600)), ratio = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio); canvas.style.height = height + 'px';
+    var context = canvas.getContext('2d'); context.setTransform(ratio, 0, 0, ratio, 0, 0); context.clearRect(0, 0, width, height);
+    return { canvas: canvas, context: context, width: width, height: height };
+  }
+  function drawMeiOverviewChart(series) {
+    var setup = meiPrepareCanvas('mei-overview-chart', 280); if (!setup) return;
+    var ctx = setup.context, width = setup.width, height = setup.height, pad = { left: 50, right: 14, top: 22, bottom: 38 }, innerWidth = width - pad.left - pad.right, innerHeight = height - pad.top - pad.bottom;
+    var maxValue = Math.max.apply(null, series.map(function (item) { return Math.max(item.revenue, item.expense); }).concat([1]));
+    ctx.font = '10px Inter, sans-serif'; ctx.textBaseline = 'middle';
+    for (var grid = 0; grid <= 4; grid += 1) { var y = pad.top + innerHeight * grid / 4; ctx.strokeStyle = '#e2e6eb'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke(); ctx.fillStyle = '#757c85'; ctx.textAlign = 'right'; ctx.fillText(meiCompactMoney(maxValue * (1 - grid / 4)), pad.left - 7, y); }
+    var slot = innerWidth / 12, barWidth = Math.max(5, Math.min(15, slot * .28));
+    series.forEach(function (item, index) {
+      var center = pad.left + slot * index + slot / 2, revenueHeight = item.revenue / maxValue * innerHeight, expenseHeight = item.expense / maxValue * innerHeight;
+      ctx.fillStyle = '#003685'; ctx.fillRect(center - barWidth - 2, pad.top + innerHeight - revenueHeight, barWidth, revenueHeight);
+      ctx.fillStyle = '#d45b64'; ctx.fillRect(center + 2, pad.top + innerHeight - expenseHeight, barWidth, expenseHeight);
+      ctx.fillStyle = '#606975'; ctx.textAlign = 'center'; ctx.fillText(item.short, center, height - 18);
+    });
+  }
+  function drawMeiBalanceChart(series) {
+    var setup = meiPrepareCanvas('mei-balance-chart', 280); if (!setup) return;
+    var ctx = setup.context, width = setup.width, height = setup.height, pad = { left: 50, right: 16, top: 24, bottom: 38 }, innerWidth = width - pad.left - pad.right, innerHeight = height - pad.top - pad.bottom, values = series.map(function (item) { return item.balance; });
+    var minValue = Math.min.apply(null, values.concat([0])), maxValue = Math.max.apply(null, values.concat([0]));
+    if (maxValue === minValue) maxValue = minValue + 1;
+    var range = maxValue - minValue;
+    function point(index, value) { return { x: pad.left + innerWidth * index / 11, y: pad.top + (maxValue - value) / range * innerHeight }; }
+    var zeroY = point(0, 0).y;
+    ctx.strokeStyle = '#cdd3db'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(pad.left, zeroY); ctx.lineTo(width - pad.right, zeroY); ctx.stroke(); ctx.setLineDash([]);
+    var gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + innerHeight); gradient.addColorStop(0, 'rgba(0,54,133,.24)'); gradient.addColorStop(1, 'rgba(0,54,133,.02)');
+    ctx.beginPath(); series.forEach(function (item, index) { var p = point(index, item.balance); if (!index) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); }); ctx.lineTo(point(11, 0).x, zeroY); ctx.lineTo(point(0, 0).x, zeroY); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
+    ctx.beginPath(); series.forEach(function (item, index) { var p = point(index, item.balance); if (!index) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); }); ctx.strokeStyle = '#00337d'; ctx.lineWidth = 2.5; ctx.stroke();
+    series.forEach(function (item, index) { var p = point(index, item.balance); ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2); ctx.fillStyle = item.balance < 0 ? '#d34b58' : '#00337d'; ctx.fill(); ctx.fillStyle = '#606975'; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(item.short, p.x, height - 18); });
+    ctx.fillStyle = '#757c85'; ctx.textAlign = 'right'; ctx.fillText(meiCompactMoney(maxValue), pad.left - 7, pad.top); ctx.fillText(meiCompactMoney(minValue), pad.left - 7, pad.top + innerHeight);
+  }
+  function drawMeiControlCharts() { var series = meiMonthlySeries(meiYearEntries()); drawMeiOverviewChart(series); drawMeiBalanceChart(series); }
+
+  var KANBAN_COLUMNS = [
+    { id: 'novas', label: 'Novas', icon: '＋', note: 'Demandas recebidas' },
+    { id: 'andamento', label: 'Em andamento', icon: '▶', note: 'Atividades em execução' },
+    { id: 'revisao', label: 'Em revisão', icon: '⌕', note: 'Aguardando conferência' },
+    { id: 'concluidas', label: 'Concluídas', icon: '✓', note: 'Entregas finalizadas' }
+  ];
+  function kanbanCards() {
+    if (!Array.isArray(state.settings.kanbanCards)) {
+      state.settings.kanbanCards = [
+        { id: 'kanban-demo-1', title: 'Conferir NFS-e do mês', description: 'Validar documentos emitidos e possíveis divergências antes do fechamento.', column: 'novas', priority: 'Alta', responsible: 'Ana Martins', clientId: 'cli-ime-03', dueDate: '2026-08-22', createdAt: '2026-08-20T09:00:00-03:00', updatedAt: '2026-08-20T09:00:00-03:00' },
+        { id: 'kanban-demo-2', title: 'Revisar enquadramento do MEI', description: 'Conferir faturamento acumulado e risco de desenquadramento.', column: 'andamento', priority: 'Urgente', responsible: 'Carlos Nunes', clientId: 'cli-horizonte', dueDate: '2026-08-20', createdAt: '2026-08-19T14:30:00-03:00', updatedAt: '2026-08-20T08:20:00-03:00' },
+        { id: 'kanban-demo-3', title: 'Validar obrigações da folha', description: 'Revisar eSocial, DCTFWeb e FGTS Digital do período.', column: 'revisao', priority: 'Média', responsible: 'Ana Martins', clientId: 'cli-raiz', dueDate: '2026-08-24', createdAt: '2026-08-18T10:00:00-03:00', updatedAt: '2026-08-20T08:40:00-03:00' },
+        { id: 'kanban-demo-4', title: 'Atualizar cadastro empresarial', description: 'Dados cadastrais e responsável revisados.', column: 'concluidas', priority: 'Baixa', responsible: 'Rafael Costa', clientId: 'cli-studio', dueDate: '2026-08-19', createdAt: '2026-08-17T11:00:00-03:00', updatedAt: '2026-08-19T16:15:00-03:00' }
+      ];
+      storageSet(KEYS.settings, state.settings);
+    }
+    return state.settings.kanbanCards;
+  }
+  function kanbanColumn(id) {
+    return KANBAN_COLUMNS.find(function (column) { return column.id === id; }) || KANBAN_COLUMNS[0];
+  }
+  function kanbanClientName(card) {
+    var client = state.clients.find(function (item) { return item.id === card.clientId; });
+    return client ? client.name : 'Sem cliente vinculado';
+  }
+  function kanbanDeadline(card) {
+    if (!card.dueDate) return { label: 'Sem prazo', className: 'none' };
+    if (card.column === 'concluidas') return { label: 'Concluído · ' + dateBR(card.dueDate), className: 'done' };
+    var due = localDate(card.dueDate), today = localDate(todayISO());
+    if (!due || !today) return { label: dateBR(card.dueDate), className: 'none' };
+    var days = Math.round((due - today) / 86400000);
+    if (days < 0) return { label: 'Atrasado · ' + dateBR(card.dueDate), className: 'overdue' };
+    if (days === 0) return { label: 'Vence hoje', className: 'today' };
+    if (days <= 3) return { label: 'Vence em ' + days + (days === 1 ? ' dia' : ' dias'), className: 'soon' };
+    return { label: dateBR(card.dueDate), className: 'none' };
+  }
+  function kanbanColumnOptions(selected) {
+    return KANBAN_COLUMNS.map(function (column) { return '<option value="' + column.id + '"' + (column.id === selected ? ' selected' : '') + '>' + column.label + '</option>'; }).join('');
+  }
+  function renderKanbanCard(card) {
+    var deadline = kanbanDeadline(card);
+    var priorityClass = String(card.priority || 'Média').toLowerCase().replace('é', 'e');
+    return '<article class="kanban-card priority-' + priorityClass + '" draggable="true" tabindex="0" data-kanban-card data-id="' + esc(card.id) + '" aria-label="Bloco ' + esc(card.title) + '">' +
+      '<header><span class="kanban-priority">' + esc(card.priority || 'Média') + '</span><div><button class="kanban-icon-button" data-action="kanban-edit" data-id="' + esc(card.id) + '" title="Editar bloco" aria-label="Editar ' + esc(card.title) + '">✎</button><button class="kanban-icon-button danger" data-action="kanban-delete" data-id="' + esc(card.id) + '" title="Excluir bloco" aria-label="Excluir ' + esc(card.title) + '">×</button></div></header>' +
+      '<h3>' + esc(card.title) + '</h3><p>' + esc(card.description || 'Sem descrição.') + '</p>' +
+      '<div class="kanban-card-tags"><span>♟ ' + esc(kanbanClientName(card)) + '</span><span class="kanban-due ' + deadline.className + '">◷ ' + esc(deadline.label) + '</span></div>' +
+      '<footer><span class="kanban-owner"><i>' + esc(initials(card.responsible || 'SR')) + '</i><b>' + esc(card.responsible || 'Sem responsável') + '</b></span><label class="kanban-move"><span>Mover para</span><select data-kanban-move data-id="' + esc(card.id) + '" aria-label="Mover ' + esc(card.title) + '">' + kanbanColumnOptions(card.column) + '</select></label></footer>' +
+    '</article>';
+  }
+  function renderKanbanBoard() {
+    var cards = kanbanCards();
+    var completed = cards.filter(function (card) { return card.column === 'concluidas'; }).length;
+    var urgent = cards.filter(function (card) { return card.priority === 'Urgente' && card.column !== 'concluidas'; }).length;
+    var overdue = cards.filter(function (card) { return kanbanDeadline(card).className === 'overdue'; }).length;
+    var progress = cards.length ? Math.round(completed / cards.length * 100) : 0;
+    var columns = KANBAN_COLUMNS.map(function (column) {
+      var columnCards = cards.filter(function (card) { return card.column === column.id; });
+      return '<section class="kanban-column kanban-column--' + column.id + '" data-kanban-column="' + column.id + '"><header class="kanban-column-header"><span>' + column.icon + '</span><div><h2>' + column.label + '</h2><small>' + column.note + '</small></div><b>' + columnCards.length + '</b><button data-action="kanban-new" data-column="' + column.id + '" title="Adicionar bloco em ' + column.label + '" aria-label="Adicionar bloco em ' + column.label + '">＋</button></header><div class="kanban-column-body">' + (columnCards.length ? columnCards.map(renderKanbanCard).join('') : '<div class="kanban-empty"><span>＋</span><b>Nenhum bloco</b><small>Arraste uma atividade para cá ou crie uma nova.</small><button data-action="kanban-new" data-column="' + column.id + '">Adicionar bloco</button></div>') + '</div></section>';
+    }).join('');
+    return [
+      pageHeading('Quadro Kanban', 'Organize as demandas do escritório, acrescente novos blocos e mova cada atividade entre as etapas.', '<div class="page-actions"><button class="secondary-button" data-action="kanban-export">↧ Exportar JSON</button><button class="primary-button" data-action="kanban-new" data-column="novas">＋ Novo bloco</button></div>'),
+      '<div class="info-banner kanban-help"><span>↔</span><div><strong>Movimentação simples.</strong> Arraste os blocos entre as colunas no computador ou use o campo “Mover para” em qualquer dispositivo. Todas as alterações são salvas junto com os dados da plataforma.</div></div>',
+      '<section class="kanban-metrics" aria-label="Indicadores do quadro"><article><span>▦</span><div><strong>' + cards.length + '</strong><small>Blocos no quadro</small></div></article><article><span>!</span><div><strong>' + urgent + '</strong><small>Prioridades urgentes</small></div></article><article><span>◷</span><div><strong>' + overdue + '</strong><small>Atividades atrasadas</small></div></article><article><span>✓</span><div><strong>' + progress + '%</strong><small>Percentual concluído</small></div></article></section>',
+      '<div class="kanban-board" aria-label="Quadro Kanban com quatro etapas">' + columns + '</div>',
+      completed ? '<div class="kanban-footer-actions"><span>' + completed + ' bloco(s) concluído(s)</span><button class="secondary-button" data-action="kanban-clear-completed">Limpar concluídos</button></div>' : ''
+    ].join('');
+  }
+  function openKanbanForm(id, preferredColumn) {
+    var existing = kanbanCards().find(function (card) { return card.id === id; });
+    var card = existing || { id: '', title: '', description: '', column: preferredColumn || 'novas', priority: 'Média', responsible: currentUser ? currentUser.name : '', clientId: state.selectedClientId || '', dueDate: '' };
+    var clientOptions = '<option value="">Sem cliente vinculado</option>' + state.clients.map(function (client) { return '<option value="' + esc(client.id) + '"' + (client.id === card.clientId ? ' selected' : '') + '>' + esc(client.name) + '</option>'; }).join('');
+    var responsibleNames = state.users.map(function (user) { return user.name; }).concat(state.clients.map(function (client) { return client.responsible; })).filter(Boolean).filter(function (name, index, list) { return list.indexOf(name) === index; });
+    var responsibleOptions = responsibleNames.map(function (name) { return '<option value="' + esc(name) + '"></option>'; }).join('');
+    var priorityOptions = ['Baixa', 'Média', 'Alta', 'Urgente'].map(function (priority) { return '<option' + (priority === card.priority ? ' selected' : '') + '>' + priority + '</option>'; }).join('');
+    var body = '<form id="kanban-card-form"><input id="kanban-card-id" type="hidden" value="' + esc(card.id) + '"><div class="form-grid"><label class="field field--full"><span>Título do bloco *</span><input id="kanban-card-title" value="' + esc(card.title) + '" maxlength="100" required placeholder="Ex.: Conferir documentos fiscais"></label><label class="field field--full"><span>Descrição</span><textarea id="kanban-card-description" rows="3" maxlength="600" placeholder="Detalhes, documentos e pontos de atenção">' + esc(card.description) + '</textarea></label><label class="field"><span>Etapa</span><select id="kanban-card-column">' + kanbanColumnOptions(card.column) + '</select></label><label class="field"><span>Prioridade</span><select id="kanban-card-priority">' + priorityOptions + '</select></label><label class="field"><span>Responsável</span><input id="kanban-card-responsible" list="kanban-responsible-list" value="' + esc(card.responsible) + '" maxlength="80" placeholder="Nome do responsável"><datalist id="kanban-responsible-list">' + responsibleOptions + '</datalist></label><label class="field"><span>Prazo</span><input id="kanban-card-due" type="date" value="' + esc(card.dueDate) + '"></label><label class="field field--full"><span>Cliente</span><select id="kanban-card-client">' + clientOptions + '</select></label></div></form>';
+    openModal(existing ? 'Editar bloco do Kanban' : 'Adicionar novo bloco', body, '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="kanban-save">▣ Salvar bloco</button>');
+    var form = $('#kanban-card-form');
+    if (form) form.addEventListener('submit', function (event) { event.preventDefault(); saveKanbanCard(); });
+    window.setTimeout(function () { var title = $('#kanban-card-title'); if (title) title.focus(); }, 30);
+  }
+  function saveKanbanCard() {
+    var form = $('#kanban-card-form');
+    if (!form || !form.reportValidity()) return;
+    var cards = kanbanCards(), id = $('#kanban-card-id').value, existing = cards.find(function (card) { return card.id === id; });
+    var payload = { title: $('#kanban-card-title').value.trim(), description: $('#kanban-card-description').value.trim(), column: kanbanColumn($('#kanban-card-column').value).id, priority: $('#kanban-card-priority').value, responsible: $('#kanban-card-responsible').value.trim(), dueDate: $('#kanban-card-due').value, clientId: $('#kanban-card-client').value, updatedAt: nowISO() };
+    if (existing) Object.assign(existing, payload);
+    else cards.push(Object.assign({ id: uid('kanban'), createdAt: nowISO() }, payload));
+    persist(); audit(existing ? 'Bloco do Kanban editado' : 'Bloco adicionado ao Kanban', payload.title + ' · ' + kanbanColumn(payload.column).label); closeModal(); route(); toast(existing ? 'Bloco atualizado' : 'Bloco adicionado', payload.title + ' foi salvo no quadro.');
+  }
+  function moveKanbanCard(id, columnId, beforeId) {
+    var cards = kanbanCards(), index = cards.findIndex(function (card) { return card.id === id; });
+    if (index < 0) return;
+    var card = cards.splice(index, 1)[0], targetColumn = kanbanColumn(columnId);
+    card.column = targetColumn.id; card.updatedAt = nowISO();
+    var beforeIndex = beforeId ? cards.findIndex(function (item) { return item.id === beforeId; }) : -1;
+    if (beforeIndex >= 0) cards.splice(beforeIndex, 0, card); else cards.push(card);
+    persist(); audit('Bloco movido no Kanban', card.title + ' → ' + targetColumn.label); route(); toast('Bloco movido', card.title + ' agora está em “' + targetColumn.label + '”.');
+  }
+  function deleteKanbanCard(id) {
+    var cards = kanbanCards(), card = cards.find(function (item) { return item.id === id; });
+    if (!card || !window.confirm('Excluir o bloco “' + card.title + '”?')) return;
+    state.settings.kanbanCards = cards.filter(function (item) { return item.id !== id; }); persist(); audit('Bloco excluído do Kanban', card.title); route(); toast('Bloco excluído', card.title + ' foi removido.');
+  }
+  function clearCompletedKanban() {
+    var completed = kanbanCards().filter(function (card) { return card.column === 'concluidas'; });
+    if (!completed.length || !window.confirm('Remover todos os ' + completed.length + ' bloco(s) concluído(s)?')) return;
+    state.settings.kanbanCards = kanbanCards().filter(function (card) { return card.column !== 'concluidas'; }); persist(); audit('Concluídos removidos do Kanban', completed.length + ' bloco(s)'); route(); toast('Concluídos removidos', completed.length + ' bloco(s) foram retirados do quadro.');
+  }
+  function exportKanban() {
+    var cards = kanbanCards();
+    downloadFile('quadro-kanban-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.kanban.v1', exportedAt: nowISO(), columns: KANBAN_COLUMNS, cards: cards }, null, 2)); audit('Quadro Kanban exportado', cards.length + ' bloco(s)'); toast('Kanban exportado', cards.length + ' bloco(s) foram incluídos no JSON.');
+  }
+
+  function route() {
+    if (!currentUser) return;
+    var raw = location.hash.slice(1) || 'inicio';
+    var parts = raw.split('/');
+    state.route = parts[0];
+    var activeNavLink = null;
+    $$('.main-nav a').forEach(function (a) {
+      var isActive = a.getAttribute('data-route') === state.route;
+      a.classList.toggle('active', isActive);
+      if (isActive) activeNavLink = a;
+    });
+    if (activeNavLink) {
+      var activeNavGroup = activeNavLink.closest('.nav-group');
+      if (activeNavGroup) activeNavGroup.open = true;
+    }
+    $('#main-nav').classList.remove('open');
+    var main = $('#main-content');
+    if (window.UserAccessManager) {
+      window.UserAccessManager.applyMenu(currentUser);
+      if (!window.UserAccessManager.canRoute(currentUser, state.route)) {
+        if (apiEnabled() && apiToken && state.permissionRefreshAttemptedRoute !== state.route) {
+          state.permissionRefreshAttemptedRoute = state.route;
+          main.innerHTML = '<section class="ua-denied"><span>◌</span><h1>Atualizando seu acesso</h1><p>A plataforma está conferindo as permissões desta aba.</p></section>';
+          refreshCurrentProfile().then(function () { route(); });
+          return;
+        }
+        main.innerHTML = window.UserAccessManager.unauthorizedHtml();
+        main.focus({ preventScroll: true });
+        window.scrollTo(0, 0);
+        return;
+      }
+      state.permissionRefreshAttemptedRoute = '';
+    }
+    if (state.route === 'inicio') main.innerHTML = renderPortfolioDashboard();
+    else if (state.route === 'sefaz-portal') main.innerHTML = renderSefazPortal();
+    else if (state.route === 'dashboard') main.innerHTML = renderDashboard();
+    else if (state.route === 'clientes' && parts[1]) main.innerHTML = renderClientDetail(parts[1]);
+    else if (state.route === 'clientes') main.innerHTML = renderClients();
+    else if (state.route === 'diagnostico') main.innerHTML = renderDiagnosis();
+    else if (state.route === 'mei') main.innerHTML = renderTopic('mei');
+    else if (state.route === 'controle-mei') main.innerHTML = renderMeiControl();
+    else if (state.route === 'obrigacoes') main.innerHTML = renderObligations();
+    else if (state.route === 'ibs-cbs') main.innerHTML = renderTopic('ibs-cbs');
+    else if (state.route === 'transicao-reforma') main.innerHTML = renderTaxTransition();
+    else if (state.route === 'lei-complementar') main.innerHTML = renderLawLibrary();
+    else if (state.route === 'mei-ibs-cbs') main.innerHTML = renderTopic('mei-ibs-cbs');
+    else if (state.route === 'parametros-2026') main.innerHTML = renderParameters();
+    else if (state.route === 'folha') main.innerHTML = renderPayroll();
+    else if (state.route === 'horas-extras-noturno') main.innerHTML = renderOvertimeNightCalculator();
+    else if (state.route === 'verbas-rescisorias') main.innerHTML = renderTerminationSimulator();
+    else if (state.route === 'seguro-desemprego') main.innerHTML = renderUnemploymentCalculator();
+    else if (state.route === 'gps-atraso') main.innerHTML = renderGpsLateCalculator();
+    else if (state.route === 'pro-labore') main.innerHTML = renderProLabore();
+    else if (state.route === 'irrf-aliquota-efetiva') main.innerHTML = renderIrrfEffectiveRate();
+    else if (state.route === 'pensao-alimenticia') main.innerHTML = renderAlimonyCalculator();
+    else if (state.route === 'analise-balanco') main.innerHTML = renderBalanceAnalysis();
+    else if (state.route === 'lancamentos-contabeis') main.innerHTML = renderAccountingEntries();
+    else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
+    else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
+    else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
+    else if (state.route === 'aliquotas-beneficios') main.innerHTML = renderTaxBenefits();
+    else if (state.route === 'aliquotas-iss') main.innerHTML = renderIssRates();
+    else if (state.route === 'consulta-cest') main.innerHTML = renderCestConsultation();
+    else if (state.route === 'simulador-locacao') main.innerHTML = renderRentalSimulator();
+    else if (state.route === 'gestao-usuarios') main.innerHTML = '<div id="user-access-management"></div>';
+    else if (state.route === 'configuracoes') main.innerHTML = renderSettings();
+    else if (state.route === 'historico') main.innerHTML = renderHistory();
+    else if (FISCAL_MODULES[state.route]) {
+      if ($('#fiscal-module-frame')) updateFiscalModuleView(state.route);
+      else main.innerHTML = renderFiscalModule(state.route);
+    }
+    else { location.hash = 'inicio'; return; }
+    main.focus({ preventScroll: true });
+    window.scrollTo(0, 0);
+    bindViewControls();
+    if (state.route === 'sefaz-portal') loadSefazData();
+    if (state.route === 'gestao-usuarios' && window.UserAccessManager) window.UserAccessManager.mount(main, { user: currentUser, syncUsers: function (users) { state.users = (users || []).map(function (user) { return Object.assign({}, user, { active: user.status !== 'Inativo' }); }); storageSet(KEYS.users, state.users); } });
+  }
+
+  function selectedAnnexKey(client) {
+    var match = String(client && client.annex || '').match(/Anexo\s+(I{1,3}|IV|V)\b/i);
+    var key = match ? match[1].toUpperCase() : 'V';
+    return SIMPLES_ANNEXES[key] ? key : 'V';
+  }
+
+  function annexShares(annex, bracketIndex, regularMode, total) {
+    var partition = annex.partitions[bracketIndex] || annex.partitions[0];
+    var shares = Object.keys(partition).filter(function (name) { return partition[name] > 0; }).map(function (name) {
+      return { name: name, pct: partition[name], color: TAX_COLORS[name] || '#717880' };
+    });
+    if (regularMode) {
+      var consumption = shares.filter(function (share) { return share.name === 'COFINS' || share.name === 'PIS/Pasep'; }).reduce(function (sum, share) { return sum + share.pct; }, 0);
+      shares = shares.filter(function (share) { return share.name !== 'COFINS' && share.name !== 'PIS/Pasep'; });
+      var ibsPct = consumption > 0 ? Math.min(.19, consumption) : 0;
+      var insertAt = Math.min(2, shares.length);
+      shares.splice(insertAt, 0, { name: 'CBS', pct: Math.max(0, consumption - ibsPct), color: TAX_COLORS.CBS });
+      if (ibsPct) shares.push({ name: 'IBS', pct: ibsPct, color: TAX_COLORS.IBS });
+    }
+    return shares.map(function (share) {
+      share.value = total * share.pct / 100;
+      return share;
+    });
+  }
+
+  function calculateDas(client) {
+    var rbt12 = Math.max(0, Number(client && client.revenue12 != null ? client.revenue12 : 480000));
+    var month = Math.max(0, Number(client && client.revenueMonth != null ? client.revenueMonth : 5000));
+    var annex = SIMPLES_ANNEXES[selectedAnnexKey(client)];
+    var brackets = ANNEX_LIMITS.map(function (limit, index) {
+      return { max: limit, rate: annex.rates[index], deduction: annex.deductions[index], label: (index + 1) + 'ª Faixa' };
+    });
+    var bracketIndex = brackets.findIndex(function (b) { return rbt12 <= b.max; });
+    if (bracketIndex < 0) bracketIndex = brackets.length - 1;
+    var bracket = brackets[bracketIndex];
+    var effective = rbt12 > 0 ? ((rbt12 * bracket.rate / 100 - bracket.deduction) / rbt12) * 100 : 0;
+    effective = Math.max(0, effective);
+    var total = month * effective / 100;
+    var regularMode = state.settings.regularRegime !== false;
+    var shares = annexShares(annex, bracketIndex, regularMode, total);
+    var separated = shares.filter(function (s) { return s.name === 'CBS' || s.name === 'IBS'; }).reduce(function (sum, s) { return sum + s.value; }, 0);
+    var bracketMin = bracketIndex === 0 ? 0 : brackets[bracketIndex - 1].max + .01;
+    var bracketProgress = bracket.max > bracketMin ? Math.max(0, Math.min(100, (rbt12 - bracketMin) / (bracket.max - bracketMin) * 100)) : 0;
+    return {
+      rbt12: rbt12, month: month, annex: annex, brackets: brackets, bracket: bracket,
+      bracketIndex: bracketIndex, bracketMin: bracketMin, bracketProgress: bracketProgress,
+      effective: effective, total: total, shares: shares, separated: separated, regularDas: total - separated
+    };
+  }
+
+  function dasFormulaText(calc) {
+    if (!calc.rbt12) return 'Informe o RBT12 para calcular a alíquota efetiva e o DAS.';
+    return '((' + number(calc.rbt12) + ' × ' + number(calc.bracket.rate) + '% − ' + number(calc.bracket.deduction) + ') ÷ ' + number(calc.rbt12) + ') × ' + number(calc.month) + ' = ' + money(calc.total);
+  }
+
+  function dasTaxRows(calc) {
+    return calc.shares.map(function (share) {
+      return '<div class="tax-row"><b><span style="color:' + share.color + '">●</span> ' + share.name + '</b><span class="tax-bar"><i style="width:' + Math.max(4, share.pct * 2.6) + '%;background:' + share.color + '"></i></span><span class="tax-percent" style="color:' + share.color + '">' + number(share.pct) + '%</span><span class="tax-value">' + money(share.value) + '</span></div>';
+    }).join('');
+  }
+
+  function dasBracketRows(calc) {
+    return calc.brackets.map(function (bracket, index) {
+      var min = index === 0 ? 0 : calc.brackets[index - 1].max + .01;
+      return '<tr class="' + (index === calc.bracketIndex ? 'current' : '') + '"><td>' + bracket.label + '</td><td>' + number(min) + '</td><td>' + number(bracket.max) + '</td><td>' + number(bracket.rate) + '%</td><td>' + money(bracket.deduction) + '</td></tr>';
+    }).join('');
+  }
+
+  function dasInputValue(value) {
+    var numeric = Number(value || 0);
+    return Number.isFinite(numeric) ? String(numeric).replace('.', ',') : '0';
+  }
+
+  function parseDasNumber(value) {
+    var text = String(value == null ? '' : value).trim().replace(/\s/g, '').replace(/^R\$/i, '').replace(/[^0-9,.-]/g, '');
+    if (!text) return 0;
+    if (text.indexOf(',') >= 0) return Number(text.replace(/\./g, '').replace(',', '.')) || 0;
+    var dots = (text.match(/\./g) || []).length;
+    if (dots > 1) return Number(text.replace(/\./g, '')) || 0;
+    if (dots === 1) {
+      var parts = text.split('.');
+      if (parts[0] !== '0' && parts[1] && parts[1].length === 3) return Number(parts.join('')) || 0;
+    }
+    return Number(text) || 0;
+  }
+
+  function pulseDasResult() {
+    var result = $('#das-total-card');
+    if (!result) return;
+    result.classList.remove('is-updated');
+    void result.offsetWidth;
+    result.classList.add('is-updated');
+  }
+
+  function updateDasSimulation(scheduleSave) {
+    var monthField = $('#calc-month');
+    var rbt12Field = $('#calc-rbt12');
+    var client = currentClient();
+    if (!monthField || !rbt12Field || !client) return;
+
+    client.revenueMonth = Math.max(0, parseDasNumber(monthField.value));
+    client.revenue12 = Math.max(0, parseDasNumber(rbt12Field.value));
+    client.updatedAt = nowISO();
+
+    var yearField = $('#calc-year');
+    if (yearField) state.settings.dasYear = String(yearField.value || '2026');
+
+    var calc = calculateDas(client);
+    var regularOn = state.settings.regularRegime !== false;
+    var cbsShare = calc.shares.find(function (share) { return share.name === 'CBS'; });
+    var ibsShare = calc.shares.find(function (share) { return share.name === 'IBS'; });
+    var payable = regularOn ? calc.regularDas : calc.total;
+    var textValues = {
+      'das-payable': money(payable),
+      'das-effective': number(calc.effective) + '%',
+      'das-nominal': number(calc.bracket.rate) + '%',
+      'das-bracket': calc.bracket.label,
+      'das-rbt12-total': money(calc.rbt12),
+      'das-formula-title': '◢ Fórmula do Cálculo — ' + calc.annex.name,
+      'das-formula': dasFormulaText(calc),
+      'das-range-min': money(calc.bracketMin),
+      'das-range-position': calc.bracket.label + ' — ' + number(calc.bracketProgress) + '%',
+      'das-range-max': money(calc.bracket.max),
+      'das-tax-title': '▥ Partilha Tributária — ' + calc.annex.name,
+      'das-tax-summary': calc.bracket.label + ' · total ' + money(calc.total),
+      'das-bracket-title': '▧ Faixas — ' + calc.annex.name,
+      'das-annex-description': calc.annex.description + ' Dados recalculados localmente para resposta imediata.'
+    };
+    Object.keys(textValues).forEach(function (id) {
+      var element = $('#' + id);
+      if (element) element.textContent = textValues[id];
+    });
+    var instantText = 'Atualizado agora · ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    $$('.das-live-status').forEach(function (element) { element.textContent = instantText; });
+
+    var regularResult = $('#das-regular-result');
+    if (regularResult) {
+      regularResult.innerHTML = '<div><b>' + (regularOn ? 'Regime regular IBS/CBS:' : 'Partilha atual do Simples:') + '</b> ' + (regularOn ? 'DAS após destaque ' + money(calc.regularDas) + ' · CBS ' + money(cbsShare ? cbsShare.value : 0) + ' · IBS ' + money(ibsShare ? ibsShare.value : 0) + '.' : 'DAS total demonstrado em ' + money(calc.total) + '.') + '</div>';
+    }
+    var progress = $('#das-range-progress');
+    if (progress) progress.style.width = calc.bracketProgress + '%';
+    var taxList = $('#das-tax-list');
+    if (taxList) taxList.innerHTML = dasTaxRows(calc);
+    var bracketRows = $('#das-bracket-rows');
+    if (bracketRows) bracketRows.innerHTML = dasBracketRows(calc);
+    pulseDasResult();
+
+    if (scheduleSave) {
+      window.clearTimeout(state.dasSaveTimer);
+      state.dasSaveTimer = window.setTimeout(function () { persist(); }, 350);
+    }
+  }
+
+  function pageHeading(title, description, actions) {
+    return '<div class="page-heading"><div><h1>' + esc(title) + '</h1><p>' + description + '</p></div>' + (actions ? '<div class="page-actions">' + actions + '</div>' : '') + '</div>';
+  }
+
+  var CLIENT_PORTFOLIO_STAGES = [
+    { id: 'entrada', label: 'Entrada e cadastro', progress: 15 },
+    { id: 'diagnostico', label: 'Em diagnóstico', progress: 35 },
+    { id: 'regularizacao', label: 'Em regularização', progress: 55 },
+    { id: 'acompanhamento', label: 'Acompanhamento mensal', progress: 80 },
+    { id: 'concluido', label: 'Ciclo concluído', progress: 100 }
+  ];
+  function portfolioStore() {
+    if (!state.settings.clientPortfolio || typeof state.settings.clientPortfolio !== 'object') state.settings.clientPortfolio = {};
+    return state.settings.clientPortfolio;
+  }
+  function portfolioStage(id) {
+    return CLIENT_PORTFOLIO_STAGES.find(function (stage) { return stage.id === id; }) || CLIENT_PORTFOLIO_STAGES[0];
+  }
+  function portfolioTasks(clientId) {
+    return kanbanCards().filter(function (card) { return card.clientId === clientId; });
+  }
+  function portfolioFor(client) {
+    var saved = portfolioStore()[client.id] || {};
+    var tasks = portfolioTasks(client.id).filter(function (card) { return card.column !== 'concluidas'; }).sort(function (a, b) { return String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999')); });
+    var defaultStage = client.status === 'Inativo' ? 'concluido' : client.status === 'Alerta' ? 'regularizacao' : client.status === 'Em revisão' ? 'diagnostico' : 'acompanhamento';
+    var stage = portfolioStage(saved.stage || defaultStage);
+    return {
+      stage: stage.id,
+      stageLabel: stage.label,
+      progress: Math.max(0, Math.min(100, Number(saved.progress == null ? stage.progress : saved.progress))),
+      nextAction: saved.nextAction || (tasks[0] ? tasks[0].title : 'Realizar conferência periódica do cliente'),
+      dueDate: saved.dueDate || (tasks[0] && tasks[0].dueDate) || '',
+      note: saved.note || '',
+      updatedAt: saved.updatedAt || client.updatedAt || ''
+    };
+  }
+  function portfolioStageOptions(selected) {
+    return CLIENT_PORTFOLIO_STAGES.map(function (stage) { return '<option value="' + stage.id + '"' + (stage.id === selected ? ' selected' : '') + '>' + stage.label + '</option>'; }).join('');
+  }
+  function portfolioSelectOptions(values, selected) {
+    return values.filter(Boolean).filter(function (value, index, list) { return list.indexOf(value) === index; }).sort().map(function (value) { return '<option value="' + esc(value) + '"' + (value === selected ? ' selected' : '') + '>' + esc(value) + '</option>'; }).join('');
+  }
+  function portfolioRiskTag(diag) {
+    var cls = diag.score >= 60 ? 'danger' : diag.score >= 35 ? 'warning' : 'success';
+    return '<span class="tag tag--' + cls + '">Risco ' + esc(diag.level) + ' · ' + diag.score + '</span>';
+  }
+  function renderPortfolioClientCard(client) {
+    var portfolio = portfolioFor(client), diag = diagnosisFor(client), tasks = portfolioTasks(client.id), pending = tasks.filter(function (card) { return card.column !== 'concluidas'; }), overdue = pending.filter(function (card) { return kanbanDeadline(card).className === 'overdue'; }).length;
+    var search = [client.name, client.tradeName, client.document, client.regime, client.activity, client.cnae, client.status, client.responsible, portfolio.stageLabel].join(' ').toLowerCase();
+    return '<article class="portfolio-client-card" data-portfolio-client data-search="' + esc(search) + '" data-responsible="' + esc(client.responsible || '') + '" data-regime="' + esc(client.regime || '') + '" data-status="' + esc(client.status || '') + '" data-stage="' + esc(portfolio.stage) + '">' +
+      '<header><span class="portfolio-avatar">' + esc(initials(client.name)) + '</span><div><h3>' + esc(client.name) + '</h3><p>' + esc(client.document) + ' · ' + esc(client.city || 'Município não informado') + '</p></div>' + statusTag(client.status) + '</header>' +
+      '<div class="portfolio-tags"><span>' + esc(client.regime) + '</span><span>' + esc(client.cnae || 'CNAE não informado') + '</span><span>Responsável: ' + esc(client.responsible || 'Não informado') + '</span></div>' +
+      '<section class="portfolio-progress"><div><b>' + esc(portfolio.stageLabel) + '</b><strong>' + portfolio.progress + '%</strong></div><div class="progress"><span style="width:' + portfolio.progress + '%"></span></div><small>Atualizado em ' + esc(dateBR(portfolio.updatedAt)) + '</small></section>' +
+      '<div class="portfolio-card-metrics"><div><small>RBT12</small><b>' + money(client.revenue12) + '</b></div><div><small>Faturamento mensal</small><b>' + money(client.revenueMonth) + '</b></div><div><small>Obrigações</small><b>' + (client.obligations || []).length + '</b></div><div><small>Tarefas abertas</small><b>' + pending.length + (overdue ? ' · <em>' + overdue + ' atrasada(s)</em>' : '') + '</b></div></div>' +
+      '<div class="portfolio-next"><span>Próximo passo</span><b>' + esc(portfolio.nextAction) + '</b><small>' + (portfolio.dueDate ? 'Prazo: ' + dateBR(portfolio.dueDate) : 'Sem prazo definido') + '</small></div>' +
+      '<div class="portfolio-risk-row">' + portfolioRiskTag(diag) + '<span>' + esc(client.activity || 'Atividade não informada') + '</span></div>' +
+      '<footer><button class="secondary-button" data-action="portfolio-progress" data-id="' + esc(client.id) + '">↗ Atualizar andamento</button><button class="row-button" data-action="portfolio-new-task" data-id="' + esc(client.id) + '" title="Nova tarefa no Kanban">＋</button><button class="row-button" data-action="view-client" data-id="' + esc(client.id) + '" title="Abrir cadastro completo">⌕</button><button class="row-button" data-action="portfolio-diagnosis" data-id="' + esc(client.id) + '" title="Abrir diagnóstico">◉</button><button class="row-button" data-action="portfolio-das" data-id="' + esc(client.id) + '" title="Calcular DAS">▥</button></footer>' +
+    '</article>';
+  }
+  function portfolioDistribution(items, key, labels) {
+    var total = Math.max(1, items.length), counts = {};
+    items.forEach(function (item) { var value = key(item); counts[value] = (counts[value] || 0) + 1; });
+    return Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; }).map(function (value) { var pct = counts[value] / total * 100; return '<div class="portfolio-distribution-row"><div><span>' + esc(labels && labels[value] || value) + '</span><b>' + counts[value] + '</b></div><div><i style="width:' + pct + '%"></i></div></div>'; }).join('');
+  }
+  function renderPortfolioDashboard() {
+    var clients = state.clients.slice(), cards = kanbanCards(), filters = state.portfolioFilters || {};
+    var active = clients.filter(function (client) { return client.status === 'Ativo'; }).length;
+    var critical = clients.filter(function (client) { return diagnosisFor(client).score >= 60; }).length;
+    var pendingTasks = cards.filter(function (card) { return card.column !== 'concluidas'; });
+    var overdueTasks = pendingTasks.filter(function (card) { return kanbanDeadline(card).className === 'overdue'; });
+    var revenue12 = clients.reduce(function (sum, client) { return sum + Number(client.revenue12 || 0); }, 0);
+    var obligations = clients.reduce(function (sum, client) { return sum + (client.obligations || []).length; }, 0);
+    var agenda = pendingTasks.filter(function (card) { return card.dueDate; }).sort(function (a, b) { return String(a.dueDate).localeCompare(String(b.dueDate)); }).slice(0, 6).map(function (card) {
+      var client = clients.find(function (item) { return item.id === card.clientId; }); var due = kanbanDeadline(card);
+      return '<button class="portfolio-agenda-item" data-route="kanban"><span class="' + due.className + '">◷</span><div><b>' + esc(card.title) + '</b><small>' + esc(client ? client.name : 'Sem cliente') + ' · ' + esc(due.label) + '</small></div><em>' + esc(card.priority) + '</em></button>';
+    }).join('') || '<div class="portfolio-agenda-empty">Nenhuma tarefa com prazo definido.</div>';
+    var regimeBars = portfolioDistribution(clients, function (client) { return client.regime || 'Não informado'; });
+    var stageLabels = {}; CLIENT_PORTFOLIO_STAGES.forEach(function (stage) { stageLabels[stage.id] = stage.label; });
+    var stageBars = portfolioDistribution(clients, function (client) { return portfolioFor(client).stage; }, stageLabels);
+    var clientCards = clients.map(renderPortfolioClientCard).join('');
+    var greetingHour = new Date().getHours(), greeting = greetingHour < 12 ? 'Bom dia' : greetingHour < 18 ? 'Boa tarde' : 'Boa noite';
+    return [
+      '<section class="portfolio-hero"><div><span class="portfolio-eyebrow">PAINEL EXECUTIVO DO ESCRITÓRIO</span><h1>' + greeting + ', ' + esc((currentUser && currentUser.name || 'Usuário').split(' ')[0]) + '.</h1><p>Acompanhe toda a carteira de clientes, os riscos tributários, prazos e atividades em uma única visão.</p><div class="portfolio-hero-meta"><span><i></i> Dados sincronizados</span><span>Atualizado em ' + dateTimeBR(nowISO()) + '</span></div></div><div class="portfolio-hero-actions"><button class="secondary-button" data-route="kanban">▦ Abrir Kanban</button><button class="primary-button" data-action="new-client">＋ Novo cliente</button></div></section>',
+      '<section class="portfolio-kpis"><article><span>♟</span><div><small>Carteira total</small><strong>' + clients.length + '</strong><em>' + active + ' clientes ativos</em></div></article><article><span>R$</span><div><small>Faturamento RBT12</small><strong>' + money(revenue12) + '</strong><em>Base consolidada</em></div></article><article class="' + (critical ? 'is-alert' : '') + '"><span>!</span><div><small>Riscos críticos</small><strong>' + critical + '</strong><em>Requerem atenção</em></div></article><article><span>▣</span><div><small>Obrigações</small><strong>' + obligations + '</strong><em>Itens monitorados</em></div></article><article><span>▶</span><div><small>Tarefas abertas</small><strong>' + pendingTasks.length + '</strong><em>' + overdueTasks.length + ' atrasada(s)</em></div></article></section>',
+      '<div class="portfolio-overview-grid"><section class="card portfolio-chart-card"><header class="card-header"><div><h2>Carteira por regime tributário</h2><small>Distribuição dos clientes cadastrados</small></div></header><div class="card-body">' + regimeBars + '</div></section><section class="card portfolio-chart-card"><header class="card-header"><div><h2>Andamento da carteira</h2><small>Etapa atual de atendimento</small></div></header><div class="card-body">' + stageBars + '</div></section><section class="card portfolio-agenda-card"><header class="card-header"><div><h2>Próximos prazos</h2><small>Atividades vinculadas ao Kanban</small></div><button class="row-button" data-route="kanban" title="Abrir Kanban">↗</button></header><div class="card-body">' + agenda + '</div></section></div>',
+      '<section class="card portfolio-wallet"><header class="card-header"><div><h2>Carteira de clientes</h2><small>Dados cadastrais, tributários e andamento individual</small></div><span class="tag tag--info"><b id="portfolio-visible-count">' + clients.length + '</b> clientes</span></header><div class="card-body"><div class="portfolio-filters"><label class="filter-field portfolio-search"><span>Pesquisar cliente</span><input id="portfolio-query" value="' + esc(filters.query || '') + '" placeholder="Nome, CNPJ, atividade ou CNAE"></label><label class="filter-field"><span>Responsável</span><select id="portfolio-responsible"><option value="">Todos</option>' + portfolioSelectOptions(clients.map(function (client) { return client.responsible; }), filters.responsible) + '</select></label><label class="filter-field"><span>Regime</span><select id="portfolio-regime"><option value="">Todos</option>' + portfolioSelectOptions(clients.map(function (client) { return client.regime; }), filters.regime) + '</select></label><label class="filter-field"><span>Etapa</span><select id="portfolio-stage"><option value="">Todas</option>' + CLIENT_PORTFOLIO_STAGES.map(function (stage) { return '<option value="' + stage.id + '"' + (filters.stage === stage.id ? ' selected' : '') + '>' + stage.label + '</option>'; }).join('') + '</select></label><label class="filter-field"><span>Situação</span><select id="portfolio-status"><option value="">Todas</option>' + portfolioSelectOptions(clients.map(function (client) { return client.status; }), filters.status) + '</select></label><button class="secondary-button" data-action="portfolio-clear-filters">Limpar</button></div><div class="portfolio-client-grid">' + clientCards + '</div><div class="portfolio-no-results is-hidden" id="portfolio-no-results"><b>Nenhum cliente encontrado</b><span>Altere os filtros para visualizar a carteira.</span></div></div></section>'
+    ].join('');
+  }
+  function filterPortfolioDashboard() {
+    if (!$('#portfolio-query')) return;
+    var filters = state.portfolioFilters || (state.portfolioFilters = {});
+    filters.query = $('#portfolio-query').value.trim().toLowerCase();
+    filters.responsible = $('#portfolio-responsible').value;
+    filters.regime = $('#portfolio-regime').value;
+    filters.stage = $('#portfolio-stage').value;
+    filters.status = $('#portfolio-status').value;
+    var visible = 0;
+    $$('[data-portfolio-client]').forEach(function (card) {
+      var show = (!filters.query || String(card.getAttribute('data-search') || '').indexOf(filters.query) >= 0) && (!filters.responsible || card.getAttribute('data-responsible') === filters.responsible) && (!filters.regime || card.getAttribute('data-regime') === filters.regime) && (!filters.stage || card.getAttribute('data-stage') === filters.stage) && (!filters.status || card.getAttribute('data-status') === filters.status);
+      card.classList.toggle('is-hidden', !show); if (show) visible += 1;
+    });
+    if ($('#portfolio-visible-count')) $('#portfolio-visible-count').textContent = visible;
+    if ($('#portfolio-no-results')) $('#portfolio-no-results').classList.toggle('is-hidden', visible > 0);
+  }
+  function openPortfolioProgress(id) {
+    var client = state.clients.find(function (item) { return item.id === id; }); if (!client) return;
+    var portfolio = portfolioFor(client);
+    var body = '<form id="portfolio-progress-form"><input id="portfolio-client-id" type="hidden" value="' + esc(client.id) + '"><div class="portfolio-modal-client"><span>' + esc(initials(client.name)) + '</span><div><b>' + esc(client.name) + '</b><small>' + esc(client.document) + ' · ' + esc(client.responsible || 'Sem responsável') + '</small></div></div><div class="form-grid"><label class="field"><span>Etapa atual</span><select id="portfolio-progress-stage">' + portfolioStageOptions(portfolio.stage) + '</select></label><label class="field"><span>Percentual concluído</span><input id="portfolio-progress-value" type="number" min="0" max="100" step="1" value="' + portfolio.progress + '"></label><label class="field field--full"><span>Próximo passo *</span><input id="portfolio-next-action" value="' + esc(portfolio.nextAction) + '" maxlength="160" required></label><label class="field"><span>Prazo do próximo passo</span><input id="portfolio-next-due" type="date" value="' + esc(portfolio.dueDate) + '"></label><label class="field field--full"><span>Observações do acompanhamento</span><textarea id="portfolio-progress-note" rows="3" maxlength="500">' + esc(portfolio.note) + '</textarea></label></div></form>';
+    openModal('Atualizar andamento do cliente', body, '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="portfolio-save-progress">▣ Salvar andamento</button>');
+    var form = $('#portfolio-progress-form'); if (form) form.addEventListener('submit', function (event) { event.preventDefault(); savePortfolioProgress(); });
+  }
+  function savePortfolioProgress() {
+    var form = $('#portfolio-progress-form'); if (!form || !form.reportValidity()) return;
+    var id = $('#portfolio-client-id').value, client = state.clients.find(function (item) { return item.id === id; }); if (!client) return;
+    var stage = portfolioStage($('#portfolio-progress-stage').value);
+    portfolioStore()[id] = { stage: stage.id, progress: Math.max(0, Math.min(100, Number($('#portfolio-progress-value').value || 0))), nextAction: $('#portfolio-next-action').value.trim(), dueDate: $('#portfolio-next-due').value, note: $('#portfolio-progress-note').value.trim(), updatedAt: nowISO(), updatedBy: currentUser ? currentUser.name : '' };
+    persist(); audit('Andamento da carteira atualizado', client.name + ' · ' + stage.label + ' · ' + portfolioStore()[id].progress + '%'); closeModal(); route(); toast('Andamento atualizado', client.name + ' agora está em “' + stage.label + '”.');
+  }
+
+  function renderDashboard() {
+    var client = currentClient() || DEMO_CLIENTS[0];
+    var calc = calculateDas(client);
+    var regularOn = state.settings.regularRegime !== false;
+    var payable = regularOn ? calc.regularDas : calc.total;
+    var activeClients = state.clients.filter(function (c) { return c.status === 'Ativo'; }).length;
+    var alerts = state.clients.filter(function (c) { return diagnosisFor(c).score >= 60; }).length;
+    var completion = calc.bracketProgress;
+    var cbsShare = calc.shares.find(function (share) { return share.name === 'CBS'; });
+    var ibsShare = calc.shares.find(function (share) { return share.name === 'IBS'; });
+    var annexOptions = ANNEX_ORDER.map(function (key) {
+      var annex = SIMPLES_ANNEXES[key];
+      return '<option value="' + key + '"' + (calc.annex.key === key ? ' selected' : '') + '>' + annex.name + ' · 2026</option>';
+    }).join('');
+    var selectedYear = String(state.settings.dasYear || '2026');
+    var yearOptions = [
+      { value: '2026', label: '2026 — Ano-teste IBS/CBS' },
+      { value: '2027', label: '2027 — Início da CBS' },
+      { value: '2028', label: '2028 — Transição' }
+    ].map(function (item) { return '<option value="' + item.value + '"' + (selectedYear === item.value ? ' selected' : '') + '>' + item.label + '</option>'; }).join('');
+    var tableRows = dasBracketRows(calc);
+    var taxes = dasTaxRows(calc);
+    return [
+      pageHeading('Cálculo do DAS — Simples Nacional', 'Faturamento mensal → DAS calculado automaticamente. Selecione o ano-calendário para aplicar os parâmetros corretos; a transição de IBS e CBS é demonstrada com transparência.', '<button class="secondary-button" data-route="diagnostico">◉ Analisar cliente</button>'),
+      '<div class="info-banner"><span>▣</span><div><strong>Base 2026 conferida em ' + TODAY + '.</strong> O ano de 2026 é o período de teste da CBS (0,9%) e do IBS (0,1%). A dispensa de recolhimento depende do cumprimento das obrigações acessórias previstas. <a class="official-link" target="_blank" rel="noopener" href="https://www.gov.br/receitafederal/pt-br/acesso-a-informacao/acoes-e-programas/programas-e-atividades/reforma-tributaria-do-consumo/orientacoes-2026">Consultar orientação oficial ↗</a></div></div>',
+      '<div class="kpi-grid">',
+        '<div class="kpi-card"><span class="kpi-icon">♟</span><div><b>' + state.clients.length + '</b><small>clientes cadastrados</small></div><span class="kpi-trend">' + activeClients + ' ativos</span></div>',
+        '<div class="kpi-card"><span class="kpi-icon">◉</span><div><b>' + alerts + '</b><small>alertas críticos</small></div><span class="kpi-trend">ver diagnóstico</span></div>',
+        '<div class="kpi-card"><span class="kpi-icon">▣</span><div><b>' + state.clients.reduce(function (sum, c) { return sum + (c.obligations || []).length; }, 0) + '</b><small>obrigações monitoradas</small></div><span class="kpi-trend">2026</span></div>',
+        '<div class="kpi-card"><span class="kpi-icon">◷</span><div><b>10</b><small>fontes oficiais</small></div><span class="kpi-trend">atualizadas</span></div>',
+      '</div>',
+      '<div class="calc-layout">',
+        '<div class="stack">',
+          '<section class="card"><header class="card-header"><h2>⚙ Configuração</h2></header><div class="card-body config-block">',
+            '<label><span>Ano-calendário do cálculo</span><select id="calc-year">' + yearOptions + '</select></label>',
+            '<div class="help-text"><b>2026:</b> alíquotas de teste de CBS e IBS, compensáveis com PIS/Cofins ou dispensadas nas condições legais.</div>',
+            '<label class="check-panel"><input id="regular-regime" type="checkbox"' + (regularOn ? ' checked' : '') + '><span><b>Apurar IBS e CBS pelo regime regular</b>Quando selecionado, as parcelas são destacadas separadamente no demonstrativo.</span></label>',
+            '<div class="segmented"><button class="segment active" data-action="company-established">🏢 Empresa Estabelecida<br><small>RBT12 real</small></button><button class="segment" data-action="first-year">▧ 1º Ano<br><small>RBT12 proporcionalizado</small></button></div>',
+            '<div><span class="mini-label">Anexo</span><div class="annex-switch"><button class="round-button" data-action="prev-annex" aria-label="Anexo anterior">‹</button><select class="annex-label annex-select" id="annex-select" aria-label="Selecionar anexo do Simples Nacional">' + annexOptions + '</select><button class="round-button" data-action="next-annex" aria-label="Próximo anexo">›</button></div><div class="help-text annex-description" id="das-annex-description">' + esc(calc.annex.description) + ' Dados recalculados localmente para resposta imediata.</div></div>',
+          '</div></section>',
+          '<section class="card"><header class="card-header"><h2>💰 Faturamento do Mês</h2><span class="live-badge"><i></i> <span class="das-live-status" role="status">Cálculo instantâneo</span></span></header><div class="card-body"><label class="money-box"><span>R$</span><input id="calc-month" inputmode="decimal" autocomplete="off" value="' + dasInputValue(calc.month) + '" aria-label="Faturamento do mês"></label></div></section>',
+          '<section class="card"><header class="card-header"><h2>▣ RBT12 — Receita Bruta 12 Meses</h2><span class="live-badge"><i></i> <span class="das-live-status" role="status">Cálculo instantâneo</span></span></header><div class="card-body"><input class="money-input" id="calc-rbt12" inputmode="decimal" autocomplete="off" value="' + dasInputValue(calc.rbt12) + '" aria-label="Receita bruta 12 meses"><div class="help-text"><b>Atualização automática:</b> a alíquota efetiva, a faixa, o DAS e a partilha mudam a cada número digitado.</div><button class="history-select" data-action="history-calc"><span>▣ Calcular pelo histórico</span><span>▼</span></button></div></section>',
+          '<section class="card law-mini"><header class="card-header"><h2>▣ IBS e CBS — ano-teste 2026</h2></header><div class="card-body"><p>Em 2026, os documentos fiscais eletrônicos devem destacar IBS e CBS conforme leiautes e cronogramas oficiais. A dispensa do recolhimento está vinculada ao cumprimento das obrigações acessórias.</p><div class="value-list"><div class="value-line"><span>CBS teste</span><b>0,900%</b></div><div class="value-line"><span>IBS teste</span><b>0,100%</b></div><div class="value-line"><span>Limite MEI</span><b>R$ 81.000</b></div><div class="value-line"><span>Vigência da base</span><b>2026</b></div></div></div></section>',
+          '<section class="card"><header class="card-header"><h2 id="das-bracket-title">▧ Faixas — ' + esc(calc.annex.name) + '</h2><a class="official-link" target="_blank" rel="noopener" href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp123.htm">LC 123/2006 ↗</a></header><div class="table-wrap"><table class="bracket-table"><thead><tr><th>Faixa</th><th>De</th><th>Até</th><th>Alíq.</th><th>Dedução</th></tr></thead><tbody id="das-bracket-rows">' + tableRows + '</tbody></table></div></section>',
+        '</div>',
+        '<div class="stack">',
+          '<section class="das-total" id="das-total-card" aria-live="polite"><div class="das-total-main"><small>DAS a recolher</small><strong id="das-payable">' + money(payable) + '</strong></div><div class="das-metrics"><div><span>Alíq. efetiva</span><b id="das-effective">' + number(calc.effective) + '%</b></div><div><span>Alíq. nominal</span><b id="das-nominal">' + number(calc.bracket.rate) + '%</b></div><div><span>Faixa</span><b id="das-bracket">' + calc.bracket.label + '</b></div><div><span>RBT12</span><b id="das-rbt12-total">' + money(calc.rbt12) + '</b></div></div></section>',
+          '<section class="card"><header class="card-header"><h2 id="das-formula-title">◢ Fórmula do Cálculo — ' + esc(calc.annex.name) + '</h2></header><div class="card-body"><div class="formula" id="das-formula">' + dasFormulaText(calc) + '</div><div class="regular-result" id="das-regular-result"><div><b>' + (regularOn ? 'Regime regular IBS/CBS:' : 'Partilha atual do Simples:') + '</b> ' + (regularOn ? 'DAS após destaque ' + money(calc.regularDas) + ' · CBS ' + money(cbsShare ? cbsShare.value : 0) + ' · IBS ' + money(ibsShare ? ibsShare.value : 0) + '.' : 'DAS total demonstrado em ' + money(calc.total) + '.') + '</div></div></div></section>',
+          '<section class="card"><header class="card-header"><h2>▥ Posição na Faixa</h2></header><div class="card-body"><div class="range-labels"><span id="das-range-min">' + money(calc.bracketMin) + '</span><span id="das-range-position">' + calc.bracket.label + ' — ' + number(completion) + '%</span><span id="das-range-max">' + money(calc.bracket.max) + '</span></div><div class="progress"><span id="das-range-progress" style="width:' + completion + '%"></span></div></div></section>',
+          '<section class="card"><header class="card-header"><h2 id="das-tax-title">▥ Partilha Tributária — ' + esc(calc.annex.name) + '</h2><span class="subtle" id="das-tax-summary">' + esc(calc.bracket.label) + ' · total ' + money(calc.total) + '</span></header><div class="card-body"><div class="tax-list" id="das-tax-list">' + taxes + '</div></div></section>',
+        '</div>',
+      '</div>'
+    ].join('');
+  }
+
+  function statusTag(status) {
+    var cls = status === 'Ativo' ? 'success' : status === 'Alerta' ? 'danger' : 'warning';
+    return '<span class="tag tag--' + cls + '">' + esc(status || 'Em revisão') + '</span>';
+  }
+
+  function clientFilterOptions(key) {
+    return Array.from(new Set(state.clients.map(function (c) { return c[key]; }).filter(Boolean))).sort().map(function (value) {
+      return '<option value="' + esc(value) + '">' + esc(value) + '</option>';
+    }).join('');
+  }
+
+  function filteredClients() {
+    var f = state.filters || {};
+    return state.clients.filter(function (c) {
+      var query = String(f.query || '').toLowerCase();
+      var combined = [c.name, c.document, c.tradeName].join(' ').toLowerCase();
+      return (!query || combined.indexOf(query) >= 0) &&
+        (!f.regime || c.regime === f.regime) &&
+        (!f.activity || c.activity === f.activity) &&
+        (!f.status || c.status === f.status) &&
+        (!f.responsible || c.responsible === f.responsible);
+    });
+  }
+
+  function renderClients() {
+    var clients = filteredClients();
+    var rows = clients.map(function (c) {
+      return '<tr><td><div class="client-name"><span class="client-avatar">' + initials(c.name) + '</span><span><b>' + esc(c.name) + '</b><small>' + esc(c.tradeName || c.email || '') + '</small></span></div></td><td>' + esc(c.document) + '</td><td><span class="tag tag--info">' + esc(c.regime) + '</span></td><td>' + esc(c.activity) + '<br><small class="subtle">' + esc(c.cnae) + '</small></td><td>' + statusTag(c.status) + '</td><td>' + esc(c.responsible) + '</td><td><div class="row-actions"><button class="row-button" title="Abrir cadastro" data-action="view-client" data-id="' + esc(c.id) + '">⌕</button><button class="row-button" title="Editar" data-action="edit-client" data-id="' + esc(c.id) + '">✎</button><button class="row-button" title="Exportar JSON" data-action="export-client" data-id="' + esc(c.id) + '">↧</button><button class="row-button" title="Excluir" data-action="delete-client" data-id="' + esc(c.id) + '">×</button></div></td></tr>';
+    }).join('');
+    var actions = '<button class="secondary-button" data-action="backup">▣ Gerar backup</button><button class="secondary-button" data-action="restore-backup">↥ Restaurar</button><button class="secondary-button" data-action="export-all">↧ Exportar base</button><button class="secondary-button" data-action="import-json">↥ Importar JSON</button><button class="primary-button" data-action="new-client">＋ Novo cliente</button>';
+    return [
+      pageHeading('Clientes', 'Cadastre, pesquise e acompanhe os dados tributários de cada empresa. A base é salva de forma persistente neste navegador.', actions),
+      '<div class="filters-card card"><div class="filters">',
+        '<label class="filter-field"><span>Nome ou CNPJ/CPF</span><input id="filter-query" value="' + esc(state.filters.query || '') + '" placeholder="Pesquisar cliente..."></label>',
+        '<label class="filter-field"><span>Regime tributário</span><select id="filter-regime"><option value="">Todos</option>' + clientFilterOptions('regime') + '</select></label>',
+        '<label class="filter-field"><span>Atividade</span><select id="filter-activity"><option value="">Todas</option>' + clientFilterOptions('activity') + '</select></label>',
+        '<label class="filter-field"><span>Situação</span><select id="filter-status"><option value="">Todas</option>' + clientFilterOptions('status') + '</select></label>',
+        '<label class="filter-field"><span>Responsável</span><select id="filter-responsible"><option value="">Todos</option>' + clientFilterOptions('responsible') + '</select></label>',
+        '<label class="filter-field"><span>Período</span><select id="filter-period"><option>2026</option><option>2025</option></select></label>',
+        '<button class="small-button" data-action="clear-filters">Limpar</button>',
+      '</div></div>',
+      '<section class="card"><header class="card-header"><h2>♟ Base de clientes</h2><span class="subtle">' + clients.length + ' de ' + state.clients.length + ' registros</span></header>',
+      clients.length ? '<div class="table-wrap"><table class="data-table"><thead><tr><th>Cliente</th><th>CNPJ/CPF</th><th>Regime</th><th>Atividade / CNAE</th><th>Situação</th><th>Responsável</th><th>Ações</th></tr></thead><tbody>' + rows + '</tbody></table></div><div class="table-summary"><span>Armazenamento local ativo</span><span>Última alteração registrada na trilha de auditoria</span></div>' : '<div class="empty-state"><i>⌕</i><h3>Nenhum cliente encontrado</h3><p>Altere os filtros ou cadastre um novo cliente.</p></div>',
+      '</section>',
+      '<div class="info-banner info-banner--blue" style="margin-top:14px"><span>🔒</span><div><strong>LGPD e privacidade.</strong> Este projeto demonstrativo armazena os dados exclusivamente no perfil local do navegador. Em produção, configure autenticação forte, criptografia, política de retenção, consentimento, backups protegidos e um banco de dados controlado pela sua organização.</div></div>'
+    ].join('');
+  }
+
+  function clientFormMarkup(client) {
+    var c = client || {};
+    var obligations = (c.obligations || []).join(', ');
+    return '<form id="client-form" class="form-grid" data-client-id="' + esc(c.id || '') + '">' +
+      '<section class="client-cnpj-lookup field--full"><div class="client-cnpj-copy"><span class="client-cnpj-icon">⌕</span><div><strong>Consulta cadastral do CNPJ</strong><small>Informe o CNPJ para preencher automaticamente os dados públicos do cadastro da Receita Federal.</small></div></div><div class="client-cnpj-search"><label class="field"><span>CNPJ ou CPF *</span><input id="client-document" name="document" value="' + esc(c.document || '') + '" placeholder="00.000.000/0000-00" autocomplete="off" required></label><button class="primary-button" type="button" data-action="client-consult-cnpj">⌕ Consultar e preencher</button></div><div class="client-cnpj-feedback' + (c.officialSource ? ' success' : '') + '" id="client-cnpj-feedback">' + (c.officialSource ? '<span>✓</span><div><b>Última consulta cadastral</b><small>' + esc(c.officialSource) + ' · ' + esc(dateTimeBR(c.officialConsultedAt)) + '</small></div>' : '<span>i</span><div><b>Preenchimento automático disponível</b><small>A consulta não altera faturamento, responsável, obrigações ou observações internas.</small></div>') + '</div></section>' +
+      '<label class="field"><span>Razão social / nome *</span><input name="name" value="' + esc(c.name || '') + '" required></label>' +
+      '<label class="field"><span>Nome fantasia</span><input name="tradeName" value="' + esc(c.tradeName || '') + '"></label>' +
+      '<label class="field"><span>Regime tributário *</span><select name="regime" required>' + ['MEI', 'Simples Nacional', 'Lucro Presumido', 'Lucro Real'].map(function (v) { return '<option' + (c.regime === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></label>' +
+      '<label class="field"><span>Atividade *</span><input name="activity" value="' + esc(c.activity || '') + '" required></label>' +
+      '<label class="field"><span>CNAE</span><input name="cnae" value="' + esc(c.cnae || '') + '" placeholder="0000-0/00"></label>' +
+      '<label class="field"><span>Situação</span><select name="status">' + ['Ativo', 'Alerta', 'Em revisão', 'Inativo'].map(function (v) { return '<option' + (c.status === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></label>' +
+      '<label class="field"><span>Responsável</span><input name="responsible" value="' + esc(c.responsible || currentUser.name) + '"></label>' +
+      '<label class="field"><span>E-mail</span><input name="email" type="email" value="' + esc(c.email || '') + '"></label>' +
+      '<label class="field"><span>Telefone</span><input name="phone" value="' + esc(c.phone || '') + '"></label>' +
+      '<label class="field"><span>Município / UF</span><input name="city" value="' + esc(c.city || '') + '"></label>' +
+      '<label class="field"><span>Data de abertura</span><input name="startDate" type="date" value="' + esc(c.startDate || '') + '"></label>' +
+      '<label class="field field--full"><span>Endereço completo</span><input name="address" value="' + esc(c.address || '') + '"></label>' +
+      '<label class="field"><span>CEP</span><input name="zipCode" value="' + esc(c.zipCode || '') + '"></label>' +
+      '<label class="field"><span>Situação cadastral na Receita</span><input name="registrationStatus" value="' + esc(c.registrationStatus || '') + '" readonly></label>' +
+      '<label class="field"><span>Data da situação cadastral</span><input name="registrationStatusDate" type="date" value="' + esc(c.registrationStatusDate || '') + '"></label>' +
+      '<label class="field"><span>Natureza jurídica</span><input name="legalNature" value="' + esc(c.legalNature || '') + '"></label>' +
+      '<label class="field"><span>Porte da empresa</span><input name="companySize" value="' + esc(c.companySize || '') + '"></label>' +
+      '<label class="field"><span>Capital social (R$)</span><input name="shareCapital" type="number" step="0.01" min="0" value="' + esc(c.shareCapital || '') + '"></label>' +
+      '<label class="field field--full"><span>CNAEs secundários</span><textarea name="secondaryCnaes" placeholder="Códigos e descrições retornados na consulta">' + esc(c.secondaryCnaes || '') + '</textarea></label>' +
+      '<label class="field"><span>Faturamento mensal (R$)</span><input name="revenueMonth" type="number" step="0.01" min="0" value="' + esc(c.revenueMonth || 0) + '"></label>' +
+      '<label class="field"><span>RBT12 / faturamento anual (R$)</span><input name="revenue12" type="number" step="0.01" min="0" value="' + esc(c.revenue12 || 0) + '"></label>' +
+      '<label class="field"><span>Anexo / enquadramento</span><input name="annex" value="' + esc(c.annex || '') + '"></label>' +
+      '<label class="field"><span>Nº de empregados</span><input name="employees" type="number" min="0" value="' + esc(c.employees || 0) + '"></label>' +
+      '<label class="field field--full"><span>Obrigações (separadas por vírgula)</span><input name="obligations" value="' + esc(obligations) + '"></label>' +
+      '<label class="field field--full"><span>Observações</span><textarea name="notes">' + esc(c.notes || '') + '</textarea></label>' +
+      '<input type="hidden" name="officialSource" value="' + esc(c.officialSource || '') + '"><input type="hidden" name="officialSourceUrl" value="' + esc(c.officialSourceUrl || '') + '"><input type="hidden" name="officialConsultedAt" value="' + esc(c.officialConsultedAt || '') + '"><input type="hidden" name="officialDirect" value="' + esc(String(Boolean(c.officialDirect))) + '"><input type="hidden" name="officialVerificationUrl" value="' + esc(c.officialVerificationUrl || '') + '">' +
+    '</form>';
+  }
+
+  function normalizeBrowserCnpjProfile(payload, requestedCnpj, source) {
+    if (payload && payload.razao_social !== undefined) {
+      return {
+        cnpj: payload.cnpj || requestedCnpj, name: payload.razao_social, tradeName: payload.nome_fantasia,
+        registrationStatus: payload.descricao_situacao_cadastral, registrationStatusDate: payload.data_situacao_cadastral,
+        startDate: payload.data_inicio_atividade, cnae: payload.cnae_fiscal, activity: payload.cnae_fiscal_descricao,
+        secondaryCnaes: payload.cnaes_secundarios || [], legalNature: payload.natureza_juridica,
+        companySize: payload.descricao_porte || payload.porte, shareCapital: payload.capital_social,
+        email: payload.email, phone: payload.ddd_telefone_1 || payload.telefone, zipCode: payload.cep,
+        city: [payload.municipio, payload.uf].filter(Boolean).join(' / '),
+        address: [payload.descricao_tipo_de_logradouro, payload.logradouro, payload.numero, payload.complemento, payload.bairro, payload.municipio, payload.uf, payload.cep].filter(Boolean).join(', '),
+        isMei: Boolean(payload.opcao_pelo_mei), isSimple: Boolean(payload.opcao_pelo_simples), source: source,
+        consultedAt: nowISO(), officialVerificationUrl: 'https://www.gov.br/pt-br/servicos/consultar-cadastro-nacional-de-pessoas-juridicas'
+      };
+    }
+    var company = payload.company || {}, address = payload.address || {}, status = payload.status || {}, main = payload.mainActivity || {};
+    var nature = company.nature || {}, size = company.size || {}, phone = (payload.phones || [])[0] || {}, email = (payload.emails || [])[0] || {};
+    return {
+      cnpj: payload.taxId || requestedCnpj, name: company.name || payload.name, tradeName: payload.alias,
+      registrationStatus: status.text || status.name, registrationStatusDate: payload.statusDate,
+      startDate: payload.founded, cnae: main.id || main.code, activity: main.text || main.description,
+      secondaryCnaes: payload.sideActivities || [], legalNature: nature.text || nature.description,
+      companySize: size.text || size.acronym, shareCapital: company.equity, email: email.address,
+      phone: [phone.area, phone.number].filter(Boolean).join(' '), zipCode: address.zip,
+      city: [address.city, address.state].filter(Boolean).join(' / '),
+      address: [address.street, address.number, address.details, address.district, address.city, address.state, address.zip].filter(Boolean).join(', '),
+      isMei: Boolean(payload.isMei), isSimple: Boolean(payload.isSimple), source: source,
+      consultedAt: nowISO(), officialVerificationUrl: 'https://www.gov.br/pt-br/servicos/consultar-cadastro-nacional-de-pessoas-juridicas'
+    };
+  }
+
+  function fetchWithTimeout(url, milliseconds) {
+    var controller = new AbortController();
+    var timer = window.setTimeout(function () { controller.abort(); }, milliseconds || 10000);
+    return fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal }).finally(function () { window.clearTimeout(timer); });
+  }
+
+  function fetchClientCnpjProfile(cnpj) {
+    var cache = storageGet(KEYS.cnpjCache, {}), cached = cache[cnpj];
+    if (cached && Date.now() - Number(cached.savedAt || 0) < 30 * 60 * 1000) return Promise.resolve(Object.assign({}, cached.profile, { cache: true }));
+    var request;
+    if (apiEnabled()) {
+      request = apiRequest('/api/public/cnpj-profile/' + encodeURIComponent(cnpj)).then(function (payload) { return payload.profile; });
+    } else {
+      var sources = [
+        { url: 'https://brasilapi.com.br/api/cnpj/v1/' + encodeURIComponent(cnpj), name: 'BrasilAPI — dados públicos do CNPJ', sourceUrl: 'https://brasilapi.com.br/' },
+        { url: 'https://open.cnpja.com/office/' + encodeURIComponent(cnpj), name: 'CNPJá — dados públicos do CNPJ', sourceUrl: 'https://cnpja.com/' }
+      ];
+      request = sources.reduce(function (chain, source) {
+        return chain.catch(function () {
+          return fetchWithTimeout(source.url, 10000).then(function (response) {
+            if (!response.ok) throw new Error('Fonte indisponível (HTTP ' + response.status + ')');
+            return response.json();
+          }).then(function (payload) { return normalizeBrowserCnpjProfile(payload, cnpj, { name: source.name, official: false, url: source.sourceUrl }); });
+        });
+      }, Promise.reject(new Error('Iniciando consulta')));
+    }
+    return request.then(function (profile) {
+      cache[cnpj] = { savedAt: Date.now(), profile: profile };
+      Object.keys(cache).forEach(function (key) { if (Date.now() - Number(cache[key].savedAt || 0) > 24 * 60 * 60 * 1000) delete cache[key]; });
+      storageSet(KEYS.cnpjCache, cache);
+      return profile;
+    });
+  }
+
+  function setClientFormValue(form, name, value) {
+    var field = form.elements[name];
+    if (!field || value === undefined || value === null || value === '') return;
+    field.value = value;
+  }
+
+  function clientCnpjFeedback(kind, title, message, link) {
+    var target = $('#client-cnpj-feedback');
+    if (!target) return;
+    target.className = 'client-cnpj-feedback ' + kind;
+    target.innerHTML = '<span>' + (kind === 'success' ? '✓' : kind === 'error' ? '!' : '◷') + '</span><div><b>' + esc(title) + '</b><small>' + esc(message) + (link ? ' · <a href="' + esc(link) + '" target="_blank" rel="noopener">Conferir no portal oficial ↗</a>' : '') + '</small></div>';
+  }
+
+  function applyClientCnpjProfile(profile) {
+    var form = $('#client-form');
+    if (!form) return;
+    var secondary = (profile.secondaryCnaes || []).map(function (item) {
+      return [formatCnae(item.code || item.id || ''), item.description || item.text || ''].filter(Boolean).join(' — ');
+    }).filter(Boolean).join('\n');
+    var existingValues = ['name', 'tradeName', 'activity', 'cnae', 'email', 'phone', 'city', 'address', 'legalNature'].some(function (name) {
+      return form.elements[name] && String(form.elements[name].value || '').trim();
+    });
+    if (existingValues && !window.confirm('A consulta encontrou dados cadastrais. Deseja substituir os campos da Receita Federal neste formulário? Os dados internos, como faturamento, responsável e observações, serão preservados.')) return false;
+    setClientFormValue(form, 'document', formatCnpj(profile.cnpj));
+    setClientFormValue(form, 'name', profile.name);
+    setClientFormValue(form, 'tradeName', profile.tradeName);
+    setClientFormValue(form, 'activity', profile.activity);
+    setClientFormValue(form, 'cnae', formatCnae(profile.cnae));
+    setClientFormValue(form, 'email', profile.email);
+    setClientFormValue(form, 'phone', profile.phone);
+    setClientFormValue(form, 'city', profile.city);
+    setClientFormValue(form, 'startDate', String(profile.startDate || '').slice(0, 10));
+    setClientFormValue(form, 'address', profile.address);
+    setClientFormValue(form, 'zipCode', profile.zipCode);
+    setClientFormValue(form, 'registrationStatus', profile.registrationStatus);
+    setClientFormValue(form, 'registrationStatusDate', String(profile.registrationStatusDate || '').slice(0, 10));
+    setClientFormValue(form, 'legalNature', profile.legalNature);
+    setClientFormValue(form, 'companySize', profile.companySize);
+    setClientFormValue(form, 'shareCapital', profile.shareCapital);
+    setClientFormValue(form, 'secondaryCnaes', secondary);
+    if (profile.isMei) setClientFormValue(form, 'regime', 'MEI');
+    else if (profile.isSimple) setClientFormValue(form, 'regime', 'Simples Nacional');
+    var statusText = String(profile.registrationStatus || '').toUpperCase();
+    if (/ATIVA/.test(statusText)) setClientFormValue(form, 'status', 'Ativo');
+    else if (/BAIXADA|NULA/.test(statusText)) setClientFormValue(form, 'status', 'Inativo');
+    else if (statusText) setClientFormValue(form, 'status', 'Alerta');
+    setClientFormValue(form, 'officialSource', profile.source && profile.source.name || 'Consulta cadastral do CNPJ');
+    setClientFormValue(form, 'officialSourceUrl', profile.source && profile.source.url || '');
+    setClientFormValue(form, 'officialConsultedAt', profile.consultedAt || nowISO());
+    setClientFormValue(form, 'officialDirect', String(Boolean(profile.source && profile.source.official)));
+    setClientFormValue(form, 'officialVerificationUrl', profile.officialVerificationUrl || '');
+    return true;
+  }
+
+  function consultClientCnpj() {
+    var form = $('#client-form'), input = form && form.elements.document;
+    if (!form || !input) return;
+    var cnpj = cleanCnpj(input.value);
+    if (!validCnpj(cnpj)) {
+      clientCnpjFeedback('error', 'CNPJ inválido', 'Confira as 14 posições e os dígitos verificadores. A consulta automática é exclusiva para CNPJ.');
+      input.focus();
+      return;
+    }
+    var id = form.getAttribute('data-client-id');
+    var duplicate = state.clients.find(function (client) { return client.id !== id && clientDocumentKey(client.document) === cnpj; });
+    if (duplicate) {
+      clientCnpjFeedback('error', 'CNPJ já cadastrado', 'Este documento pertence ao cliente ' + duplicate.name + '. Abra o cadastro existente para atualizá-lo.');
+      return;
+    }
+    var button = $('[data-action="client-consult-cnpj"]');
+    if (button) { button.disabled = true; button.textContent = 'Consultando...'; }
+    clientCnpjFeedback('loading', 'Consultando o cadastro', 'Buscando razão social, CNAE, situação, endereço e contatos.');
+    fetchClientCnpjProfile(cnpj).then(function (profile) {
+      if (!profile || !profile.name) throw new Error('A fonte respondeu sem a razão social da empresa.');
+      if (!applyClientCnpjProfile(profile)) {
+        clientCnpjFeedback('loading', 'Preenchimento cancelado', 'Os dados que já estavam no formulário foram mantidos.');
+        return;
+      }
+      var source = profile.source || {};
+      clientCnpjFeedback('success', source.official ? 'Dados oficiais preenchidos' : 'Dados cadastrais preenchidos', (source.name || 'Cadastro do CNPJ') + (profile.cache ? ' · resposta em cache' : '') + ' · consulta em ' + dateTimeBR(profile.consultedAt), profile.officialVerificationUrl);
+      audit('CNPJ consultado para cliente', formatCnpj(cnpj) + ' · ' + (source.name || 'fonte cadastral'));
+    }).catch(function (error) {
+      clientCnpjFeedback('error', 'Consulta não concluída', error.message || 'A fonte cadastral não respondeu. Você pode continuar o preenchimento manual.');
+    }).finally(function () {
+      if (button && document.body.contains(button)) { button.disabled = false; button.textContent = '⌕ Consultar e preencher'; }
+    });
+  }
+
+  function openClientForm(id) {
+    if (!requireAdmin()) return;
+    var client = id ? state.clients.find(function (c) { return c.id === id; }) : null;
+    openModal(client ? 'Editar cliente' : 'Cadastrar novo cliente', clientFormMarkup(client), '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="submit-client-form">▣ Salvar cadastro</button>');
+  }
+
+  function renderClientDetail(id) {
+    var c = state.clients.find(function (client) { return client.id === id; });
+    if (!c) return '<div class="empty-state"><h3>Cliente não encontrado</h3><button class="primary-button" data-route="clientes">Voltar à base</button></div>';
+    setSelectedClient(c.id);
+    var diag = diagnosisFor(c);
+    var obligationRows = (c.obligations || []).map(function (o) {
+      return '<div class="obligation"><span>✓</span><span><b>' + esc(o) + '</b><small>Obrigação monitorada para o cadastro</small></span><span class="tag tag--success">Aplicável</span></div>';
+    }).join('');
+    var analyses = (c.analyses || []).map(function (a) {
+      return '<div class="timeline-item"><b>Diagnóstico — risco ' + esc(a.risk) + ' (' + esc(a.score) + '/100)</b><p>' + esc(a.summary) + '</p><time>' + dateBR(a.date) + '</time></div>';
+    }).join('') || '<p class="subtle">Nenhuma análise registrada.</p>';
+    var officialCnpjSection = c.officialSource ? '<section class="card client-official-card"><header class="card-header"><div><h2>⌕ Dados cadastrais consultados</h2><small>' + esc(c.officialSource) + ' · ' + esc(dateTimeBR(c.officialConsultedAt)) + '</small></div><span class="tag tag--' + (c.officialDirect ? 'success' : 'info') + '">' + (c.officialDirect ? 'API oficial' : 'Consulta pública') + '</span></header><div class="card-body"><div class="info-grid"><div class="info-cell"><small>Situação cadastral</small><b>' + esc(c.registrationStatus || '—') + '</b></div><div class="info-cell"><small>Data da situação</small><b>' + dateBR(c.registrationStatusDate) + '</b></div><div class="info-cell"><small>Natureza jurídica</small><b>' + esc(c.legalNature || '—') + '</b></div><div class="info-cell"><small>Porte</small><b>' + esc(c.companySize || '—') + '</b></div><div class="info-cell"><small>Capital social</small><b>' + money(c.shareCapital) + '</b></div><div class="info-cell"><small>CEP</small><b>' + esc(c.zipCode || '—') + '</b></div><div class="info-cell info-cell--wide"><small>Endereço</small><b>' + esc(c.address || '—') + '</b></div><div class="info-cell info-cell--wide"><small>CNAEs secundários</small><b class="client-secondary-cnaes">' + esc(c.secondaryCnaes || 'Nenhum informado') + '</b></div></div><div class="client-official-footer"><span>Dados internos do escritório permanecem independentes da consulta cadastral.</span><a class="secondary-button" href="' + esc(c.officialVerificationUrl || 'https://www.gov.br/pt-br/servicos/consultar-cadastro-nacional-de-pessoas-juridicas') + '" target="_blank" rel="noopener">Conferir na Receita Federal ↗</a></div></div></section>' : '';
+    return [
+      '<section class="detail-hero"><span class="detail-avatar">' + initials(c.name) + '</span><div><span class="tag tag--success">' + esc(c.regime) + '</span><h1>' + esc(c.name) + '</h1><p>' + esc(c.document) + ' · ' + esc(c.city || 'Município não informado') + ' · atualizado em ' + dateBR(c.updatedAt) + '</p></div><div class="page-actions"><button class="secondary-button" data-route="clientes">← Voltar</button><button class="secondary-button" data-action="export-client" data-id="' + esc(c.id) + '">↧ JSON</button><button class="secondary-button" data-action="edit-client" data-id="' + esc(c.id) + '">✎ Editar</button><button class="primary-button" data-action="run-diagnosis" data-id="' + esc(c.id) + '">◉ Diagnosticar</button></div></section>',
+      '<div class="kpi-grid"><div class="kpi-card"><span class="kpi-icon">R$</span><div><b>' + money(c.revenue12) + '</b><small>faturamento em 12 meses</small></div></div><div class="kpi-card"><span class="kpi-icon">◉</span><div><b>' + diag.level + '</b><small>nível de risco</small></div></div><div class="kpi-card"><span class="kpi-icon">▣</span><div><b>' + (c.obligations || []).length + '</b><small>obrigações aplicáveis</small></div></div><div class="kpi-card"><span class="kpi-icon">♟</span><div><b>' + c.employees + '</b><small>empregados informados</small></div></div></div>',
+      '<section class="card"><header class="card-header"><h2>▧ Dados cadastrais e tributários</h2>' + statusTag(c.status) + '</header><div class="card-body"><div class="info-grid"><div class="info-cell"><small>Nome fantasia</small><b>' + esc(c.tradeName || '—') + '</b></div><div class="info-cell"><small>Regime tributário</small><b>' + esc(c.regime) + '</b></div><div class="info-cell"><small>CNAE principal</small><b>' + esc(c.cnae || 'Não informado') + '</b></div><div class="info-cell"><small>Atividade</small><b>' + esc(c.activity) + '</b></div><div class="info-cell"><small>Data de abertura</small><b>' + dateBR(c.startDate) + '</b></div><div class="info-cell"><small>Responsável</small><b>' + esc(c.responsible || '—') + '</b></div><div class="info-cell"><small>Contato</small><b>' + esc(c.email || c.phone || '—') + '</b></div><div class="info-cell"><small>Enquadramento</small><b>' + esc(c.annex || '—') + '</b></div></div></div></section>',
+      officialCnpjSection,
+      '<div class="two-column" style="margin-top:14px"><section class="card"><header class="card-header"><h2>▣ Obrigações aplicáveis</h2></header><div class="card-body obligation-list">' + obligationRows + '</div></section><section class="card"><header class="card-header"><h2>◷ Histórico de análises</h2></header><div class="card-body"><div class="timeline">' + analyses + '</div></div></section></div>',
+      '<section class="card" style="margin-top:14px"><header class="card-header"><h2>◉ Diagnóstico tributário resumido</h2><span class="tag tag--' + (diag.score >= 60 ? 'danger' : diag.score >= 35 ? 'warning' : 'success') + '">Risco ' + diag.level + '</span></header><div class="card-body"><div class="diagnosis-list">' + diag.items.slice(0, 4).map(diagnosisItemHtml).join('') + '</div></div></section>',
+      '<div class="info-banner info-banner--blue" style="margin-top:14px"><span>🗒</span><div><strong>Observações do cadastro.</strong> ' + esc(c.notes || 'Nenhuma observação registrada.') + '</div></div>'
+    ].join('');
+  }
+
+  function diagnosisFor(c) {
+    var score = 12;
+    var items = [];
+    if (!validClientDocument(c.document)) {
+      score += 30; items.push({ type: 'danger', icon: '!', title: 'Documento cadastral inconsistente', text: 'O CPF/CNPJ não passou na validação dos dígitos verificadores. Revise antes de emitir relatórios.' });
+    } else items.push({ type: 'success', icon: '✓', title: 'Documento com estrutura válida', text: 'O CPF/CNPJ passou na validação dos dígitos verificadores.' });
+    if (!c.cnae) { score += 15; items.push({ type: 'warning', icon: '⚠', title: 'CNAE não informado', text: 'O diagnóstico de anexo e obrigações pode ficar incompleto.' }); }
+    else items.push({ type: 'success', icon: '✓', title: 'CNAE principal informado', text: c.cnae + ' — ' + c.activity + '.' });
+    if (c.regime === 'MEI') {
+      var pct = Number(c.revenue12 || 0) / 81000 * 100;
+      if (c.revenue12 > 97200) { score += 55; items.push({ type: 'danger', icon: '!', title: 'Excesso superior a 20% do limite do MEI', text: 'A receita ultrapassa R$ 97.200. Avalie o desenquadramento com efeitos retroativos conforme as regras aplicáveis.' }); }
+      else if (c.revenue12 > 81000) { score += 40; items.push({ type: 'danger', icon: '!', title: 'Limite anual do MEI excedido', text: 'A receita supera R$ 81.000. Analise a comunicação de desenquadramento.' }); }
+      else if (pct >= 80) { score += 32; items.push({ type: 'warning', icon: '⚠', title: 'Faturamento próximo ao limite do MEI', text: 'O acumulado representa ' + number(pct) + '% do limite anual de R$ 81.000.' }); }
+      else items.push({ type: 'success', icon: '✓', title: 'Faturamento dentro do limite do MEI', text: 'O acumulado representa ' + number(pct) + '% do teto anual.' });
+      if (Number(c.employees || 0) > 1) { score += 35; items.push({ type: 'danger', icon: '!', title: 'Quantidade de empregados incompatível com o MEI', text: 'O MEI pode contratar no máximo um empregado, observadas as condições legais.' }); }
+    } else if (c.regime === 'Simples Nacional') {
+      var pctSimples = Number(c.revenue12 || 0) / 4800000 * 100;
+      if (c.revenue12 > 4800000) { score += 55; items.push({ type: 'danger', icon: '!', title: 'Limite do Simples Nacional ultrapassado', text: 'A receita excede R$ 4,8 milhões. Verifique os efeitos da exclusão.' }); }
+      else if (pctSimples >= 80) { score += 22; items.push({ type: 'warning', icon: '⚠', title: 'Proximidade do limite do Simples Nacional', text: 'A receita atingiu ' + number(pctSimples) + '% do limite.' }); }
+      else items.push({ type: 'success', icon: '✓', title: 'Receita dentro do limite do Simples', text: 'O faturamento está abaixo do limite de R$ 4,8 milhões.' });
+    } else {
+      score += 12; items.push({ type: 'warning', icon: '◉', title: 'Oportunidade de revisão de regime', text: 'Simule cenários comparativos antes da próxima janela de opção pelo Simples Nacional.' });
+    }
+    if (!(c.obligations || []).length) { score += 18; items.push({ type: 'warning', icon: '▣', title: 'Obrigações não mapeadas', text: 'Complete a lista de obrigações acessórias do cliente.' }); }
+    else items.push({ type: 'success', icon: '▣', title: 'Obrigações mapeadas', text: (c.obligations || []).join(', ') + '.' });
+    items.push({ type: 'warning', icon: '◈', title: 'Preparação para IBS e CBS', text: 'Revise leiautes dos documentos fiscais, cadastros de produtos e a opção pelo regime regular a partir de 2027.' });
+    score = Math.min(100, score);
+    return { score: score, level: score >= 65 ? 'Alto' : score >= 35 ? 'Médio' : 'Baixo', items: items };
+  }
+
+  function diagnosisItemHtml(item) {
+    return '<div class="diagnosis-item diagnosis-item--' + item.type + '"><i>' + item.icon + '</i><div><b>' + esc(item.title) + '</b><p>' + esc(item.text) + '</p></div></div>';
+  }
+
+  function renderDiagnosis() {
+    var c = currentClient() || DEMO_CLIENTS[0];
+    var diag = diagnosisFor(c);
+    var color = diag.score >= 65 ? '#bf3434' : diag.score >= 35 ? '#d58a13' : '#0b488b';
+    var applicableTaxes = c.regime === 'MEI' ? 'INSS, ICMS/ISS fixos no DAS-MEI; acompanhar efeitos da RTC.' : c.regime === 'Simples Nacional' ? 'IRPJ, CSLL, CPP, ICMS/ISS e parcelas do consumo conforme anexo.' : 'IRPJ, CSLL, PIS/Cofins, ISS/ICMS; preparação para CBS/IBS.';
+    return [
+      pageHeading('Diagnóstico Tributário', 'Análise estruturada do cadastro, enquadramento, faturamento, obrigações, riscos e impactos da Reforma Tributária.', '<button class="secondary-button" data-action="print-page">↧ Visualizar / PDF</button><button class="primary-button" data-action="export-report">↧ Exportar relatório</button>'),
+      '<div class="info-banner"><span>◉</span><div><strong>Cliente analisado:</strong> ' + esc(c.name) + '. O resultado é orientativo e deve ser validado por profissional habilitado com os documentos e atos oficiais aplicáveis.</div></div>',
+      '<div class="diagnosis-grid">',
+        '<div class="stack"><section class="card"><header class="card-header"><h2>Configuração da análise</h2></header><div class="card-body"><label class="field"><span>Cliente</span><select id="diagnosis-client">' + state.clients.map(function (client) { return '<option value="' + esc(client.id) + '"' + (client.id === c.id ? ' selected' : '') + '>' + esc(client.name) + '</option>'; }).join('') + '</select></label><div class="risk-score"><div class="risk-ring" style="--score:' + diag.score + ';--risk-color:' + color + '"><div><strong>' + diag.score + '</strong><span>de 100</span></div></div><h3>Risco ' + diag.level + '</h3><p>Classificação calculada a partir dos dados disponíveis.</p></div></div></section><section class="card"><header class="card-header"><h2>Resumo tributário</h2></header><div class="card-body value-list"><div class="value-line"><span>Regime atual</span><b>' + esc(c.regime) + '</b></div><div class="value-line"><span>RBT12</span><b>' + money(c.revenue12) + '</b></div><div class="value-line"><span>Enquadramento</span><b>' + esc(c.annex || '—') + '</b></div><div class="value-line"><span>Obrigações</span><b>' + (c.obligations || []).length + '</b></div></div></section></div>',
+        '<div class="stack"><section class="card"><header class="card-header"><h2>◉ Resultado da análise</h2><span class="tag tag--' + (diag.score >= 65 ? 'danger' : diag.score >= 35 ? 'warning' : 'success') + '">Risco ' + diag.level + '</span></header><div class="card-body"><div class="diagnosis-list">' + diag.items.map(diagnosisItemHtml).join('') + '</div></div></section>',
+        '<div class="two-column"><section class="card"><header class="card-header"><h2>Tributos envolvidos</h2></header><div class="card-body"><p class="subtle">' + esc(applicableTaxes) + '</p><div class="info-banner info-banner--blue" style="margin:12px 0 0"><span>◈</span><div><strong>IBS e CBS.</strong> Em 2026, priorize adequação documental e cumprimento das obrigações acessórias. Para 2027, documente a decisão sobre recolhimento dentro ou fora do Simples.</div></div></div></section><section class="card"><header class="card-header"><h2>Recomendações</h2></header><div class="card-body obligation-list"><div class="obligation"><span>1</span><span><b>Validar dados cadastrais</b><small>Documento, CNAE e atividades</small></span></div><div class="obligation"><span>2</span><span><b>Revisar faturamento</b><small>Limites e projeções</small></span></div><div class="obligation"><span>3</span><span><b>Plano IBS/CBS</b><small>Leiautes, contratos e regime</small></span></div></div></section></div>',
+        '</div>',
+      '</div>'
+    ].join('');
+  }
+
+  function legalCard(source) {
+    return '<article class="card legal-card"><div class="card-body"><span class="tag tag--info" style="align-self:flex-start;margin-bottom:9px">' + esc(source.area) + '</span><h3>' + esc(source.title) + '</h3><p>' + esc(source.summary) + '</p><div class="source-meta"><span><small>Órgão</small><b>' + esc(source.issuer || 'Cadastro manual') + '</b></span><span><small>Norma</small><b>' + esc(source.number) + '</b></span><span><small>Publicação</small><b>' + esc(source.publication) + '</b></span><span><small>Última atualização</small><b>' + esc(source.updated) + '</b></span></div><a class="official-link" target="_blank" rel="noopener" href="' + esc(source.url || '#') + '">Consultar fonte oficial ↗</a></div></article>';
+  }
+
+  function renderTopic(topic) {
+    var data = {
+      mei: {
+        eyebrow: 'Microempreendedor Individual', title: 'MEI — regras e enquadramento em 2026',
+        desc: 'Limite de receita, condições de permanência, obrigações, desenquadramento e fontes oficiais para uma gestão segura do SIMEI.',
+        stats: [['R$ 81 mil', 'limite anual'], ['R$ 6.750', 'proporção mensal'], ['1 empregado', 'limite de contratação']],
+        bullets: [
+          ['Condições de enquadramento', 'Receita anual de até R$ 81.000, atividade permitida no Anexo XI, ausência de participação em outra empresa e no máximo um empregado.'],
+          ['Excesso de receita', 'Até 20%: efeitos de desenquadramento em regra no ano seguinte; acima de 20%: avaliar efeitos retroativos conforme a data e a norma aplicável.'],
+          ['Obrigações essenciais', 'Pagamento mensal do DAS-MEI, DASN-SIMEI até 31 de maio do ano seguinte, documentos fiscais quando obrigatórios e obrigações trabalhistas se houver empregado.']
+        ],
+        sourceAreas: ['MEI', 'Simples Nacional']
+      },
+      'ibs-cbs': {
+        eyebrow: 'Reforma Tributária do Consumo', title: 'IBS e CBS — transição e operação',
+        desc: 'Visão consolidada da LC 214/2025, da LC 227/2026 e das orientações oficiais para o ano-teste de 2026.',
+        stats: [['0,1%', 'IBS em 2026'], ['0,9%', 'CBS em 2026'], ['2033', 'modelo integral']],
+        bullets: [
+          ['Ano-teste de 2026', 'IBS de 0,1% e CBS de 0,9%. A Receita Federal informa dispensa condicionada ao cumprimento das obrigações acessórias, conforme a legislação.'],
+          ['Documentos fiscais eletrônicos', 'NF-e, NFC-e, CT-e, NFS-e, NFCom, NF3e, BP-e e outros documentos deverão observar notas técnicas e cronogramas específicos.'],
+          ['Transição', 'CBS entra na etapa seguinte em 2027; a transição de ICMS e ISS para IBS ocorre gradualmente entre 2029 e 2032, com vigência integral em 2033.']
+        ],
+        sourceAreas: ['IBS e CBS', 'Obrigações Acessórias']
+      },
+      'mei-ibs-cbs': {
+        eyebrow: 'SIMEI na Reforma Tributária', title: 'MEI, IBS e CBS — impactos práticos',
+        desc: 'O que monitorar no MEI durante a implantação do novo sistema de tributação do consumo.',
+        stats: [['SIMEI', 'regime preservado'], ['2026', 'ano de adaptação'], ['2027', 'próxima etapa']],
+        bullets: [
+          ['Tratamento favorecido preservado', 'O MEI continua submetido ao regime simplificado e às regras da LC 123/2006 e da Resolução CGSN 140/2018, com monitoramento das alterações posteriores.'],
+          ['Cadastros e documentos', 'Mesmo sem mudança imediata no recolhimento do MEI, acompanhe leiautes de NFS-e/NF-e, atividades permitidas e orientações específicas dos órgãos oficiais.'],
+          ['Crescimento e desenquadramento', 'Empresas próximas do limite devem simular a migração e os efeitos de IBS/CBS no regime seguinte antes de ultrapassar o teto anual.']
+        ],
+        sourceAreas: ['MEI', 'IBS e CBS', 'Simples Nacional']
+      }
+    }[topic];
+    var sources = OFFICIAL_SOURCES.concat(state.customLegal).filter(function (s) { return data.sourceAreas.indexOf(s.area) >= 0; }).slice(0, 6);
+    return [
+      '<section class="topic-hero"><span class="eyebrow">' + esc(data.eyebrow) + '</span><h1>' + esc(data.title) + '</h1><p>' + esc(data.desc) + '</p><div class="topic-stats">' + data.stats.map(function (s) { return '<span class="topic-stat"><b>' + esc(s[0]) + '</b><span>' + esc(s[1]) + '</span></span>'; }).join('') + '</div></section>',
+      '<div class="warning-banner" style="margin-bottom:14px">⚠ Conteúdo informativo, com base nas fontes indicadas e conferência em ' + TODAY + '. Alterações normativas posteriores devem ser verificadas antes da tomada de decisão.</div>',
+      '<div class="content-grid">' + data.bullets.map(function (b, index) { return '<section class="card"><header class="card-header"><h2><span class="tag tag--success">' + (index + 1) + '</span> ' + esc(b[0]) + '</h2></header><div class="card-body"><p class="subtle" style="font-size:10px;line-height:1.65">' + esc(b[1]) + '</p></div></section>'; }).join('') + '</div>',
+      pageHeading('Fontes oficiais relacionadas', 'Número da norma, publicação, atualização e acesso direto ao órgão responsável.', ''),
+      '<div class="content-grid">' + sources.map(legalCard).join('') + '</div>'
+    ].join('');
+  }
+
+  function renderLawLibrary() {
+    var sources = OFFICIAL_SOURCES.concat(state.customLegal);
+    return [
+      '<section class="topic-hero"><span class="eyebrow">Biblioteca legal consolidada</span><h1>Lei Complementar Completa</h1><p>Índice de normas, regulamentações, notas técnicas e orientações oficiais utilizadas pela plataforma. O texto integral permanece disponível no portal oficial de origem.</p><div class="topic-stats"><span class="topic-stat"><b>' + sources.length + '</b><span>fontes catalogadas</span></span><span class="topic-stat"><b>7</b><span>órgãos e portais</span></span><span class="topic-stat"><b>' + TODAY + '</b><span>última conferência</span></span></div></section>',
+      '<div class="pill-tabs"><button class="pill-tab active" data-action="law-filter" data-area="">Todas</button><button class="pill-tab" data-action="law-filter" data-area="Simples Nacional">Simples Nacional</button><button class="pill-tab" data-action="law-filter" data-area="MEI">MEI</button><button class="pill-tab" data-action="law-filter" data-area="IBS e CBS">IBS e CBS</button><button class="pill-tab" data-action="law-filter" data-area="Obrigações Acessórias">Obrigações</button></div>',
+      '<div class="content-grid" id="legal-grid">' + sources.map(legalCard).join('') + '</div>'
+    ].join('');
+  }
+
+  function renderObligations() {
+    var obligations = [
+      ['PGDAS-D', 'Mensal', 'Até o dia 20 do mês seguinte', 'Optantes do Simples Nacional', 'Res. CGSN 140/2018'],
+      ['DAS do Simples', 'Mensal', 'Até o dia 20 do mês seguinte', 'Optantes do Simples Nacional', 'LC 123/2006'],
+      ['DEFIS', 'Anual', 'Último dia de março', 'Optantes do Simples Nacional', 'Res. CGSN 140/2018'],
+      ['DASN-SIMEI', 'Anual', 'Até 31 de maio', 'MEI que foi optante no ano anterior', 'Res. CGSN 140/2018'],
+      ['DCTFWeb', 'Mensal', 'Conforme agenda tributária', 'Empregadores e contribuintes obrigados', 'Receita Federal'],
+      ['eSocial', 'Por evento / mensal', 'Conforme evento e fechamento', 'Empregadores', 'Manual do eSocial'],
+      ['EFD-Reinf', 'Mensal', 'Conforme agenda tributária', 'Contribuintes obrigados', 'Receita Federal'],
+      ['NF-e / NFC-e com IBS/CBS', 'Por operação', 'Cronograma e NT específica', 'Emissores obrigados', 'NT 2025.002'],
+      ['NFS-e com IBS/CBS', 'Por operação', 'Cronograma aplicável', 'Prestadores obrigados', 'Orientações RTC 2026']
+    ];
+    var rows = obligations.map(function (o) { return '<tr><td><b>' + esc(o[0]) + '</b></td><td>' + esc(o[1]) + '</td><td>' + esc(o[2]) + '</td><td>' + esc(o[3]) + '</td><td><span class="tag tag--info">' + esc(o[4]) + '</span></td><td><button class="row-button" data-action="obligation-info" data-name="' + esc(o[0]) + '">⌕</button></td></tr>'; }).join('');
+    return [
+      pageHeading('Obrigações Acessórias', 'Calendário orientativo para MEI, Simples Nacional e a implantação de IBS e CBS em 2026.', '<button class="secondary-button" data-action="print-page">↧ Exportar calendário</button>'),
+      '<div class="info-banner"><span>▣</span><div><strong>Documentos fiscais em 2026.</strong> A orientação oficial prevê destaque individualizado de CBS e IBS em documentos fiscais eletrônicos conforme as notas técnicas e cronogramas aplicáveis. Consulte sempre a agenda tributária e o ente autorizador.</div></div>',
+      '<section class="card"><header class="card-header"><h2>▣ Matriz de obrigações</h2><label class="filter-field" style="min-width:190px"><span>Cliente</span><select id="obligation-client"><option>Todos os clientes</option>' + state.clients.map(function (c) { return '<option>' + esc(c.name) + '</option>'; }).join('') + '</select></label></header><div class="table-wrap"><table class="data-table"><thead><tr><th>Obrigação</th><th>Periodicidade</th><th>Prazo</th><th>Aplicabilidade</th><th>Fonte</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div></section>',
+      '<div class="content-grid" style="margin-top:14px">' + OFFICIAL_SOURCES.filter(function (s) { return s.area === 'Obrigações Acessórias'; }).map(legalCard).join('') + '</div>'
+    ].join('');
+  }
+
+  function renderParameters() {
+    var params = [
+      ['Limite anual do MEI', 'R$ 81.000,00', 'Anual; proporcional no ano de abertura', 'Resolução CGSN 140/2018', 'Compilada até 2026'],
+      ['Proporção mensal do limite MEI', 'R$ 6.750,00', 'Por mês de atividade no ano de abertura', 'Resolução CGSN 140/2018', 'Compilada até 2026'],
+      ['Limite do Simples Nacional', 'R$ 4.800.000,00', 'Receita no mercado interno', 'LC 123/2006 e Res. CGSN 140/2018', 'Texto compilado'],
+      ['Limite de Microempresa', 'R$ 360.000,00', 'Receita bruta anual', 'LC 123/2006', 'Texto compilado'],
+      ['CBS no ano-teste', '0,9%', 'Ano-calendário 2026', 'LC 214/2025', 'Texto compilado 2026'],
+      ['IBS no ano-teste', '0,1%', 'Ano-calendário 2026', 'LC 214/2025', 'Texto compilado 2026'],
+      ['DAS do Simples', 'Dia 20', 'Mês seguinte à apuração', 'Resolução CGSN 140/2018', 'Compilada até 2026'],
+      ['DASN-SIMEI', '31 de maio', 'Ano seguinte ao da apuração', 'Resolução CGSN 140/2018', 'Atualização oficial 04/09/2025'],
+      ['Opção IBS/CBS regular para 2027', 'Conforme janela oficial', 'Regras específicas para optantes', 'Resolução CGSN 186/2026', '17/04/2026'],
+      ['Obrigação cadastral de certas PF', '01/01/2027', 'Cronograma prorrogado', 'Decreto 13.075/2026', '22/07/2026']
+    ];
+    return [
+      pageHeading('Parâmetros 2026', 'Limites, alíquotas, prazos e regras de transição com fonte e data de atualização.', '<button class="secondary-button" data-action="print-page">↧ PDF</button><button class="primary-button" data-action="export-parameters">↧ Exportar JSON</button>'),
+      '<div class="info-banner"><span>⚙</span><div><strong>Base verificada em ' + TODAY + '.</strong> Parâmetros estaduais, municipais, setoriais e calendários prorrogados devem ser conferidos no órgão competente.</div></div>',
+      '<section class="card"><header class="card-header"><h2>⚙ Tabela consolidada</h2><span class="tag tag--success">Vigência 2026</span></header><div class="table-wrap"><table class="parameter-table"><thead><tr><th>Parâmetro</th><th>Valor / regra</th><th>Aplicação</th><th>Fonte oficial</th><th>Atualização</th></tr></thead><tbody>' + params.map(function (p) { return '<tr><td><b>' + esc(p[0]) + '</b></td><td class="parameter-value">' + esc(p[1]) + '</td><td>' + esc(p[2]) + '</td><td>' + esc(p[3]) + '</td><td>' + esc(p[4]) + '</td></tr>'; }).join('') + '</tbody></table></div></section>',
+      '<section class="card" style="margin-top:14px"><header class="card-header"><h2>◷ Linha do tempo da transição</h2></header><div class="card-body"><div class="timeline"><div class="timeline-item"><b>2026 — Ano-teste</b><p>CBS 0,9% e IBS 0,1%; adaptação documental e dispensa condicionada conforme orientação oficial.</p><time>LC 214/2025</time></div><div class="timeline-item"><b>2027–2028 — CBS e etapa inicial do IBS</b><p>Extinção de PIS/Cofins, início da CBS e regras transitórias previstas na legislação compilada.</p><time>LC 214/2025 e LC 227/2026</time></div><div class="timeline-item"><b>2029–2032 — Transição de ICMS/ISS</b><p>Redução gradual dos tributos atuais e aumento gradual do IBS.</p><time>EC 132/2023</time></div><div class="timeline-item"><b>2033 — Modelo integral</b><p>Vigência integral do novo modelo de tributação do consumo.</p><time>EC 132/2023</time></div></div></div></section>'
+    ].join('');
+  }
+
+  function calculatePayrollInstant(employeeCount, averageSalary) {
+    var employees = Math.max(0, Math.floor(Number(employeeCount || 0)));
+    var salary = Math.max(0, Number(averageSalary || 0));
+    var gross = employees * salary;
+    var fgts = gross * .08;
+    return { employees: employees, salary: salary, gross: gross, fgts: fgts, total: gross + fgts };
+  }
+
+  function updatePayrollSimulation(scheduleSave) {
+    var employeesInput = $('#payroll-employees'), salaryInput = $('#payroll-salary');
+    if (!employeesInput || !salaryInput) return;
+    var result = calculatePayrollInstant(employeesInput.value, parseLocaleNumber(salaryInput.value));
+    state.settings.payrollEmployees = result.employees;
+    state.settings.payrollSalary = result.salary;
+    var textValues = {
+      'payroll-employees-kpi': String(result.employees),
+      'payroll-gross-kpi': money(result.gross),
+      'payroll-fgts-kpi': money(result.fgts),
+      'payroll-total-kpi': money(result.total),
+      'payroll-formula': result.employees + ' empregado(s) × ' + money(result.salary) + ' = ' + money(result.gross) + ' + FGTS ' + money(result.fgts) + ' = ' + money(result.total)
+    };
+    Object.keys(textValues).forEach(function (id) { var element = $('#' + id); if (element) element.textContent = textValues[id]; });
+    var fgtsField = $('#payroll-fgts-field'), totalField = $('#payroll-total-field');
+    if (fgtsField) fgtsField.value = money(result.fgts);
+    if (totalField) totalField.value = money(result.total);
+    if (scheduleSave) {
+      window.clearTimeout(state.payrollSaveTimer);
+      state.payrollSaveTimer = window.setTimeout(function () { persist(); }, 350);
+    }
+  }
+
+  function renderPayroll() {
+    var c = currentClient() || DEMO_CLIENTS[0];
+    var payrollEmployees = state.settings.payrollEmployees == null ? Number(c.employees || 0) : Number(state.settings.payrollEmployees);
+    var payrollSalary = Number(state.settings.payrollSalary || 2800);
+    var payroll = calculatePayrollInstant(payrollEmployees, payrollSalary);
+    return [
+      pageHeading('Folha de Pagamento', 'Simulador instantâneo de folha e FGTS para o cliente selecionado.', '<button class="secondary-button" data-action="print-page">↧ Relatório</button><button class="primary-button" data-action="save-current">▣ Salvar simulação</button>'),
+      '<div class="kpi-grid"><div class="kpi-card"><span class="kpi-icon">♟</span><div><b id="payroll-employees-kpi">' + payroll.employees + '</b><small>empregados</small></div></div><div class="kpi-card"><span class="kpi-icon">R$</span><div><b id="payroll-gross-kpi">' + money(payroll.gross) + '</b><small>folha bruta simulada</small></div></div><div class="kpi-card"><span class="kpi-icon">▣</span><div><b id="payroll-fgts-kpi">' + money(payroll.fgts) + '</b><small>FGTS estimado — 8%</small></div></div><div class="kpi-card"><span class="kpi-icon">∑</span><div><b id="payroll-total-kpi">' + money(payroll.total) + '</b><small>total da folha + FGTS</small></div></div></div>',
+      '<div class="two-column"><section class="card"><header class="card-header"><h2>♟ Composição da folha</h2><span class="live-badge"><i></i> Instantâneo</span></header><div class="card-body form-grid"><label class="field"><span>Quantidade de empregados</span><input id="payroll-employees" type="number" min="0" step="1" value="' + payroll.employees + '"></label><label class="field"><span>Salário médio</span><input id="payroll-salary" type="number" min="0" step="0.01" inputmode="decimal" value="' + payroll.salary + '"></label><label class="field"><span>FGTS estimado</span><input id="payroll-fgts-field" value="' + money(payroll.fgts) + '" readonly></label><label class="field"><span>Total da folha + FGTS</span><input id="payroll-total-field" value="' + money(payroll.total) + '" readonly></label><label class="field field--full"><span>Cliente</span><input value="' + esc(c.name) + '" readonly></label><div class="field field--full instant-calc-status"><span>⚡</span><div><b>Soma automática ativa</b><small id="payroll-formula">' + payroll.employees + ' empregado(s) × ' + money(payroll.salary) + ' = ' + money(payroll.gross) + ' + FGTS ' + money(payroll.fgts) + ' = ' + money(payroll.total) + '</small></div></div></div></section><section class="card"><header class="card-header"><h2>▣ Obrigações trabalhistas</h2></header><div class="card-body obligation-list"><div class="obligation"><span>✓</span><span><b>eSocial</b><small>Eventos e fechamento periódico</small></span><span class="tag tag--success">Monitorado</span></div><div class="obligation"><span>✓</span><span><b>DCTFWeb</b><small>Débitos previdenciários</small></span><span class="tag tag--success">Monitorado</span></div><div class="obligation"><span>✓</span><span><b>FGTS Digital</b><small>Recolhimento conforme vencimento</small></span><span class="tag tag--success">Monitorado</span></div></div></section></div>',
+      '<div class="warning-banner" style="margin-top:14px">Simulação ilustrativa. Cálculos de folha exigem dados individuais, rubricas, convenção coletiva e tabelas oficiais vigentes.</div>'
+    ].join('');
+  }
+
+  function terminationDefaults() {
+    return {
+      title: 'Simulação de rescisão', contractType: 'indeterminado', startDate: '2023-02-01', communicationDate: '2026-08-20',
+      terminationDate: '2026-08-20', contractEndDate: '2026-12-31', locality: 'urbano', reason: 'sem-justa-causa',
+      noticeType: 'indenizado', salary: 4500, variableAverage: 300, overtimeAverage: 200, nightAverage: 0,
+      hazardRate: 0, unhealthyRate: 0, unhealthyBase: 1621, balanceDays: 0, vacationPeriodsTaken: 3,
+      includeBalance: true, includeNotice: true, includeThirteenth: true, includeVestedVacation: true, includeProportionalVacation: true,
+      bonus: 0, commission: 0, otherEarnings: 0, calculateInss: true, calculateIrrf: true, dependents: 0,
+      advances: 0, absences: 0, alimony: 0, otherDeductions: 0, fgtsBalance: 15000, fgtsRate: 8,
+      birthdayWithdrawal: false, cppEnabled: true, cppRate: 20, ratRate: 2, thirdPartyRate: 5.8
+    };
+  }
+  function terminationDateValue(value) {
+    var parts = String(value || '').slice(0, 10).split('-').map(Number);
+    if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+    var date = new Date(parts[0], parts[1] - 1, parts[2]);
+    return date.getFullYear() === parts[0] && date.getMonth() === parts[1] - 1 && date.getDate() === parts[2] ? date : null;
+  }
+  function terminationDateISO(date) {
+    if (!date || Number.isNaN(date.getTime())) return '';
+    return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+  }
+  function terminationAddDays(date, days) { var next = new Date(date.getTime()); next.setDate(next.getDate() + Number(days || 0)); return next; }
+  function terminationDaysBetween(start, end) { return start && end && end >= start ? Math.floor((end - start) / 86400000) + 1 : 0; }
+  function terminationEligibleMonths(start, end, year) {
+    if (!start || !end || end < start) return 0;
+    var total = 0;
+    for (var month = 0; month < 12; month += 1) {
+      var monthStart = new Date(year, month, 1), monthEnd = new Date(year, month + 1, 0);
+      var overlapStart = start > monthStart ? start : monthStart, overlapEnd = end < monthEnd ? end : monthEnd;
+      if (overlapEnd >= overlapStart && terminationDaysBetween(overlapStart, overlapEnd) >= 15) total += 1;
+    }
+    return total;
+  }
+  function employeeInss2026(baseValue) {
+    var base = Math.max(0, Math.min(Number(baseValue || 0), 8475.55));
+    var bands = [[1621, .075], [2902.84, .09], [4354.27, .12], [8475.55, .14]];
+    var previous = 0, contribution = 0;
+    bands.forEach(function (band) { var slice = Math.max(0, Math.min(base, band[0]) - previous); contribution += slice * band[1]; previous = band[0]; });
+    return Math.max(0, contribution);
+  }
+  function terminationIrrf2026(grossValue, inssValue, dependents, alimonyValue, useReduction) {
+    var gross = Math.max(0, Number(grossValue || 0));
+    var legal = Math.max(0, Number(inssValue || 0)) + Math.max(0, Number(dependents || 0)) * 189.59 + Math.max(0, Number(alimonyValue || 0));
+    var simplified = Math.min(gross, 607.20), applied = simplified > legal ? simplified : legal;
+    var base = Math.max(0, gross - applied), rate = 0, deduction = 0;
+    if (base > 4664.68) { rate = .275; deduction = 908.73; }
+    else if (base > 3751.05) { rate = .225; deduction = 675.49; }
+    else if (base > 2826.65) { rate = .15; deduction = 394.16; }
+    else if (base > 2428.80) { rate = .075; deduction = 182.16; }
+    var beforeReduction = Math.max(0, base * rate - deduction), reduction = 0;
+    if (useReduction && gross <= 5000) reduction = beforeReduction;
+    else if (useReduction && gross <= 7350) reduction = Math.min(beforeReduction, Math.max(0, 978.62 - .133145 * gross));
+    return { value: Math.max(0, beforeReduction - reduction), base: base, rate: rate, deduction: deduction, reduction: reduction, method: simplified > legal ? 'Desconto simplificado' : 'Deduções legais' };
+  }
+  function terminationReasonLabel(reason) {
+    return ({
+      'sem-justa-causa': 'Dispensa sem justa causa', 'pedido-demissao': 'Pedido de demissão', 'justa-causa': 'Dispensa por justa causa',
+      'acordo': 'Extinção por acordo — art. 484-A', 'rescisao-indireta': 'Rescisão indireta', 'termino-prazo': 'Término normal do contrato',
+      'antecipada-empregador': 'Término antecipado pelo empregador', 'antecipada-empregado': 'Término antecipado pelo empregado'
+    })[reason] || reason;
+  }
+  function readTerminationSimulation() {
+    var fallback = Object.assign(terminationDefaults(), state.settings.terminationDraft || state.settings.terminationSimulation || {});
+    var value = function (id, defaultValue) { var el = $('#' + id); return el ? el.value : defaultValue; };
+    var checked = function (id, defaultValue) { var el = $('#' + id); return el ? el.checked : Boolean(defaultValue); };
+    return {
+      title: value('termination-title', fallback.title), contractType: value('termination-contract-type', fallback.contractType),
+      startDate: value('termination-start-date', fallback.startDate), communicationDate: value('termination-communication-date', fallback.communicationDate),
+      terminationDate: value('termination-date', fallback.terminationDate), contractEndDate: value('termination-contract-end', fallback.contractEndDate),
+      locality: value('termination-locality', fallback.locality), reason: value('termination-reason', fallback.reason), noticeType: value('termination-notice-type', fallback.noticeType),
+      salary: Math.max(0, parseLocaleNumber(value('termination-salary', fallback.salary))), variableAverage: Math.max(0, parseLocaleNumber(value('termination-variable', fallback.variableAverage))),
+      overtimeAverage: Math.max(0, parseLocaleNumber(value('termination-overtime', fallback.overtimeAverage))), nightAverage: Math.max(0, parseLocaleNumber(value('termination-night', fallback.nightAverage))),
+      hazardRate: Math.max(0, parseLocaleNumber(value('termination-hazard', fallback.hazardRate))), unhealthyRate: Math.max(0, parseLocaleNumber(value('termination-unhealthy', fallback.unhealthyRate))),
+      unhealthyBase: Math.max(0, parseLocaleNumber(value('termination-unhealthy-base', fallback.unhealthyBase))), balanceDays: Math.max(0, Math.min(30, Math.round(parseLocaleNumber(value('termination-balance-days', fallback.balanceDays))))),
+      vacationPeriodsTaken: Math.max(0, Math.round(parseLocaleNumber(value('termination-vacation-taken', fallback.vacationPeriodsTaken)))),
+      includeBalance: checked('termination-include-balance', fallback.includeBalance), includeNotice: checked('termination-include-notice', fallback.includeNotice),
+      includeThirteenth: checked('termination-include-thirteenth', fallback.includeThirteenth), includeVestedVacation: checked('termination-include-vested', fallback.includeVestedVacation),
+      includeProportionalVacation: checked('termination-include-proportional', fallback.includeProportionalVacation),
+      bonus: Math.max(0, parseLocaleNumber(value('termination-bonus', fallback.bonus))), commission: Math.max(0, parseLocaleNumber(value('termination-commission', fallback.commission))), otherEarnings: Math.max(0, parseLocaleNumber(value('termination-other-earnings', fallback.otherEarnings))),
+      calculateInss: checked('termination-calc-inss', fallback.calculateInss), calculateIrrf: checked('termination-calc-irrf', fallback.calculateIrrf), dependents: Math.max(0, Math.round(parseLocaleNumber(value('termination-dependents', fallback.dependents)))),
+      advances: Math.max(0, parseLocaleNumber(value('termination-advances', fallback.advances))), absences: Math.max(0, parseLocaleNumber(value('termination-absences', fallback.absences))), alimony: Math.max(0, parseLocaleNumber(value('termination-alimony', fallback.alimony))), otherDeductions: Math.max(0, parseLocaleNumber(value('termination-other-deductions', fallback.otherDeductions))),
+      fgtsBalance: Math.max(0, parseLocaleNumber(value('termination-fgts-balance', fallback.fgtsBalance))), fgtsRate: Math.max(0, parseLocaleNumber(value('termination-fgts-rate', fallback.fgtsRate))), birthdayWithdrawal: checked('termination-birthday-withdrawal', fallback.birthdayWithdrawal),
+      cppEnabled: checked('termination-cpp-enabled', fallback.cppEnabled), cppRate: Math.max(0, parseLocaleNumber(value('termination-cpp-rate', fallback.cppRate))), ratRate: Math.max(0, parseLocaleNumber(value('termination-rat-rate', fallback.ratRate))), thirdPartyRate: Math.max(0, parseLocaleNumber(value('termination-third-rate', fallback.thirdPartyRate)))
+    };
+  }
+  function calculateTermination(data) {
+    var start = terminationDateValue(data.startDate), end = terminationDateValue(data.terminationDate), contractEnd = terminationDateValue(data.contractEndDate);
+    var validDates = Boolean(start && end && end >= start), warnings = [];
+    var serviceDays = validDates ? terminationDaysBetween(start, end) : 0;
+    var completedYears = Math.max(0, Math.floor(serviceDays / 365.2425));
+    var noticeDays = Math.min(90, 30 + completedYears * 3);
+    var projectionApplies = data.noticeType === 'indenizado' && ['sem-justa-causa', 'rescisao-indireta'].indexOf(data.reason) >= 0;
+    var rightsEnd = validDates ? terminationAddDays(end, projectionApplies ? noticeDays : 0) : end;
+    var projectedServiceDays = validDates ? terminationDaysBetween(start, rightsEnd) : 0;
+    var baseSalary = data.salary + data.variableAverage + data.overtimeAverage + data.nightAverage;
+    var hazard = data.salary * data.hazardRate / 100, unhealthy = data.unhealthyBase * data.unhealthyRate / 100;
+    var remuneration = baseSalary + hazard + unhealthy;
+    var balanceDays = validDates ? (data.balanceDays || Math.min(30, end.getDate())) : 0;
+    var salaryBalance = data.includeBalance ? remuneration / 30 * balanceDays : 0;
+    var noticePay = 0, noticeDeduction = 0;
+    if (data.includeNotice && data.noticeType === 'indenizado' && ['sem-justa-causa', 'rescisao-indireta'].indexOf(data.reason) >= 0) noticePay = remuneration / 30 * noticeDays;
+    if (data.includeNotice && data.noticeType === 'indenizado' && data.reason === 'acordo') noticePay = remuneration / 30 * noticeDays * .5;
+    if (data.reason === 'pedido-demissao' && data.noticeType === 'nao-cumprido') noticeDeduction = remuneration;
+    var currentYear = rightsEnd ? rightsEnd.getFullYear() : 2026;
+    var thirteenthMonths = validDates ? terminationEligibleMonths(start, rightsEnd, currentYear) : 0;
+    if (data.reason === 'justa-causa') thirteenthMonths = 0;
+    var thirteenth = data.includeThirteenth ? remuneration / 12 * thirteenthMonths : 0;
+    var completedVacationPeriods = Math.floor(projectedServiceDays / 365.2425);
+    var vestedPeriods = Math.max(0, completedVacationPeriods - data.vacationPeriodsTaken);
+    var anniversary = start && rightsEnd ? new Date(rightsEnd.getFullYear(), start.getMonth(), start.getDate()) : null;
+    if (anniversary && anniversary > rightsEnd) anniversary.setFullYear(anniversary.getFullYear() - 1);
+    var daysInCurrentPeriod = anniversary && rightsEnd ? terminationDaysBetween(anniversary, rightsEnd) : 0;
+    var proportionalMonths = Math.min(11, Math.max(0, Math.floor(daysInCurrentPeriod / 30.4375) + ((daysInCurrentPeriod % 30.4375) >= 15 ? 1 : 0)));
+    if (data.reason === 'justa-causa') proportionalMonths = 0;
+    var vestedVacation = data.includeVestedVacation ? remuneration * vestedPeriods : 0;
+    var proportionalVacation = data.includeProportionalVacation ? remuneration / 12 * proportionalMonths : 0;
+    var vacationThird = (vestedVacation + proportionalVacation) / 3;
+    var remainingDays = validDates && contractEnd && contractEnd > end ? terminationDaysBetween(terminationAddDays(end, 1), contractEnd) : 0;
+    var fixedIndemnity = data.reason === 'antecipada-empregador' ? remuneration / 30 * remainingDays * .5 : 0;
+    var fixedEmployeeDeduction = data.reason === 'antecipada-empregado' ? remuneration / 30 * remainingDays * .5 : 0;
+    var taxableExtras = data.bonus + data.commission + data.otherEarnings;
+    var gross = salaryBalance + noticePay + thirteenth + vestedVacation + proportionalVacation + vacationThird + fixedIndemnity + taxableExtras;
+    var monthlyTaxBase = salaryBalance + taxableExtras;
+    var inssMonthly = data.calculateInss ? employeeInss2026(monthlyTaxBase) : 0;
+    var inssThirteenth = data.calculateInss ? employeeInss2026(thirteenth) : 0;
+    var inss = inssMonthly + inssThirteenth;
+    var monthlyIrrf = data.calculateIrrf ? terminationIrrf2026(monthlyTaxBase, inssMonthly, data.dependents, data.alimony, true) : { value: 0, base: 0, reduction: 0, method: 'Desativado' };
+    var thirteenthIrrf = data.calculateIrrf ? terminationIrrf2026(thirteenth, inssThirteenth, data.dependents, 0, false) : { value: 0, base: 0, reduction: 0, method: 'Desativado' };
+    var irrf = monthlyIrrf.value + thirteenthIrrf.value;
+    var deductions = inss + irrf + data.advances + data.absences + data.alimony + data.otherDeductions + noticeDeduction + fixedEmployeeDeduction;
+    var net = gross - deductions;
+    var fgtsBase = salaryBalance + thirteenth + noticePay + taxableExtras;
+    var fgtsDeposit = fgtsBase * data.fgtsRate / 100;
+    var penaltyRate = ['sem-justa-causa', 'rescisao-indireta', 'antecipada-empregador'].indexOf(data.reason) >= 0 ? 40 : data.reason === 'acordo' ? 20 : 0;
+    var penaltyBase = data.fgtsBalance + fgtsDeposit, fgtsPenalty = penaltyBase * penaltyRate / 100;
+    var withdrawRate = ['sem-justa-causa', 'rescisao-indireta', 'antecipada-empregador', 'termino-prazo'].indexOf(data.reason) >= 0 ? 100 : data.reason === 'acordo' ? 80 : 0;
+    var fgtsAvailable = data.birthdayWithdrawal && withdrawRate ? fgtsPenalty : (penaltyBase + fgtsPenalty) * withdrawRate / 100;
+    var cppBase = monthlyTaxBase + thirteenth, cppTotalRate = data.cppRate + data.ratRate + data.thirdPartyRate;
+    var cpp = data.cppEnabled ? cppBase * cppTotalRate / 100 : 0;
+    var employerOutlay = Math.max(0, net) + inss + irrf + fgtsDeposit + fgtsPenalty + cpp;
+    var deadline = validDates ? terminationAddDays(end, 10) : null;
+    if (!validDates) warnings.push('Confira as datas: o desligamento deve ser igual ou posterior à admissão.');
+    if (data.noticeType === 'trabalhado') warnings.push('Aviso trabalhado selecionado: a remuneração do período deve ser processada na folha normal e não foi duplicada como aviso indenizado.');
+    if (data.reason === 'pedido-demissao' && noticeDeduction) warnings.push('Foi estimado desconto de 30 dias pelo aviso não cumprido; confirme dispensa, norma coletiva e limite aplicável.');
+    if (fixedIndemnity) warnings.push('Indenização do art. 479 estimada em metade da remuneração restante até o termo do contrato.');
+    if (fixedEmployeeDeduction) warnings.push('Art. 480: o valor exibido é somente o limite estimado; o desconto exige prejuízo comprovado e análise jurídica.');
+    if (vestedPeriods > 1) warnings.push('Foram encontrados ' + vestedPeriods + ' períodos de férias não gozados. Verifique eventual pagamento em dobro e registros reais.');
+    if (data.birthdayWithdrawal && withdrawRate) warnings.push('Saque-aniversário informado: o saldo integral do FGTS não foi somado à disponibilidade imediata; a multa permanece demonstrada.');
+    if (data.reason === 'acordo') warnings.push('No acordo do art. 484-A, o saque do FGTS é limitado a 80% e não há direito ao seguro-desemprego.');
+    warnings.push('Convenção coletiva, estabilidade, afastamentos, médias, férias já quitadas e rubricas do eSocial podem alterar o cálculo final.');
+    var lines = [
+      { group: 'Proventos', name: 'Saldo de salário (' + balanceDays + ' dias)', value: salaryBalance },
+      { group: 'Proventos', name: 'Aviso prévio indenizado (' + noticeDays + ' dias)', value: noticePay },
+      { group: 'Proventos', name: '13º salário proporcional (' + thirteenthMonths + '/12)', value: thirteenth },
+      { group: 'Proventos', name: 'Férias vencidas (' + vestedPeriods + ' período(s))', value: vestedVacation },
+      { group: 'Proventos', name: 'Férias proporcionais (' + proportionalMonths + '/12)', value: proportionalVacation },
+      { group: 'Proventos', name: 'Adicional constitucional de 1/3', value: vacationThird },
+      { group: 'Proventos', name: 'Indenização de contrato a prazo — art. 479', value: fixedIndemnity },
+      { group: 'Proventos', name: 'Bônus, comissões e outros proventos', value: taxableExtras },
+      { group: 'Deduções', name: 'INSS 2026 — remuneração + 13º em separado', value: -inss },
+      { group: 'Deduções', name: 'IRRF 2026 — remuneração + 13º em separado', value: -irrf },
+      { group: 'Deduções', name: 'Aviso prévio não cumprido', value: -noticeDeduction },
+      { group: 'Deduções', name: 'Limite estimado art. 480', value: -fixedEmployeeDeduction },
+      { group: 'Deduções', name: 'Adiantamentos, faltas, pensão e outras deduções', value: -(data.advances + data.absences + data.alimony + data.otherDeductions) }
+    ].filter(function (line) { return Math.abs(line.value) > .004; });
+    return {
+      valid: validDates, remuneration: remuneration, hazard: hazard, unhealthy: unhealthy, serviceDays: serviceDays, completedYears: completedYears,
+      noticeDays: noticeDays, balanceDays: balanceDays, thirteenthMonths: thirteenthMonths, vestedPeriods: vestedPeriods, proportionalMonths: proportionalMonths,
+      gross: gross, deductions: deductions, net: net, inss: inss, irrf: irrf, irrfReduction: monthlyIrrf.reduction,
+      fgtsBase: fgtsBase, fgtsDeposit: fgtsDeposit, penaltyBase: penaltyBase, penaltyRate: penaltyRate, fgtsPenalty: fgtsPenalty,
+      withdrawRate: withdrawRate, fgtsAvailable: fgtsAvailable, cppBase: cppBase, cppTotalRate: cppTotalRate, cpp: cpp,
+      employerOutlay: employerOutlay, workerTotalAccess: net + fgtsAvailable, deadline: deadline, rightsEnd: rightsEnd,
+      lines: lines, warnings: warnings
+    };
+  }
+  function renderTerminationSimulator() {
+    var data = Object.assign(terminationDefaults(), state.settings.terminationDraft || state.settings.terminationSimulation || {});
+    var selected = function (value, current) { return value === current ? ' selected' : ''; }, checked = function (value) { return value ? ' checked' : ''; };
+    var steps = [['contrato', 'Contrato'], ['remuneracao', 'Remuneração'], ['proventos', 'Proventos'], ['deducoes', 'Deduções'], ['fgts', 'FGTS'], ['cpp', 'CPP'], ['resultado', 'Resultado']];
+    var tabs = steps.map(function (step, index) { return '<button class="' + (index === 0 ? 'active' : '') + '" data-action="termination-step" data-step="' + step[0] + '"><span>' + (index + 1) + '</span>' + step[1] + '</button>'; }).join('');
+    return [
+      pageHeading('Verbas Rescisórias', 'Simulação completa para empregados mensalistas, com cálculo automático das verbas, descontos, FGTS, encargos patronais e resultado final.', '<button class="secondary-button" data-action="termination-export-json">↧ Exportar JSON</button><button class="secondary-button" data-action="termination-print">▣ PDF / imprimir</button><button class="primary-button" data-action="termination-save">▣ Salvar simulação</button>'),
+      '<div class="info-banner termination-intro-banner"><span>i</span><div><strong>Cálculo orientativo conforme dados informados.</strong> Abrange contratos por prazo indeterminado, experiência, obra certa, safra, prazo determinado, Lei nº 9.601/1998 e contrato com cláusula assecuratória. Valide convenção coletiva, estabilidade, rubricas do eSocial e histórico real do FGTS.</div><span class="tag tag--warning">Base 2026</span></div>',
+      '<div class="termination-tabs" role="tablist" aria-label="Etapas da simulação">' + tabs + '<i id="termination-progress"></i></div>',
+      '<div class="termination-layout" id="termination-simulator" data-current-step="contrato"><div class="termination-form-column">',
+      '<section class="card termination-panel active" data-termination-panel="contrato"><header class="card-header"><div><h2>Contrato</h2><small>Período, modalidade e motivo do desligamento</small></div><span class="tag tag--info">Etapa 1 de 7</span></header><div class="card-body"><label class="field"><span>Título da simulação</span><input id="termination-title" data-termination-input value="' + esc(data.title) + '" placeholder="Ex.: Rescisão de João da Silva"></label><h3 class="termination-section-title">Período</h3><div class="form-grid termination-form-grid"><label class="field"><span>Tipo de contrato</span><select id="termination-contract-type" data-termination-input><option value="indeterminado"' + selected('indeterminado', data.contractType) + '>Prazo indeterminado</option><option value="experiencia"' + selected('experiencia', data.contractType) + '>Contrato de experiência</option><option value="obra-certa"' + selected('obra-certa', data.contractType) + '>Obra certa</option><option value="safra"' + selected('safra', data.contractType) + '>Contrato de safra</option><option value="prazo-determinado"' + selected('prazo-determinado', data.contractType) + '>Prazo determinado</option><option value="lei-9601"' + selected('lei-9601', data.contractType) + '>Lei nº 9.601/1998</option><option value="clausula-assecuratoria"' + selected('clausula-assecuratoria', data.contractType) + '>Prazo determinado com cláusula assecuratória</option></select></label><label class="field"><span>Data de início do contrato</span><input id="termination-start-date" data-termination-input type="date" value="' + esc(data.startDate) + '"></label><label class="field"><span>Comunicação do desligamento</span><input id="termination-communication-date" data-termination-input type="date" value="' + esc(data.communicationDate) + '"></label><label class="field"><span>Data efetiva do desligamento</span><input id="termination-date" data-termination-input type="date" value="' + esc(data.terminationDate) + '"></label><label class="field termination-fixed-field"><span>Data prevista para término</span><input id="termination-contract-end" data-termination-input type="date" value="' + esc(data.contractEndDate) + '"></label><label class="field"><span>Localidade da prestação</span><select id="termination-locality" data-termination-input><option value="urbano"' + selected('urbano', data.locality) + '>Urbano</option><option value="rural"' + selected('rural', data.locality) + '>Rural</option></select></label></div><h3 class="termination-section-title">Detalhes do rompimento</h3><div class="form-grid termination-form-grid"><label class="field"><span>Motivo da rescisão</span><select id="termination-reason" data-termination-input><option value="sem-justa-causa"' + selected('sem-justa-causa', data.reason) + '>Dispensa sem justa causa</option><option value="pedido-demissao"' + selected('pedido-demissao', data.reason) + '>Pedido de demissão</option><option value="justa-causa"' + selected('justa-causa', data.reason) + '>Dispensa por justa causa</option><option value="acordo"' + selected('acordo', data.reason) + '>Extinção por acordo — art. 484-A</option><option value="rescisao-indireta"' + selected('rescisao-indireta', data.reason) + '>Rescisão indireta</option><option value="termino-prazo"' + selected('termino-prazo', data.reason) + '>Término normal do contrato</option><option value="antecipada-empregador"' + selected('antecipada-empregador', data.reason) + '>Término antecipado pelo empregador</option><option value="antecipada-empregado"' + selected('antecipada-empregado', data.reason) + '>Término antecipado pelo empregado</option></select></label><label class="field"><span>Tratamento do aviso prévio</span><select id="termination-notice-type" data-termination-input><option value="indenizado"' + selected('indenizado', data.noticeType) + '>Indenizado</option><option value="trabalhado"' + selected('trabalhado', data.noticeType) + '>Trabalhado</option><option value="dispensado"' + selected('dispensado', data.noticeType) + '>Dispensado sem desconto</option><option value="nao-cumprido"' + selected('nao-cumprido', data.noticeType) + '>Não cumprido — calcular desconto</option><option value="nao-aplicavel"' + selected('nao-aplicavel', data.noticeType) + '>Não aplicável</option></select></label></div><div id="termination-date-alert" class="info-banner"><span>✓</span><div>Datas válidas. A projeção do aviso indenizado será considerada nos direitos proporcionais quando aplicável.</div></div><div class="termination-panel-actions"><button class="secondary-button" data-action="termination-clear">Limpar dados</button><button class="primary-button" data-action="termination-step" data-step="remuneracao">Avançar →</button></div></div></section>',
+      '<section class="card termination-panel" data-termination-panel="remuneracao"><header class="card-header"><div><h2>Remuneração</h2><small>Salário contratual, médias e adicionais</small></div><span class="tag tag--info">Etapa 2 de 7</span></header><div class="card-body"><div class="form-grid termination-form-grid"><label class="field"><span>Salário-base mensal (R$)</span><input id="termination-salary" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.salary) + '"></label><label class="field"><span>Média de parcelas variáveis (R$)</span><input id="termination-variable" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.variableAverage) + '"></label><label class="field"><span>Média mensal de horas extras (R$)</span><input id="termination-overtime" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.overtimeAverage) + '"></label><label class="field"><span>Média de adicional noturno (R$)</span><input id="termination-night" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.nightAverage) + '"></label><label class="field"><span>Periculosidade (%)</span><input id="termination-hazard" data-termination-input type="number" min="0" max="100" step="0.01" value="' + Number(data.hazardRate) + '"></label><label class="field"><span>Insalubridade (%)</span><input id="termination-unhealthy" data-termination-input type="number" min="0" max="100" step="0.01" value="' + Number(data.unhealthyRate) + '"></label><label class="field"><span>Base da insalubridade (R$)</span><input id="termination-unhealthy-base" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.unhealthyBase) + '"></label><label class="field"><span>Dias de saldo de salário</span><input id="termination-balance-days" data-termination-input type="number" min="0" max="30" step="1" value="' + Number(data.balanceDays) + '"><small>Use zero para calcular pela data do desligamento.</small></label></div><div class="termination-live-box"><span>R$</span><div><small>Remuneração mensal integrada</small><strong id="termination-remuneration-live">R$ 0,00</strong></div><div><small>Tempo de serviço</small><b id="termination-service-live">—</b></div></div><div class="termination-panel-actions"><button class="secondary-button" data-action="termination-step" data-step="contrato">← Voltar</button><button class="primary-button" data-action="termination-step" data-step="proventos">Avançar →</button></div></div></section>',
+      '<section class="card termination-panel" data-termination-panel="proventos"><header class="card-header"><div><h2>Proventos</h2><small>Direitos automáticos e valores adicionais</small></div><span class="tag tag--info">Etapa 3 de 7</span></header><div class="card-body"><div class="termination-check-grid"><label><input id="termination-include-balance" data-termination-input type="checkbox"' + checked(data.includeBalance) + '><span><b>Saldo de salário</b><small>Dias trabalhados no mês</small></span></label><label><input id="termination-include-notice" data-termination-input type="checkbox"' + checked(data.includeNotice) + '><span><b>Aviso prévio</b><small>Conforme motivo e modalidade</small></span></label><label><input id="termination-include-thirteenth" data-termination-input type="checkbox"' + checked(data.includeThirteenth) + '><span><b>13º proporcional</b><small>Avos com 15 dias ou mais</small></span></label><label><input id="termination-include-vested" data-termination-input type="checkbox"' + checked(data.includeVestedVacation) + '><span><b>Férias vencidas</b><small>Períodos adquiridos não gozados</small></span></label><label><input id="termination-include-proportional" data-termination-input type="checkbox"' + checked(data.includeProportionalVacation) + '><span><b>Férias proporcionais</b><small>Com adicional constitucional de 1/3</small></span></label></div><div class="form-grid termination-form-grid"><label class="field"><span>Períodos de férias já gozados/pagos</span><input id="termination-vacation-taken" data-termination-input type="number" min="0" step="1" value="' + Number(data.vacationPeriodsTaken) + '"></label><label class="field"><span>Bônus ou prêmio tributável (R$)</span><input id="termination-bonus" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.bonus) + '"></label><label class="field"><span>Comissões adicionais (R$)</span><input id="termination-commission" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.commission) + '"></label><label class="field"><span>Outros proventos tributáveis (R$)</span><input id="termination-other-earnings" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.otherEarnings) + '"></label></div><div class="termination-panel-actions"><button class="secondary-button" data-action="termination-step" data-step="remuneracao">← Voltar</button><button class="primary-button" data-action="termination-step" data-step="deducoes">Avançar →</button></div></div></section>',
+      '<section class="card termination-panel" data-termination-panel="deducoes"><header class="card-header"><div><h2>Deduções</h2><small>INSS, IRRF e descontos informados</small></div><span class="tag tag--info">Etapa 4 de 7</span></header><div class="card-body"><div class="termination-tax-switches"><label class="check"><input id="termination-calc-inss" data-termination-input type="checkbox"' + checked(data.calculateInss) + '> Calcular INSS progressivo de 2026</label><label class="check"><input id="termination-calc-irrf" data-termination-input type="checkbox"' + checked(data.calculateIrrf) + '> Calcular IRRF de 2026</label></div><div class="form-grid termination-form-grid"><label class="field"><span>Dependentes para IRRF</span><input id="termination-dependents" data-termination-input type="number" min="0" step="1" value="' + Number(data.dependents) + '"></label><label class="field"><span>Adiantamentos salariais (R$)</span><input id="termination-advances" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.advances) + '"></label><label class="field"><span>Faltas/descontos apurados (R$)</span><input id="termination-absences" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.absences) + '"></label><label class="field"><span>Pensão alimentícia (R$)</span><input id="termination-alimony" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.alimony) + '"></label><label class="field field--full"><span>Outras deduções autorizadas (R$)</span><input id="termination-other-deductions" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.otherDeductions) + '"></label></div><div class="termination-panel-actions"><button class="secondary-button" data-action="termination-step" data-step="proventos">← Voltar</button><button class="primary-button" data-action="termination-step" data-step="fgts">Avançar →</button></div></div></section>',
+      '<section class="card termination-panel" data-termination-panel="fgts"><header class="card-header"><div><h2>FGTS</h2><small>Depósito rescisório, multa e saque estimado</small></div><span class="tag tag--info">Etapa 5 de 7</span></header><div class="card-body"><div class="form-grid termination-form-grid"><label class="field"><span>Base histórica para fins rescisórios (R$)</span><input id="termination-fgts-balance" data-termination-input type="number" min="0" step="0.01" value="' + Number(data.fgtsBalance) + '"><small>Use o valor conferido no FGTS Digital/extrato.</small></label><label class="field"><span>Alíquota de depósito (%)</span><input id="termination-fgts-rate" data-termination-input type="number" min="0" max="20" step="0.01" value="' + Number(data.fgtsRate) + '"></label></div><label class="check termination-wide-check"><input id="termination-birthday-withdrawal" data-termination-input type="checkbox"' + checked(data.birthdayWithdrawal) + '> Trabalhador optou pelo saque-aniversário</label><div class="termination-fgts-preview"><div><small>FGTS rescisório</small><strong id="termination-fgts-deposit-live">R$ 0,00</strong></div><div><small>Multa compensatória</small><strong id="termination-fgts-penalty-live">R$ 0,00</strong></div><div><small>Saque/disponibilidade estimada</small><strong id="termination-fgts-available-live">R$ 0,00</strong></div></div><div class="termination-panel-actions"><button class="secondary-button" data-action="termination-step" data-step="deducoes">← Voltar</button><button class="primary-button" data-action="termination-step" data-step="cpp">Avançar →</button></div></div></section>',
+      '<section class="card termination-panel" data-termination-panel="cpp"><header class="card-header"><div><h2>CPP e encargos patronais</h2><small>Contribuição patronal, RAT e terceiros</small></div><span class="tag tag--info">Etapa 6 de 7</span></header><div class="card-body"><label class="check termination-wide-check"><input id="termination-cpp-enabled" data-termination-input type="checkbox"' + checked(data.cppEnabled) + '> Calcular encargos patronais sobre as bases previdenciárias</label><div class="form-grid termination-form-grid"><label class="field"><span>CPP patronal (%)</span><input id="termination-cpp-rate" data-termination-input type="number" min="0" max="100" step="0.01" value="' + Number(data.cppRate) + '"></label><label class="field"><span>RAT ajustado (%)</span><input id="termination-rat-rate" data-termination-input type="number" min="0" max="100" step="0.01" value="' + Number(data.ratRate) + '"></label><label class="field"><span>Terceiros / outras entidades (%)</span><input id="termination-third-rate" data-termination-input type="number" min="0" max="100" step="0.01" value="' + Number(data.thirdPartyRate) + '"></label></div><div class="info-banner"><span>!</span><div><strong>Enquadramento obrigatório.</strong> Optantes pelo Simples podem ter tratamento diferente, especialmente fora do Anexo IV. Confirme FPAS, terceiros, RAT/FAP e desoneração antes de usar o custo patronal.</div></div><div class="termination-panel-actions"><button class="secondary-button" data-action="termination-step" data-step="fgts">← Voltar</button><button class="primary-button" data-action="termination-step" data-step="resultado">Ver resultado final →</button></div></div></section>',
+      '<section class="card termination-panel" data-termination-panel="resultado"><header class="card-header"><div><h2>Resultado final da rescisão</h2><small>Espelho completo das verbas, descontos e encargos</small></div><span class="tag tag--success">Cálculo instantâneo</span></header><div class="card-body"><div class="termination-result-hero"><div><small>Líquido estimado a pagar ao trabalhador</small><strong id="termination-result-net">R$ 0,00</strong><span id="termination-result-reason">—</span></div><div><small>Prazo estimado para pagamento</small><b id="termination-result-deadline">—</b><span>Conferir dia útil e regra aplicável</span></div></div><div id="termination-result-cards" class="termination-result-cards"></div><div class="table-wrap termination-result-table"><table><thead><tr><th>Grupo</th><th>Verba / desconto</th><th>Valor</th></tr></thead><tbody id="termination-breakdown"></tbody></table></div><div id="termination-warnings" class="termination-warnings"></div><div class="termination-panel-actions"><button class="secondary-button" data-action="termination-step" data-step="cpp">← Ajustar encargos</button><button class="secondary-button" data-action="termination-export-json">↧ JSON</button><button class="primary-button" data-action="termination-save">▣ Salvar resultado</button></div></div></section>',
+      '</div><aside class="card termination-summary"><header class="card-header"><div><h2>Resumo da rescisão</h2><small>Atualização automática</small></div><span class="live-badge"><i></i> Instantâneo</span></header><div class="termination-summary-net"><small>Líquido da rescisão</small><strong id="termination-summary-net">R$ 0,00</strong><span id="termination-summary-status">Preencha os dados</span></div><div class="termination-summary-list"><div><span>Total de proventos</span><b id="termination-summary-gross">R$ 0,00</b></div><div><span>Total de deduções</span><b id="termination-summary-deductions">R$ 0,00</b></div><div><span>Multa do FGTS</span><b id="termination-summary-penalty">R$ 0,00</b></div><div><span>Encargos patronais</span><b id="termination-summary-cpp">R$ 0,00</b></div><div class="highlight"><span>Custo total estimado</span><b id="termination-summary-cost">R$ 0,00</b></div></div><footer><span>Calculado às</span><b id="termination-calculated-at">—</b></footer></aside></div>',
+      '<section class="card termination-sources"><header class="card-header"><div><h2>Fontes oficiais e critérios</h2><small>Base legal utilizada pela simulação</small></div><span class="tag tag--success">Revisado em 20/08/2026</span></header><div class="card-body"><a href="https://www.planalto.gov.br/ccivil_03/decreto-lei/del5452compilado.htm" target="_blank" rel="noopener noreferrer"><b>CLT — texto compilado</b><span>Arts. 477, 479, 480, 481, 482, 483, 484-A e 487 ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/_ato2011-2014/2011/lei/l12506.htm" target="_blank" rel="noopener noreferrer"><b>Lei nº 12.506/2011</b><span>Aviso prévio proporcional de até 90 dias ↗</span></a><a href="https://www.gov.br/inss/pt-br/direitos-e-deveres/inscricao-e-contribuicao/tabela-de-contribuicao-mensal" target="_blank" rel="noopener noreferrer"><b>INSS 2026</b><span>Portaria Interministerial MPS/MF nº 13/2026 ↗</span></a><a href="https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/tabelas/2026" target="_blank" rel="noopener noreferrer"><b>IRRF 2026</b><span>Tabela mensal, deduções e redução do imposto ↗</span></a><a href="https://www.gov.br/trabalho-e-emprego/pt-br/servicos/empregador/fgtsdigital/perguntas-frequentes" target="_blank" rel="noopener noreferrer"><b>FGTS Digital</b><span>Mês da rescisão, 13º, aviso e multa de 40% ou 20% ↗</span></a><a href="https://grupo.econeteditora.com.br/lp/verbas-rescisorias/" target="_blank" rel="noopener noreferrer"><b>Referência funcional</b><span>Modalidades descritas pela Econet; implementação própria ↗</span></a></div></section>'
+    ].join('');
+  }
+  function updateTerminationSimulator(scheduleSave) {
+    var root = $('#termination-simulator'); if (!root) return;
+    var data = readTerminationSimulation(), result = calculateTermination(data);
+    var text = function (id, value) { var element = $('#' + id); if (element) element.textContent = value; };
+    var fixed = data.contractType !== 'indeterminado';
+    $$('.termination-fixed-field').forEach(function (element) { element.classList.toggle('is-hidden', !fixed); });
+    var dateAlert = $('#termination-date-alert');
+    if (dateAlert) { dateAlert.className = result.valid ? 'info-banner' : 'warning-banner'; dateAlert.innerHTML = result.valid ? '<span>✓</span><div><strong>Período válido.</strong> ' + result.completedYears + ' ano(s) completo(s), aviso proporcional de ' + result.noticeDays + ' dias e projeção até ' + dateBR(terminationDateISO(result.rightsEnd)) + ' quando aplicável.</div>' : '<strong>Datas inválidas.</strong> Informe admissão e desligamento, mantendo o desligamento posterior à admissão.'; }
+    text('termination-remuneration-live', money(result.remuneration)); text('termination-service-live', result.serviceDays ? result.serviceDays + ' dias · ' + result.completedYears + ' ano(s)' : 'Datas pendentes');
+    text('termination-fgts-deposit-live', money(result.fgtsDeposit)); text('termination-fgts-penalty-live', money(result.fgtsPenalty)); text('termination-fgts-available-live', money(result.fgtsAvailable));
+    text('termination-summary-net', money(result.net)); text('termination-summary-status', result.valid ? terminationReasonLabel(data.reason) : 'Confira as datas');
+    text('termination-summary-gross', money(result.gross)); text('termination-summary-deductions', money(result.deductions)); text('termination-summary-penalty', money(result.fgtsPenalty)); text('termination-summary-cpp', money(result.cpp)); text('termination-summary-cost', money(result.employerOutlay));
+    text('termination-result-net', money(result.net)); text('termination-result-reason', terminationReasonLabel(data.reason) + ' · ' + result.noticeDays + ' dias de aviso proporcional'); text('termination-result-deadline', result.deadline ? dateBR(terminationDateISO(result.deadline)) : '—');
+    text('termination-calculated-at', new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    var cards = $('#termination-result-cards');
+    if (cards) cards.innerHTML = '<div><small>Proventos</small><strong>' + money(result.gross) + '</strong><span>Verbas brutas da rescisão</span></div><div><small>Deduções</small><strong>' + money(result.deductions) + '</strong><span>INSS, IRRF e descontos</span></div><div><small>FGTS a recolher</small><strong>' + money(result.fgtsDeposit) + '</strong><span>Base de ' + money(result.fgtsBase) + '</span></div><div><small>Multa FGTS</small><strong>' + money(result.fgtsPenalty) + '</strong><span>' + number(result.penaltyRate) + '% sobre ' + money(result.penaltyBase) + '</span></div><div><small>Disponibilidade FGTS</small><strong>' + money(result.fgtsAvailable) + '</strong><span>Saque estimado conforme modalidade</span></div><div><small>CPP/RAT/terceiros</small><strong>' + money(result.cpp) + '</strong><span>' + number(result.cppTotalRate) + '% sobre ' + money(result.cppBase) + '</span></div><div><small>Total acessível ao trabalhador</small><strong>' + money(result.workerTotalAccess) + '</strong><span>Rescisão líquida + FGTS estimado</span></div><div><small>Custo total do desligamento</small><strong>' + money(result.employerOutlay) + '</strong><span>Desembolso e recolhimentos estimados</span></div>';
+    var breakdown = $('#termination-breakdown');
+    if (breakdown) breakdown.innerHTML = result.lines.map(function (line) { return '<tr><td><span class="tag ' + (line.group === 'Proventos' ? 'tag--success' : 'tag--warning') + '">' + line.group + '</span></td><td>' + esc(line.name) + '</td><td class="termination-value ' + (line.value < 0 ? 'negative' : 'positive') + '">' + money(line.value) + '</td></tr>'; }).join('') + '<tr class="termination-total-row"><td colspan="2"><b>Líquido estimado da rescisão</b></td><td><strong>' + money(result.net) + '</strong></td></tr>';
+    var warnings = $('#termination-warnings');
+    if (warnings) warnings.innerHTML = '<h3>Pontos de atenção</h3>' + result.warnings.map(function (warning) { return '<div><span>!</span><p>' + esc(warning) + '</p></div>'; }).join('');
+    var progress = $('#termination-progress'), order = ['contrato', 'remuneracao', 'proventos', 'deducoes', 'fgts', 'cpp', 'resultado'];
+    if (progress) progress.style.width = ((order.indexOf(root.getAttribute('data-current-step')) + 1) / order.length * 100) + '%';
+    if (scheduleSave) {
+      window.clearTimeout(state.terminationSaveTimer);
+      state.terminationSaveTimer = window.setTimeout(function () { state.settings.terminationDraft = data; storageSet(KEYS.settings, state.settings); }, 350);
+    }
+  }
+  function setTerminationStep(step) {
+    var order = ['contrato', 'remuneracao', 'proventos', 'deducoes', 'fgts', 'cpp', 'resultado'];
+    if (order.indexOf(step) < 0) step = 'contrato';
+    var root = $('#termination-simulator'); if (!root) return;
+    root.setAttribute('data-current-step', step);
+    $$('.termination-panel').forEach(function (panel) { panel.classList.toggle('active', panel.getAttribute('data-termination-panel') === step); });
+    $$('.termination-tabs button').forEach(function (button) { var index = order.indexOf(button.getAttribute('data-step')), current = order.indexOf(step); button.classList.toggle('active', index === current); button.classList.toggle('complete', index < current); });
+    updateTerminationSimulator(false);
+    var target = $('[data-termination-panel="' + step + '"]'); if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function applyTerminationReasonDefaults() {
+    var reason = $('#termination-reason') ? $('#termination-reason').value : '';
+    var notice = $('#termination-notice-type'); if (!notice) return;
+    if (['sem-justa-causa', 'rescisao-indireta', 'acordo'].indexOf(reason) >= 0) notice.value = 'indenizado';
+    else if (reason === 'pedido-demissao') notice.value = 'nao-cumprido';
+    else notice.value = 'nao-aplicavel';
+    updateTerminationSimulator(true);
+  }
+  function saveTerminationSimulation() {
+    var data = readTerminationSimulation(), result = calculateTermination(data);
+    if (!result.valid) { toast('Datas inválidas', 'Corrija admissão e desligamento antes de salvar.', 'error'); setTerminationStep('contrato'); return; }
+    state.settings.terminationSimulation = Object.assign({}, data, { savedAt: nowISO(), result: result }); state.settings.terminationDraft = data; persist();
+    audit('Simulação rescisória salva', terminationReasonLabel(data.reason) + ' · líquido ' + money(result.net)); toast('Simulação salva', 'Contrato, verbas, deduções, FGTS, encargos e resultado foram armazenados.');
+  }
+  function resetTerminationSimulation() {
+    if (!window.confirm('Limpar a simulação rescisória e restaurar os dados de exemplo?')) return;
+    state.settings.terminationSimulation = terminationDefaults(); state.settings.terminationDraft = null; persist(); route(); toast('Simulação limpa', 'Os valores iniciais foram restaurados.');
+  }
+  function exportTerminationSimulation() {
+    var data = readTerminationSimulation(), result = calculateTermination(data);
+    if (!result.valid) { toast('Relatório não gerado', 'Corrija as datas da simulação.', 'error'); return; }
+    downloadFile('verbas-rescisorias-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.verbas-rescisorias.v1', generatedAt: nowISO(), legalReview: '20/08/2026', employee: currentClient() ? currentClient().name : '', data: data, result: result, sources: ['CLT compilada', 'Lei 12.506/2011', 'Portaria MPS/MF 13/2026', 'Tabela IRPF 2026', 'FGTS Digital'] }, null, 2));
+    audit('Simulação rescisória exportada', terminationReasonLabel(data.reason) + ' · JSON'); toast('Relatório exportado', 'A memória completa da rescisão foi salva em JSON.');
+  }
+
+  var UNEMPLOYMENT_2026 = {
+    effectiveFrom: '11/01/2026', minimum: 1621, ceiling: 2518.65, firstLimit: 2222.17, secondLimit: 3703.99, firstBase: 1777.74,
+    source: 'https://portalfat.trabalho.gov.br/mte-reajusta-valores-do-beneficio-seguro-desemprego/'
+  };
+  function unemploymentDefaults() {
+    return { salaryThird: 2500, salarySecond: 2600, salaryLast: 2700, monthsWorked: 18, qualificationMonths: 12, requestNumber: 1, unjustDismissal: true, unemployed: true, noIncome: true, noIncompatibleBenefit: true };
+  }
+  function readUnemploymentSimulation() {
+    var fallback = Object.assign(unemploymentDefaults(), state.settings.unemploymentDraft || state.settings.unemploymentSimulation || {});
+    var value = function (id, defaultValue) { var element = $('#' + id); return element ? element.value : defaultValue; };
+    var amount = function (id, defaultValue) { return Math.max(0, parseLocaleNumber(value(id, defaultValue))); };
+    var checked = function (id, defaultValue) { var element = $('#' + id); return element ? element.checked : Boolean(defaultValue); };
+    return {
+      salaryThird: amount('unemployment-salary-third', fallback.salaryThird),
+      salarySecond: amount('unemployment-salary-second', fallback.salarySecond),
+      salaryLast: amount('unemployment-salary-last', fallback.salaryLast),
+      monthsWorked: Math.max(0, Math.min(36, Math.floor(amount('unemployment-months', fallback.monthsWorked)))),
+      qualificationMonths: Math.max(0, Math.min(18, Math.floor(amount('unemployment-qualification-months', fallback.qualificationMonths)))),
+      requestNumber: Math.max(1, Math.min(3, Math.floor(amount('unemployment-request', fallback.requestNumber)))),
+      unjustDismissal: checked('unemployment-dismissal', fallback.unjustDismissal),
+      unemployed: checked('unemployment-unemployed', fallback.unemployed),
+      noIncome: checked('unemployment-no-income', fallback.noIncome),
+      noIncompatibleBenefit: checked('unemployment-no-benefit', fallback.noIncompatibleBenefit)
+    };
+  }
+  function calculateUnemployment(data) {
+    var salaries = [data.salaryThird, data.salarySecond, data.salaryLast].filter(function (salary) { return salary > 0; });
+    var average = salaries.length ? salaries.reduce(function (total, salary) { return total + salary; }, 0) / salaries.length : 0;
+    var rawInstallment = 0, formula = 'Informe ao menos um salário para realizar o cálculo.', bracket = 'Sem salários informados';
+    if (average > 0 && average <= UNEMPLOYMENT_2026.firstLimit) {
+      rawInstallment = average * .8;
+      formula = money(average) + ' × 80% = ' + money(rawInstallment);
+      bracket = 'Até ' + money(UNEMPLOYMENT_2026.firstLimit);
+    } else if (average <= UNEMPLOYMENT_2026.secondLimit && average > 0) {
+      rawInstallment = (average - UNEMPLOYMENT_2026.firstLimit) * .5 + UNEMPLOYMENT_2026.firstBase;
+      formula = '(' + money(average) + ' − ' + money(UNEMPLOYMENT_2026.firstLimit) + ') × 50% + ' + money(UNEMPLOYMENT_2026.firstBase) + ' = ' + money(rawInstallment);
+      bracket = 'De R$ 2.222,18 até ' + money(UNEMPLOYMENT_2026.secondLimit);
+    } else if (average > 0) {
+      rawInstallment = UNEMPLOYMENT_2026.ceiling;
+      formula = 'Média acima de ' + money(UNEMPLOYMENT_2026.secondLimit) + ': parcela fixada no teto de ' + money(UNEMPLOYMENT_2026.ceiling);
+      bracket = 'Acima de ' + money(UNEMPLOYMENT_2026.secondLimit);
+    }
+    var installment = average > 0 ? Math.max(UNEMPLOYMENT_2026.minimum, Math.min(UNEMPLOYMENT_2026.ceiling, rawInstallment)) : 0;
+    var minimumMonths = data.requestNumber === 1 ? 12 : data.requestNumber === 2 ? 9 : 6;
+    var qualificationWindow = data.requestNumber === 1 ? 18 : data.requestNumber === 2 ? 12 : 6;
+    var qualificationMonthsUsed = Math.min(data.qualificationMonths, qualificationWindow);
+    var installments = 0;
+    if (data.monthsWorked >= minimumMonths) {
+      if (data.monthsWorked >= 24) installments = 5;
+      else if (data.monthsWorked >= 12) installments = 4;
+      else installments = 3;
+    }
+    var durationValid = qualificationMonthsUsed >= minimumMonths;
+    var parcelDurationValid = data.monthsWorked >= minimumMonths;
+    var criteria = [
+      { label: 'Dispensa sem justa causa', met: data.unjustDismissal },
+      { label: 'Desempregado no momento da solicitação', met: data.unemployed },
+      { label: 'Sem renda própria suficiente', met: data.noIncome },
+      { label: 'Sem benefício previdenciário incompatível', met: data.noIncompatibleBenefit },
+      { label: minimumMonths + ' meses com salário nos últimos ' + qualificationWindow + ' meses', met: durationValid },
+      { label: 'Tempo nos últimos 36 meses suficiente para gerar parcelas', met: parcelDurationValid },
+      { label: 'Salário informado para apuração da média', met: salaries.length > 0 }
+    ];
+    var eligible = criteria.every(function (item) { return item.met; });
+    var failed = criteria.filter(function (item) { return !item.met; }).map(function (item) { return item.label; });
+    return {
+      salariesUsed: salaries.length, average: average, rawInstallment: rawInstallment, installment: installment, formula: formula, bracket: bracket,
+      minimumMonths: minimumMonths, qualificationWindow: qualificationWindow, qualificationMonthsUsed: qualificationMonthsUsed, installments: installments, total: installment * installments, durationValid: durationValid, parcelDurationValid: parcelDurationValid,
+      eligible: eligible, criteria: criteria, failed: failed
+    };
+  }
+  function renderUnemploymentCalculator() {
+    var data = Object.assign(unemploymentDefaults(), state.settings.unemploymentDraft || state.settings.unemploymentSimulation || {});
+    var checked = function (value) { return value ? ' checked' : ''; };
+    var selected = function (value) { return Number(data.requestNumber) === value ? ' selected' : ''; };
+    return [
+      pageHeading('Calculadora do Seguro-Desemprego', 'Simule instantaneamente o valor da parcela, a quantidade de pagamentos e os requisitos do benefício em 2026.', '<button class="secondary-button" data-action="unemployment-export-json">↧ Exportar JSON</button><button class="secondary-button" data-action="unemployment-print">▣ PDF / imprimir</button><button class="primary-button" data-action="unemployment-save">▣ Salvar simulação</button>'),
+      '<div class="info-banner unemployment-law-banner"><span>i</span><div><strong>Tabela oficial de 2026 vigente desde 11/01/2026.</strong> O valor não pode ser inferior ao salário mínimo de R$ 1.621,00 e está limitado a R$ 2.518,65. O resultado é uma estimativa e a habilitação depende da validação do Ministério do Trabalho.</div><span class="tag tag--success">Atualizado em 13/01/2026</span></div>',
+      '<div class="unemployment-layout" id="unemployment-calculator"><div class="unemployment-main">',
+      '<section class="card unemployment-form-card"><header class="card-header"><div><h2>Dados para a simulação</h2><small>O resultado muda enquanto você preenche</small></div><span class="live-badge"><i></i> Cálculo instantâneo</span></header><div class="card-body">',
+      '<div class="unemployment-salary-grid"><label class="field"><span>Antepenúltimo salário</span><div class="input-prefix"><b>R$</b><input id="unemployment-salary-third" data-unemployment-input type="number" min="0" step="0.01" value="' + Number(data.salaryThird) + '" inputmode="decimal"></div></label><label class="field"><span>Penúltimo salário</span><div class="input-prefix"><b>R$</b><input id="unemployment-salary-second" data-unemployment-input type="number" min="0" step="0.01" value="' + Number(data.salarySecond) + '" inputmode="decimal"></div></label><label class="field"><span>Último salário</span><div class="input-prefix"><b>R$</b><input id="unemployment-salary-last" data-unemployment-input type="number" min="0" step="0.01" value="' + Number(data.salaryLast) + '" inputmode="decimal"></div></label></div>',
+      '<div class="form-grid unemployment-employment-grid"><label class="field"><span>Meses trabalhados nos últimos 36 meses</span><input id="unemployment-months" data-unemployment-input type="number" min="0" max="36" step="1" value="' + Number(data.monthsWorked) + '"><small>Usado para definir a quantidade de parcelas.</small></label><label class="field"><span>Meses com salário na janela de carência</span><input id="unemployment-qualification-months" data-unemployment-input type="number" min="0" max="18" step="1" value="' + Number(data.qualificationMonths) + '"><small id="unemployment-qualification-help">Na 1ª solicitação: mínimo de 12 nos últimos 18 meses.</small></label><label class="field"><span>Número da solicitação</span><select id="unemployment-request" data-unemployment-input><option value="1"' + selected(1) + '>1ª solicitação</option><option value="2"' + selected(2) + '>2ª solicitação</option><option value="3"' + selected(3) + '>3ª solicitação ou posterior</option></select><small>A carência muda conforme o número da solicitação.</small></label></div>',
+      '<div class="unemployment-requirements"><h3>Confirme os requisitos básicos</h3><div><label class="check"><input id="unemployment-dismissal" data-unemployment-input type="checkbox"' + checked(data.unjustDismissal) + '> Dispensa sem justa causa</label><label class="check"><input id="unemployment-unemployed" data-unemployment-input type="checkbox"' + checked(data.unemployed) + '> Está desempregado no momento da solicitação</label><label class="check"><input id="unemployment-no-income" data-unemployment-input type="checkbox"' + checked(data.noIncome) + '> Não possui renda própria suficiente</label><label class="check"><input id="unemployment-no-benefit" data-unemployment-input type="checkbox"' + checked(data.noIncompatibleBenefit) + '> Não recebe benefício previdenciário incompatível</label></div></div>',
+      '<div class="unemployment-form-actions"><button class="secondary-button" data-action="unemployment-clear">Limpar dados</button><button class="primary-button" data-action="unemployment-calculate">Calcular agora</button></div></div></section>',
+      '<section class="unemployment-result-hero" id="unemployment-result-hero"><div class="unemployment-result-primary"><small>PARCELA ESTIMADA EM 2026</small><strong id="unemployment-installment">R$ 0,00</strong><span id="unemployment-status">Preencha os dados</span></div><div class="unemployment-result-metrics"><div><small>Quantidade</small><b id="unemployment-installments">0 parcelas</b></div><div><small>Total estimado</small><b id="unemployment-total">R$ 0,00</b></div><div><small>Média salarial</small><b id="unemployment-average">R$ 0,00</b></div><div><small>Solicitação</small><b id="unemployment-request-label">1ª</b></div></div></section>',
+      '<section class="card unemployment-memory"><header class="card-header"><div><h2>Memória de cálculo</h2><small>Faixa, fórmula aplicada e carência</small></div><span class="tag tag--info">Valores de 2026</span></header><div class="card-body"><div class="unemployment-memory-grid"><div><small>Salários considerados</small><strong id="unemployment-salaries-used">0</strong></div><div><small>Faixa da média salarial</small><strong id="unemployment-bracket">—</strong></div><div><small>Meses mínimos exigidos</small><strong id="unemployment-minimum-months">—</strong></div></div><div class="unemployment-formula"><span>Fórmula aplicada</span><code id="unemployment-formula">—</code></div><div class="unemployment-duration"><div><span id="unemployment-duration-text">Informe os meses trabalhados</span><b id="unemployment-duration-value">0/0 meses</b></div><div><i id="unemployment-duration-progress"></i></div></div></div></section>',
+      '<section class="card unemployment-schedule"><header class="card-header"><div><h2>Previsão das parcelas</h2><small>Quantidade calculada conforme meses trabalhados</small></div></header><div class="card-body" id="unemployment-schedule-list"></div></section>',
+      '<section class="card unemployment-table-card"><header class="card-header"><div><h2>Tabela de cálculo do benefício — 2026</h2><small>Aplicável aos benefícios a partir de 11/01/2026</small></div></header><div class="table-wrap"><table><thead><tr><th>Faixa do salário médio</th><th>Cálculo da parcela</th></tr></thead><tbody><tr><td>Até R$ 2.222,17</td><td>Salário médio × 80%</td></tr><tr><td>De R$ 2.222,18 até R$ 3.703,99</td><td>(Salário médio − R$ 2.222,17) × 50% + R$ 1.777,74</td></tr><tr><td>Acima de R$ 3.703,99</td><td>R$ 2.518,65</td></tr></tbody></table></div><footer><span>Piso: <b>R$ 1.621,00</b></span><span>Teto: <b>R$ 2.518,65</b></span></footer></section>',
+      '</div><aside class="unemployment-side">',
+      '<section class="card unemployment-rights"><header class="card-header"><div><h2>Direito ao benefício</h2><small>Conferência dos requisitos informados</small></div></header><div class="card-body"><div class="unemployment-eligibility" id="unemployment-eligibility"><span>✓</span><div><small>RESULTADO DA CONFERÊNCIA</small><strong id="unemployment-eligibility-title">Possível direito ao benefício</strong><p id="unemployment-eligibility-text">Todos os requisitos informados foram atendidos.</p></div></div><div id="unemployment-criteria-list" class="unemployment-criteria-list"></div><div class="warning-banner"><strong>Atenção:</strong> vínculos, salários, impedimentos e parcelas são confirmados exclusivamente pelos sistemas oficiais. Convenções, decisões judiciais e situações especiais podem alterar a análise.</div></div></section>',
+      '<section class="card unemployment-guidance"><header class="card-header"><div><h2>Quantidade de parcelas</h2><small>Regra geral por solicitação</small></div></header><div class="card-body"><div><b>1ª solicitação</b><span>12 a 23 meses: 4 parcelas<br>24 meses ou mais: 5 parcelas</span></div><div><b>2ª solicitação</b><span>9 a 11 meses: 3 parcelas<br>12 a 23 meses: 4 parcelas<br>24 meses ou mais: 5 parcelas</span></div><div><b>3ª ou posterior</b><span>6 a 11 meses: 3 parcelas<br>12 a 23 meses: 4 parcelas<br>24 meses ou mais: 5 parcelas</span></div></div></section>',
+      '<section class="card unemployment-apply"><header class="card-header"><div><h2>Solicitação oficial</h2><small>Canais do Ministério do Trabalho</small></div></header><div class="card-body"><a class="primary-button" href="https://www.gov.br/pt-br/temas/trabalho-emprego" target="_blank" rel="noopener noreferrer">Solicitar pelo GOV.BR ↗</a><a class="secondary-button" href="https://www.gov.br/trabalho-e-emprego/pt-br/servicos/trabalhador/seguro-desemprego/seguro-desemprego-formal" target="_blank" rel="noopener noreferrer">Ver regras oficiais ↗</a><p>Também disponível na Carteira de Trabalho Digital, postos do SINE/SRTE e pela central 158.</p></div></section>',
+      '</aside></div>',
+      '<section class="card unemployment-sources"><header class="card-header"><div><h2>Fontes e atualização</h2><small>Normas e orientações utilizadas</small></div><span class="tag tag--success">Conferido em 20/08/2026</span></header><div class="card-body"><a href="https://portalfat.trabalho.gov.br/mte-reajusta-valores-do-beneficio-seguro-desemprego/" target="_blank" rel="noopener noreferrer"><b>MTE / FAT — tabela de 2026</b><span>Faixas, piso, teto e requisitos; publicado em 13/01/2026 ↗</span></a><a href="https://www.gov.br/trabalho-e-emprego/pt-br/servicos/trabalhador/seguro-desemprego/seguro-desemprego-formal" target="_blank" rel="noopener noreferrer"><b>Ministério do Trabalho e Emprego</b><span>Habilitação, carência, parcelas e canais oficiais ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/l7998compilado.htm" target="_blank" rel="noopener noreferrer"><b>Lei nº 7.998/1990 — compilada</b><span>Programa do Seguro-Desemprego e requisitos legais ↗</span></a><a href="https://www.econeteditora.com.br/trabalhista/seguro_desemprego/?form%5Bacao%5D=inicial" target="_blank" rel="noopener noreferrer"><b>Referência visual indicada</b><span>Organização da calculadora Econet; implementação e conteúdo próprios ↗</span></a></div></section>'
+    ].join('');
+  }
+  function updateUnemploymentCalculator(scheduleSave) {
+    if (!$('#unemployment-calculator')) return;
+    var data = readUnemploymentSimulation(), result = calculateUnemployment(data);
+    var text = function (id, value) { var element = $('#' + id); if (element) element.textContent = value; };
+    text('unemployment-installment', money(result.installment));
+    text('unemployment-installments', result.installments + (result.installments === 1 ? ' parcela' : ' parcelas'));
+    text('unemployment-total', money(result.total));
+    text('unemployment-average', money(result.average));
+    text('unemployment-request-label', data.requestNumber === 1 ? '1ª solicitação' : data.requestNumber === 2 ? '2ª solicitação' : '3ª ou posterior');
+    text('unemployment-salaries-used', result.salariesUsed + (result.salariesUsed === 1 ? ' salário' : ' salários'));
+    text('unemployment-bracket', result.bracket);
+    text('unemployment-minimum-months', result.minimumMonths + ' meses');
+    text('unemployment-formula', result.formula + (result.installment && result.installment !== result.rawInstallment ? ' · aplicado piso/teto: ' + money(result.installment) : ''));
+    text('unemployment-duration-text', result.durationValid ? 'Carência mínima atendida' : 'Faltam ' + Math.max(0, result.minimumMonths - result.qualificationMonthsUsed) + ' mês(es) para a carência mínima');
+    text('unemployment-duration-value', result.qualificationMonthsUsed + '/' + result.minimumMonths + ' meses');
+    text('unemployment-qualification-help', 'Exigência: ' + result.minimumMonths + ' mês(es) com salário nos últimos ' + result.qualificationWindow + ' meses.');
+    text('unemployment-status', result.eligible ? 'Possível direito · sujeito à validação oficial' : result.failed[0] || 'Confira os requisitos');
+    var progress = $('#unemployment-duration-progress'); if (progress) progress.style.width = Math.min(100, result.qualificationMonthsUsed / Math.max(1, result.minimumMonths) * 100) + '%';
+    var hero = $('#unemployment-result-hero'); if (hero) hero.classList.toggle('is-ineligible', !result.eligible);
+    var eligibility = $('#unemployment-eligibility'); if (eligibility) eligibility.classList.toggle('is-ineligible', !result.eligible);
+    text('unemployment-eligibility-title', result.eligible ? 'Possível direito ao benefício' : 'Requisitos ainda não atendidos');
+    text('unemployment-eligibility-text', result.eligible ? 'Os requisitos marcados e a carência informada estão compatíveis com a regra geral.' : 'Revise: ' + result.failed.join('; ') + '.');
+    var eligibilityIcon = $('#unemployment-eligibility > span'); if (eligibilityIcon) eligibilityIcon.textContent = result.eligible ? '✓' : '!';
+    var criteria = $('#unemployment-criteria-list');
+    if (criteria) criteria.innerHTML = result.criteria.map(function (item) { return '<div class="' + (item.met ? 'met' : 'not-met') + '"><span>' + (item.met ? '✓' : '×') + '</span><p>' + esc(item.label) + '</p><b>' + (item.met ? 'Atendido' : 'Pendente') + '</b></div>'; }).join('');
+    var schedule = $('#unemployment-schedule-list');
+    if (schedule) schedule.innerHTML = result.installments ? Array.from({ length: result.installments }, function (_, index) { return '<div><span>' + (index + 1) + '</span><p><b>' + (index + 1) + 'ª parcela</b><small>Valor estimado</small></p><strong>' + money(result.installment) + '</strong></div>'; }).join('') : '<div class="unemployment-empty"><span>!</span><p><b>Nenhuma parcela calculada</b><small>Informe salários e cumpra a carência mínima da solicitação selecionada.</small></p></div>';
+    if (scheduleSave) {
+      window.clearTimeout(state.unemploymentSaveTimer);
+      state.unemploymentSaveTimer = window.setTimeout(function () { state.settings.unemploymentDraft = data; storageSet(KEYS.settings, state.settings); }, 250);
+    }
+  }
+  function saveUnemploymentSimulation() {
+    var data = readUnemploymentSimulation(), result = calculateUnemployment(data);
+    if (!result.salariesUsed) { toast('Salários obrigatórios', 'Informe ao menos um dos três últimos salários.', 'error'); return; }
+    state.settings.unemploymentSimulation = Object.assign({}, data, { savedAt: nowISO(), result: result }); state.settings.unemploymentDraft = data; persist();
+    audit('Seguro-desemprego simulado', result.installments + ' parcela(s) · ' + money(result.installment));
+    toast('Simulação salva', 'A média, a parcela, a carência e a conferência dos requisitos foram armazenadas.');
+  }
+  function resetUnemploymentSimulation() {
+    if (!window.confirm('Limpar a simulação do seguro-desemprego e restaurar os dados de exemplo?')) return;
+    state.settings.unemploymentSimulation = unemploymentDefaults(); state.settings.unemploymentDraft = null; persist(); route();
+    toast('Simulação limpa', 'Os valores iniciais foram restaurados.');
+  }
+  function exportUnemploymentSimulation() {
+    var data = readUnemploymentSimulation(), result = calculateUnemployment(data);
+    if (!result.salariesUsed) { toast('Relatório não gerado', 'Informe ao menos um salário antes de exportar.', 'error'); return; }
+    downloadFile('seguro-desemprego-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.seguro-desemprego.v1', generatedAt: nowISO(), legalReview: '20/08/2026', parameters: UNEMPLOYMENT_2026, data: data, result: result, sources: ['MTE/FAT — tabela de 2026', 'MTE — Seguro-Desemprego Formal', 'Lei 7.998/1990 compilada'] }, null, 2));
+    audit('Seguro-desemprego exportado', result.installments + ' parcela(s) · JSON');
+    toast('Relatório exportado', 'Os dados, requisitos, parâmetros e a memória do cálculo foram salvos em JSON.');
+  }
+
+  var GPS_SELIC_MONTHLY = { '2021-08': .43, '2021-09': .44, '2021-10': .49, '2021-11': .59, '2021-12': .77, '2022-01': .73, '2022-02': .76, '2022-03': .93, '2022-04': .83, '2022-05': 1.03, '2022-06': 1.02, '2022-07': 1.03, '2022-08': 1.17, '2022-09': 1.07, '2022-10': 1.02, '2022-11': 1.02, '2022-12': 1.12, '2023-01': 1.12, '2023-02': .92, '2023-03': 1.17, '2023-04': .92, '2023-05': 1.12, '2023-06': 1.07, '2023-07': 1.07, '2023-08': 1.14, '2023-09': .97, '2023-10': 1, '2023-11': .92, '2023-12': .89, '2024-01': .97, '2024-02': .8, '2024-03': .83, '2024-04': .89, '2024-05': .83, '2024-06': .79, '2024-07': .91, '2024-08': .87, '2024-09': .84, '2024-10': .93, '2024-11': .79, '2024-12': .93, '2025-01': 1.01, '2025-02': .99, '2025-03': .96, '2025-04': 1.06, '2025-05': 1.14, '2025-06': 1.1, '2025-07': 1.28, '2025-08': 1.16, '2025-09': 1.22, '2025-10': 1.28, '2025-11': 1.05, '2025-12': 1.22, '2026-01': 1.16, '2026-02': 1, '2026-03': 1.21, '2026-04': 1.09, '2026-05': 1.07, '2026-06': 1.12, '2026-07': 1.22 };
+  var GPS_CODES = {
+    '1007': { label: '1007 — Contribuinte individual · plano normal 20%', category: 'individual' },
+    '1163': { label: '1163 — Contribuinte individual · plano simplificado 11%', category: 'individual' },
+    '1406': { label: '1406 — Segurado facultativo · plano normal 20%', category: 'facultativo' },
+    '1473': { label: '1473 — Segurado facultativo · plano simplificado 11%', category: 'facultativo' },
+    '1929': { label: '1929 — Facultativo baixa renda · 5%', category: 'facultativo' },
+    'outro': { label: 'Outro código / recolhimento empresarial', category: 'empresa' }
+  };
+  function gpsDate(value) {
+    var parts = String(value || '').split('-');
+    if (parts.length !== 3) return null;
+    var date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0);
+    return isNaN(date.getTime()) ? null : date;
+  }
+  function gpsIsoDate(date) {
+    return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+  }
+  function gpsSuggestedDue(competence) {
+    var parts = String(competence || '').split('-');
+    if (parts.length !== 2) return '';
+    var due = new Date(Number(parts[0]), Number(parts[1]), 15, 12, 0, 0);
+    while (due.getDay() === 0 || due.getDay() === 6) due.setDate(due.getDate() + 1);
+    return gpsIsoDate(due);
+  }
+  function gpsDefaults() {
+    return { category: 'individual', code: '1007', principal: 500, competence: '2026-07', dueDate: '2026-08-17', paymentDate: todayISO() };
+  }
+  function readGpsLateSimulation() {
+    var fallback = Object.assign(gpsDefaults(), state.settings.gpsLateDraft || state.settings.gpsLateSimulation || {});
+    var value = function (id, defaultValue) { var element = $('#' + id); return element ? element.value : defaultValue; };
+    return {
+      category: value('gps-category', fallback.category), code: value('gps-code', fallback.code),
+      principal: Math.max(0, parseLocaleNumber(value('gps-principal', fallback.principal))),
+      competence: value('gps-competence', fallback.competence), dueDate: value('gps-due-date', fallback.dueDate), paymentDate: value('gps-payment-date', fallback.paymentDate)
+    };
+  }
+  function gpsCategoryLabel(category) {
+    return category === 'individual' ? 'Contribuinte individual' : category === 'facultativo' ? 'Segurado facultativo' : 'Empresa / equiparada';
+  }
+  function calculateGpsLate(data) {
+    var due = gpsDate(data.dueDate), payment = gpsDate(data.paymentDate), validDates = Boolean(due && payment);
+    var lateDays = validDates && payment > due ? Math.floor((payment.getTime() - due.getTime()) / 86400000) : 0;
+    var penaltyRate = Math.min(20, lateDays * .33), penalty = data.principal * penaltyRate / 100;
+    var interestRate = 0, selicMonths = [], missingRates = [], sameMonth = validDates && due.getFullYear() === payment.getFullYear() && due.getMonth() === payment.getMonth();
+    if (lateDays > 0 && !sameMonth) {
+      var cursor = new Date(due.getFullYear(), due.getMonth() + 1, 1, 12, 0, 0), paymentMonth = new Date(payment.getFullYear(), payment.getMonth(), 1, 12, 0, 0), guard = 0;
+      while (cursor < paymentMonth && guard < 72) {
+        var key = cursor.getFullYear() + '-' + String(cursor.getMonth() + 1).padStart(2, '0');
+        if (Object.prototype.hasOwnProperty.call(GPS_SELIC_MONTHLY, key)) { interestRate += GPS_SELIC_MONTHLY[key]; selicMonths.push({ month: key, rate: GPS_SELIC_MONTHLY[key] }); }
+        else missingRates.push(key);
+        cursor.setMonth(cursor.getMonth() + 1); guard += 1;
+      }
+      interestRate += 1;
+      selicMonths.push({ month: data.paymentDate.slice(0, 7), rate: 1, paymentMonth: true });
+    }
+    interestRate = Math.round(interestRate * 100) / 100;
+    var interest = data.principal * interestRate / 100, total = data.principal + penalty + interest;
+    var competenceParts = String(data.competence || '').split('-'), competenceMonths = 0;
+    if (competenceParts.length === 2 && payment) competenceMonths = (payment.getFullYear() - Number(competenceParts[0])) * 12 + (payment.getMonth() + 1 - Number(competenceParts[1]));
+    var restriction = '';
+    if (data.category === 'individual' && competenceMonths > 60) restriction = 'Competência anterior aos últimos 5 anos: solicite o cálculo de período decadente ao INSS pela Central 135 ou APS.';
+    else if (data.category === 'facultativo' && competenceMonths > 6) restriction = 'O segurado facultativo somente pode calcular diretamente competências dentro dos últimos 6 meses. Procure o INSS para analisar o período.';
+    var code = GPS_CODES[data.code] || GPS_CODES.outro, codeMismatch = data.code !== 'outro' && code.category !== data.category;
+    var warnings = [];
+    if (!data.principal) warnings.push('Informe o valor original da contribuição previdenciária.');
+    if (!validDates) warnings.push('Informe datas válidas de vencimento e pagamento.');
+    if (restriction) warnings.push(restriction);
+    if (missingRates.length) warnings.push('A tabela local não possui a Selic de ' + missingRates.join(', ') + '. Confirme o cálculo diretamente no SAL/Sicalc.');
+    if (codeMismatch) warnings.push('O código selecionado não corresponde à categoria informada.');
+    if (data.category === 'empresa') warnings.push('Contribuições declaradas em DCTFWeb devem ser recolhidas por DARF numerado, e não por GPS. Use este valor apenas como conferência dos acréscimos.');
+    if (lateDays > 0 && sameMonth) warnings.push('Pagamento no mesmo mês do vencimento: há multa de mora, mas não há juros Selic.');
+    if (!lateDays && validDates) warnings.push('A data de pagamento não está após o vencimento; nenhum acréscimo de mora foi aplicado.');
+    var complete = Boolean(data.principal && validDates && !restriction && !missingRates.length && !codeMismatch);
+    return {
+      validDates: validDates, lateDays: lateDays, penaltyRate: penaltyRate, penalty: penalty, interestRate: interestRate, interest: interest, total: total,
+      selicMonths: selicMonths, missingRates: missingRates, competenceMonths: competenceMonths, restriction: restriction, codeMismatch: codeMismatch,
+      complete: complete, documentLabel: data.category === 'empresa' ? 'DARF numerado / DCTFWeb' : 'GPS pelo SAL/Meu INSS', warnings: warnings
+    };
+  }
+  function renderGpsLateCalculator() {
+    var data = Object.assign(gpsDefaults(), state.settings.gpsLateDraft || state.settings.gpsLateSimulation || {});
+    var selected = function (value, current) { return value === current ? ' selected' : ''; };
+    var codeOptions = Object.keys(GPS_CODES).map(function (code) { return '<option value="' + code + '"' + selected(code, data.code) + '>' + esc(GPS_CODES[code].label) + '</option>'; }).join('');
+    return [
+      pageHeading('GPS — Recolhimento de INSS em Atraso', 'Simule imediatamente multa, juros Selic e o valor total da contribuição previdenciária.', '<button class="secondary-button" data-action="gps-export-json">↧ Exportar JSON</button><button class="secondary-button" data-action="gps-print">▣ PDF / imprimir</button><button class="primary-button" data-action="gps-save">▣ Salvar cálculo</button>'),
+      '<div class="info-banner gps-law-banner"><span>i</span><div><strong>Acréscimos legais aplicados automaticamente.</strong> Multa de 0,33% por dia de atraso, limitada a 20%, e juros Selic acumulados do mês seguinte ao vencimento até o mês anterior ao pagamento, mais 1% no mês do pagamento.</div><span class="tag tag--success">Selic oficial até 07/2026</span></div>',
+      '<div class="gps-layout" id="gps-late-calculator"><div class="gps-main">',
+      '<section class="card gps-form-card"><header class="card-header"><div><h2>Dados do recolhimento</h2><small>O total é atualizado enquanto você preenche</small></div><span class="live-badge"><i></i> Cálculo instantâneo</span></header><div class="card-body"><div class="form-grid gps-form-grid">',
+      '<label class="field"><span>Categoria</span><select id="gps-category" data-gps-input><option value="individual"' + selected('individual', data.category) + '>Contribuinte individual</option><option value="facultativo"' + selected('facultativo', data.category) + '>Segurado facultativo</option><option value="empresa"' + selected('empresa', data.category) + '>Empresa / equiparada</option></select><small id="gps-category-help">Prazo de regularização conferido automaticamente.</small></label>',
+      '<label class="field"><span>Código de pagamento</span><select id="gps-code" data-gps-input>' + codeOptions + '</select><small>Confirme o código no SAL antes de emitir a guia.</small></label>',
+      '<label class="field"><span>Valor original do INSS</span><div class="input-prefix"><b>R$</b><input id="gps-principal" data-gps-input type="number" min="0" step="0.01" inputmode="decimal" value="' + Number(data.principal) + '"></div></label>',
+      '<label class="field"><span>Competência</span><input id="gps-competence" data-gps-input type="month" value="' + esc(data.competence) + '"><small>Mês a que se refere a contribuição.</small></label>',
+      '<label class="field"><span>Data de vencimento</span><input id="gps-due-date" data-gps-input type="date" value="' + esc(data.dueDate) + '"><small>Considere a prorrogação bancária aplicável.</small></label>',
+      '<label class="field"><span>Data de pagamento</span><input id="gps-payment-date" data-gps-input type="date" value="' + esc(data.paymentDate) + '"><small>Data prevista para quitar a contribuição.</small></label>',
+      '</div><div class="gps-form-actions"><button class="secondary-button" data-action="gps-clear">Limpar dados</button><button class="secondary-button" data-action="gps-suggest-due">Sugerir vencimento</button><button class="primary-button" data-action="gps-calculate">Calcular agora</button></div></div></section>',
+      '<section class="gps-result-hero" id="gps-result-hero"><div class="gps-result-total"><small>VALOR TOTAL ATUALIZADO</small><strong id="gps-result-total">R$ 0,00</strong><span id="gps-result-status">Aguardando dados</span></div><div class="gps-result-metrics"><div><small>Principal</small><b id="gps-result-principal">R$ 0,00</b></div><div><small>Multa</small><b id="gps-result-penalty">R$ 0,00</b></div><div><small>Juros Selic</small><b id="gps-result-interest">R$ 0,00</b></div><div><small>Dias de atraso</small><b id="gps-result-days">0 dias</b></div></div></section>',
+      '<section class="card gps-breakdown"><header class="card-header"><div><h2>Memória completa do cálculo</h2><small>Principal e acréscimos calculados separadamente</small></div><span class="tag tag--info">Atualização automática</span></header><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Componente</th><th>Base / taxa</th><th>Valor</th></tr></thead><tbody><tr><td><b>Contribuição principal</b></td><td>Valor informado</td><td id="gps-row-principal">R$ 0,00</td></tr><tr><td><b>Multa de mora</b></td><td id="gps-row-penalty-formula">0 dias × 0,33%</td><td id="gps-row-penalty">R$ 0,00</td></tr><tr><td><b>Juros de mora</b></td><td id="gps-row-interest-formula">Selic acumulada + 1%</td><td id="gps-row-interest">R$ 0,00</td></tr><tr class="gps-total-row"><td colspan="2"><strong>Total estimado para pagamento</strong></td><td id="gps-row-total"><strong>R$ 0,00</strong></td></tr></tbody></table></div><div class="gps-selic-memory"><div><span>Taxa Selic utilizada</span><strong id="gps-selic-rate">0,00%</strong></div><div><span>Forma de recolhimento</span><strong id="gps-document-label">GPS</strong></div><div><span>Competência até pagamento</span><strong id="gps-period-label">0 meses</strong></div></div><div id="gps-selic-trace" class="gps-selic-trace"></div></div></section>',
+      '</div><aside class="gps-side">',
+      '<section class="card gps-status-card"><header class="card-header"><div><h2>Conferência do recolhimento</h2><small>Validação da categoria e do período</small></div></header><div class="card-body"><div class="gps-status" id="gps-status"><span>✓</span><div><small>RESULTADO</small><strong id="gps-status-title">Cálculo disponível</strong><p id="gps-status-text">Os dados podem ser utilizados para conferência.</p></div></div><div id="gps-warnings" class="gps-warnings"></div></div></section>',
+      '<section class="card gps-rules"><header class="card-header"><div><h2>Regras importantes</h2><small>Antes de recolher</small></div></header><div class="card-body"><article><span>CI</span><div><b>Contribuinte individual</b><p>Competências dentro dos últimos 5 anos podem ser calculadas no Meu INSS/SAL. Períodos anteriores exigem cálculo de período decadente.</p></div></article><article><span>F</span><div><b>Segurado facultativo</b><p>O cálculo direto é admitido para competências dentro dos últimos 6 meses, observada a manutenção da qualidade de segurado.</p></div></article><article><span>PJ</span><div><b>Empresa / equiparada</b><p>Débitos declarados em DCTFWeb são pagos por DARF numerado. Não emita GPS quando a obrigação estiver nesse sistema.</p></div></article></div></section>',
+      '<section class="card gps-official"><header class="card-header"><div><h2>Emitir a guia oficial</h2><small>Use o resultado apenas para conferência</small></div></header><div class="card-body"><a class="primary-button" href="https://sal.rfb.gov.br/PortalSalInternet/" target="_blank" rel="noopener noreferrer">Abrir SAL da Receita ↗</a><a class="secondary-button" href="https://meu.inss.gov.br/" target="_blank" rel="noopener noreferrer">Abrir Meu INSS ↗</a><p>A plataforma não emite uma GPS oficial nem substitui a validação do CNIS.</p></div></section>',
+      '</aside></div>',
+      '<section class="card gps-sources"><header class="card-header"><div><h2>Fontes oficiais e atualização</h2><small>Critérios utilizados pelo simulador</small></div><span class="tag tag--success">Conferido em 20/08/2026</span></header><div class="card-body"><a href="https://www.gov.br/receitafederal/pt-br/assuntos/orientacao-tributaria/pagamentos-e-parcelamentos/emissao-e-pagamento-de-darf-das-gps-e-dae/gps-guia-da-previdencia-social-orientacoes-1/incidencia-de-acrescimos-legais" target="_blank" rel="noopener noreferrer"><b>Receita Federal — acréscimos da GPS</b><span>Multa, juros Selic e limite legal ↗</span></a><a href="https://sicalc.receita.fazenda.gov.br/sicalc/selic/consulta" target="_blank" rel="noopener noreferrer"><b>Sicalc — taxa Selic oficial</b><span>Tabela mensal disponível até 07/2026 ↗</span></a><a href="https://www.gov.br/inss/pt-br/direitos-e-deveres/inscricao-e-contribuicao/calculo-da-guia-da-previdencia-social-gps" target="_blank" rel="noopener noreferrer"><b>INSS — cálculo e emissão da GPS</b><span>Vencimento, SAL, códigos e CNIS ↗</span></a><a href="https://www.gov.br/inss/pt-br/direitos-e-deveres/inscricao-e-contribuicao/regularizacao-de-contribuicao-previdenciaria" target="_blank" rel="noopener noreferrer"><b>INSS — regularização</b><span>Limites de 5 anos, 6 meses e situações especiais ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/l8212cons.htm" target="_blank" rel="noopener noreferrer"><b>Lei nº 8.212/1991 — art. 35</b><span>Acréscimos moratórios das contribuições sociais ↗</span></a><a href="https://www.econeteditora.com.br/?url=/links_pagina_inicial/calculos/gps/Simulador/" target="_blank" rel="noopener noreferrer"><b>Referência visual indicada</b><span>Organização da calculadora Econet; implementação própria ↗</span></a></div></section>'
+    ].join('');
+  }
+  function updateGpsLateCalculator(scheduleSave) {
+    if (!$('#gps-late-calculator')) return;
+    var data = readGpsLateSimulation(), result = calculateGpsLate(data);
+    var text = function (id, value) { var element = $('#' + id); if (element) element.textContent = value; };
+    text('gps-result-total', money(result.total)); text('gps-result-principal', money(data.principal)); text('gps-result-penalty', money(result.penalty)); text('gps-result-interest', money(result.interest)); text('gps-result-days', result.lateDays + (result.lateDays === 1 ? ' dia' : ' dias'));
+    text('gps-row-principal', money(data.principal)); text('gps-row-penalty', money(result.penalty)); text('gps-row-interest', money(result.interest)); text('gps-row-total', money(result.total));
+    text('gps-row-penalty-formula', result.lateDays + ' dia(s) × 0,33% = ' + result.penaltyRate.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%');
+    text('gps-row-interest-formula', result.interestRate ? money(data.principal) + ' × ' + result.interestRate.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%' : 'Sem juros para pagamento no mesmo mês do vencimento');
+    text('gps-selic-rate', result.interestRate.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'); text('gps-document-label', result.documentLabel); text('gps-period-label', Math.max(0, result.competenceMonths) + ' mês(es)');
+    text('gps-category-help', data.category === 'individual' ? 'Cálculo direto para competências dentro dos últimos 5 anos.' : data.category === 'facultativo' ? 'Cálculo direto limitado às competências dos últimos 6 meses.' : 'Confira se o recolhimento deve ser feito por DARF/DCTFWeb.');
+    var statusTitle = result.complete ? (result.lateDays ? 'Cálculo disponível para conferência' : 'Pagamento sem atraso') : 'Atenção antes de recolher';
+    var statusText = result.complete ? (result.lateDays ? 'Multa e juros foram calculados com a tabela oficial disponível.' : 'Nenhum acréscimo de mora foi aplicado.') : (result.warnings[0] || 'Revise os dados informados.');
+    text('gps-status-title', statusTitle); text('gps-status-text', statusText); text('gps-result-status', statusTitle + ' · ' + result.documentLabel);
+    var hero = $('#gps-result-hero'), status = $('#gps-status'); if (hero) hero.classList.toggle('has-attention', !result.complete); if (status) status.classList.toggle('has-attention', !result.complete);
+    var statusIcon = $('#gps-status > span'); if (statusIcon) statusIcon.textContent = result.complete ? '✓' : '!';
+    var warnings = $('#gps-warnings');
+    if (warnings) warnings.innerHTML = result.warnings.length ? result.warnings.map(function (warning) { return '<div><span>!</span><p>' + esc(warning) + '</p></div>'; }).join('') : '<div class="is-ok"><span>✓</span><p>Categoria, código, período e taxas conferidos para esta simulação.</p></div>';
+    var trace = $('#gps-selic-trace');
+    if (trace) trace.innerHTML = result.selicMonths.length ? '<h3>Composição da taxa Selic</h3><div>' + result.selicMonths.map(function (item) { return '<span><small>' + esc(item.paymentMonth ? 'Mês do pagamento' : item.month.split('-').reverse().join('/')) + '</small><b>' + item.rate.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%</b></span>'; }).join('') + '</div>' : '<p>Não há juros Selic quando o pagamento ocorre no mesmo mês do vencimento.</p>';
+    if (scheduleSave) {
+      window.clearTimeout(state.gpsLateSaveTimer);
+      state.gpsLateSaveTimer = window.setTimeout(function () { state.settings.gpsLateDraft = data; storageSet(KEYS.settings, state.settings); }, 250);
+    }
+  }
+  function applyGpsCategoryDefaults() {
+    var category = $('#gps-category') ? $('#gps-category').value : 'individual', code = $('#gps-code');
+    if (code && (!GPS_CODES[code.value] || (code.value !== 'outro' && GPS_CODES[code.value].category !== category))) code.value = category === 'individual' ? '1007' : category === 'facultativo' ? '1406' : 'outro';
+    updateGpsLateCalculator(true);
+  }
+  function suggestGpsDue(showMessage) {
+    var competence = $('#gps-competence') ? $('#gps-competence').value : '', due = gpsSuggestedDue(competence);
+    if (!due) { if (showMessage) toast('Competência obrigatória', 'Informe a competência para sugerir o vencimento.', 'error'); return; }
+    if ($('#gps-due-date')) $('#gps-due-date').value = due;
+    updateGpsLateCalculator(true);
+    if (showMessage) toast('Vencimento sugerido', 'Foi aplicado o dia 15 do mês seguinte, prorrogado quando coincidente com fim de semana. Confirme feriados bancários.');
+  }
+  function saveGpsLateSimulation() {
+    var data = readGpsLateSimulation(), result = calculateGpsLate(data);
+    if (!data.principal || !result.validDates) { toast('Dados incompletos', 'Informe valor, vencimento e pagamento antes de salvar.', 'error'); return; }
+    state.settings.gpsLateSimulation = Object.assign({}, data, { savedAt: nowISO(), result: result }); state.settings.gpsLateDraft = data; persist();
+    audit('GPS em atraso simulada', gpsCategoryLabel(data.category) + ' · total ' + money(result.total));
+    toast('Cálculo salvo', 'Principal, multa, juros, período e memória de cálculo foram armazenados.');
+  }
+  function resetGpsLateSimulation() {
+    if (!window.confirm('Limpar a simulação da GPS em atraso e restaurar os dados de exemplo?')) return;
+    state.settings.gpsLateSimulation = gpsDefaults(); state.settings.gpsLateDraft = null; persist(); route();
+    toast('Simulação limpa', 'Os valores iniciais foram restaurados.');
+  }
+  function exportGpsLateSimulation() {
+    var data = readGpsLateSimulation(), result = calculateGpsLate(data);
+    if (!data.principal || !result.validDates) { toast('Relatório não gerado', 'Informe valor e datas válidas.', 'error'); return; }
+    downloadFile('gps-inss-atraso-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.gps-atraso.v1', generatedAt: nowISO(), legalReview: '20/08/2026', selicUpdatedThrough: '07/2026', data: data, result: result, sources: ['Receita Federal — Incidência de Acréscimos Legais', 'Sicalc — Selic', 'INSS — Cálculo da GPS', 'Lei 8.212/1991, art. 35'] }, null, 2));
+    audit('GPS em atraso exportada', gpsCategoryLabel(data.category) + ' · JSON'); toast('Relatório exportado', 'A memória do cálculo e os alertas foram salvos em JSON.');
+  }
+
+  var IRRF_MONTHLY_2026 = {
+    dependent: 189.59, simplified: 607.20, withholdingMinimum: 10,
+    brackets: [
+      { limit: 2428.80, rate: 0, deduction: 0, label: 'Até R$ 2.428,80' },
+      { limit: 2826.65, rate: .075, deduction: 182.16, label: 'De R$ 2.428,81 até R$ 2.826,65' },
+      { limit: 3751.05, rate: .15, deduction: 394.16, label: 'De R$ 2.826,66 até R$ 3.751,05' },
+      { limit: 4664.68, rate: .225, deduction: 675.49, label: 'De R$ 3.751,06 até R$ 4.664,68' },
+      { limit: Infinity, rate: .275, deduction: 908.73, label: 'Acima de R$ 4.664,68' }
+    ]
+  };
+  function irrfEffectiveDefaults() {
+    return { year: 2026, gross: 5000, dependents: 0, alimony: 800, otherDeductions: 0, officialSocialSecurity: 0, deductionMode: 'auto' };
+  }
+  function readIrrfEffectiveSimulation() {
+    var fallback = Object.assign(irrfEffectiveDefaults(), state.settings.irrfEffectiveDraft || state.settings.irrfEffectiveSimulation || {});
+    var value = function (id, defaultValue) { var element = $('#' + id); return element ? element.value : defaultValue; };
+    var amount = function (id, defaultValue) { return Math.max(0, parseLocaleNumber(value(id, defaultValue))); };
+    return {
+      year: 2026, gross: amount('irrf-effective-gross', fallback.gross),
+      dependents: Math.max(0, Math.floor(amount('irrf-effective-dependents', fallback.dependents))),
+      alimony: amount('irrf-effective-alimony', fallback.alimony), otherDeductions: amount('irrf-effective-other', fallback.otherDeductions),
+      officialSocialSecurity: amount('irrf-effective-social-security', fallback.officialSocialSecurity), deductionMode: value('irrf-effective-mode', fallback.deductionMode)
+    };
+  }
+  function calculateIrrfEffective(data) {
+    var dependentDeduction = data.dependents * IRRF_MONTHLY_2026.dependent;
+    var legalDeductions = dependentDeduction + data.alimony + data.otherDeductions + data.officialSocialSecurity;
+    var simplifiedDeduction = Math.min(data.gross, IRRF_MONTHLY_2026.simplified), appliedDeduction = 0, method = '';
+    if (data.deductionMode === 'legal') { appliedDeduction = legalDeductions; method = 'Deduções legais'; }
+    else if (data.deductionMode === 'simplified') { appliedDeduction = simplifiedDeduction; method = 'Desconto simplificado mensal'; }
+    else if (legalDeductions >= simplifiedDeduction) { appliedDeduction = legalDeductions; method = 'Deduções legais — mais vantajosas'; }
+    else { appliedDeduction = simplifiedDeduction; method = 'Desconto simplificado — mais vantajoso'; }
+    appliedDeduction = Math.min(data.gross, appliedDeduction);
+    var taxableBase = Math.max(0, data.gross - appliedDeduction);
+    var bracket = IRRF_MONTHLY_2026.brackets.filter(function (item) { return taxableBase <= item.limit; })[0] || IRRF_MONTHLY_2026.brackets[4];
+    var beforeReduction = Math.max(0, taxableBase * bracket.rate - bracket.deduction), reduction = 0, reductionFormula = 'Rendimento acima de R$ 7.350,00: sem redução mensal.';
+    if (data.gross <= 5000) {
+      reduction = Math.min(beforeReduction, 312.89);
+      reductionFormula = 'Redução limitada ao imposto calculado, até R$ 312,89.';
+    } else if (data.gross <= 7350) {
+      reduction = Math.min(beforeReduction, Math.max(0, 978.62 - .133145 * data.gross));
+      reductionFormula = 'R$ 978,62 − (0,133145 × ' + money(data.gross) + ') = ' + money(reduction);
+    }
+    var taxAfterReduction = Math.max(0, beforeReduction - reduction), waived = taxAfterReduction > 0 && taxAfterReduction <= IRRF_MONTHLY_2026.withholdingMinimum;
+    var irrf = waived ? 0 : taxAfterReduction;
+    var effectiveBaseRate = taxableBase ? irrf / taxableBase * 100 : 0, effectiveGrossRate = data.gross ? irrf / data.gross * 100 : 0;
+    var savings = Math.max(0, beforeReduction - irrf), grossAfterIrrf = Math.max(0, data.gross - irrf);
+    return {
+      dependentDeduction: dependentDeduction, legalDeductions: legalDeductions, simplifiedDeduction: simplifiedDeduction, appliedDeduction: appliedDeduction, method: method,
+      taxableBase: taxableBase, bracket: bracket, beforeReduction: beforeReduction, reduction: reduction, reductionFormula: reductionFormula,
+      taxAfterReduction: taxAfterReduction, waived: waived, irrf: irrf, effectiveBaseRate: effectiveBaseRate, effectiveGrossRate: effectiveGrossRate,
+      savings: savings, grossAfterIrrf: grossAfterIrrf
+    };
+  }
+  function renderIrrfEffectiveRate() {
+    var data = Object.assign(irrfEffectiveDefaults(), state.settings.irrfEffectiveDraft || state.settings.irrfEffectiveSimulation || {});
+    var selected = function (value) { return data.deductionMode === value ? ' selected' : ''; };
+    return [
+      pageHeading('Simulação de Alíquota Efetiva — IRRF', 'Calcule imediatamente a base mensal, o imposto retido e a alíquota efetiva da pessoa física em 2026.', '<button class="secondary-button" data-action="irrf-effective-export">↧ Exportar JSON</button><button class="secondary-button" data-action="irrf-effective-print">▣ PDF / imprimir</button><button class="primary-button" data-action="irrf-effective-save">▣ Salvar simulação</button>'),
+      '<div class="info-banner irrf-effective-law-banner"><span>i</span><div><strong>Tabela mensal oficial de 2026.</strong> O simulador compara as deduções legais com o desconto simplificado, aplica a tabela progressiva, a redução da Lei nº 15.270/2025 e a dispensa de retenção igual ou inferior a R$ 10,00.</div><span class="tag tag--success">Receita Federal · 27/04/2026</span></div>',
+      '<div class="irrf-effective-layout" id="irrf-effective-calculator"><div class="irrf-effective-main">',
+      '<section class="card irrf-effective-form"><header class="card-header"><div><h2>Dados da simulação</h2><small>O resultado muda automaticamente ao digitar</small></div><span class="live-badge"><i></i> Cálculo instantâneo</span></header><div class="card-body"><div class="form-grid irrf-effective-form-grid">',
+      '<label class="field"><span>Ano da tabela</span><select id="irrf-effective-year" data-irrf-effective-input><option value="2026" selected>2026 — tabela vigente</option></select><small>Incidência mensal a partir de janeiro de 2026.</small></label>',
+      '<label class="field"><span>Valor do rendimento tributável</span><div class="input-prefix"><b>R$</b><input id="irrf-effective-gross" data-irrf-effective-input type="number" min="0" step="0.01" inputmode="decimal" value="' + Number(data.gross) + '"></div></label>',
+      '<label class="field"><span>Quantidade de dependentes</span><input id="irrf-effective-dependents" data-irrf-effective-input type="number" min="0" step="1" value="' + Number(data.dependents) + '"><small>Dedução de R$ 189,59 por dependente.</small></label>',
+      '<label class="field"><span>Pensão alimentícia dedutível</span><div class="input-prefix"><b>R$</b><input id="irrf-effective-alimony" data-irrf-effective-input type="number" min="0" step="0.01" inputmode="decimal" value="' + Number(data.alimony) + '"></div></label>',
+      '<label class="field"><span>Outras deduções legais</span><div class="input-prefix"><b>R$</b><input id="irrf-effective-other" data-irrf-effective-input type="number" min="0" step="0.01" inputmode="decimal" value="' + Number(data.otherDeductions) + '"></div></label>',
+      '<label class="field"><span>Previdência oficial</span><div class="input-prefix"><b>R$</b><input id="irrf-effective-social-security" data-irrf-effective-input type="number" min="0" step="0.01" inputmode="decimal" value="' + Number(data.officialSocialSecurity) + '"></div></label>',
+      '<label class="field field--full"><span>Método de dedução</span><select id="irrf-effective-mode" data-irrf-effective-input><option value="auto"' + selected('auto') + '>Automático — utilizar o mais vantajoso</option><option value="legal"' + selected('legal') + '>Somente deduções legais informadas</option><option value="simplified"' + selected('simplified') + '>Desconto simplificado mensal de até R$ 607,20</option></select><small>O desconto simplificado substitui as deduções legais; eles não são somados.</small></label>',
+      '</div><div class="irrf-effective-actions"><button class="secondary-button" data-action="irrf-effective-clear">Limpar dados</button><button class="primary-button" data-action="irrf-effective-calculate">Calcular agora</button></div></div></section>',
+      '<section class="irrf-effective-hero"><div class="irrf-effective-rate"><small>ALÍQUOTA EFETIVA SOBRE A BASE</small><strong id="irrf-effective-rate">0,00%</strong><span>IRRF final ÷ base de cálculo × 100</span></div><div class="irrf-effective-metrics"><div><small>IRRF estimado</small><b id="irrf-effective-tax">R$ 0,00</b></div><div><small>Base de cálculo</small><b id="irrf-effective-base">R$ 0,00</b></div><div><small>Alíquota nominal</small><b id="irrf-effective-nominal">0,00%</b></div><div><small>Redução do imposto</small><b id="irrf-effective-reduction">R$ 0,00</b></div></div></section>',
+      '<section class="card irrf-effective-memory"><header class="card-header"><div><h2>Memória completa do cálculo</h2><small>Deduções, base, faixa progressiva e redução legal</small></div><span class="tag tag--info">Ano 2026</span></header><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Etapa</th><th>Critério aplicado</th><th>Valor</th></tr></thead><tbody><tr><td><b>Rendimento tributável</b></td><td>Valor mensal informado</td><td id="irrf-memory-gross">R$ 0,00</td></tr><tr><td><b>Dependentes</b></td><td id="irrf-memory-dependents-formula">0 × R$ 189,59</td><td id="irrf-memory-dependents">R$ 0,00</td></tr><tr><td><b>Deduções legais</b></td><td>Dependentes + pensão + outras + previdência oficial</td><td id="irrf-memory-legal">R$ 0,00</td></tr><tr><td><b>Desconto simplificado</b></td><td>Limite mensal oficial</td><td id="irrf-memory-simplified">R$ 607,20</td></tr><tr class="irrf-applied-row"><td><b>Dedução aplicada</b></td><td id="irrf-memory-method">Método mais vantajoso</td><td id="irrf-memory-applied">R$ 0,00</td></tr><tr><td><b>Base de cálculo</b></td><td>Rendimento − dedução aplicada</td><td id="irrf-memory-base">R$ 0,00</td></tr><tr><td><b>IR antes da redução</b></td><td id="irrf-memory-table-formula">Base × alíquota − parcela a deduzir</td><td id="irrf-memory-before">R$ 0,00</td></tr><tr><td><b>Redução Lei nº 15.270/2025</b></td><td id="irrf-memory-reduction-formula">—</td><td id="irrf-memory-reduction">R$ 0,00</td></tr><tr class="irrf-total-row"><td><strong>IRRF final</strong></td><td id="irrf-memory-waiver">Após redução legal</td><td id="irrf-memory-final">R$ 0,00</td></tr></tbody></table></div><div class="irrf-effective-extra"><div><small>Alíquota efetiva sobre o rendimento</small><strong id="irrf-effective-gross-rate">0,00%</strong></div><div><small>Economia pela redução/dispensa</small><strong id="irrf-effective-savings">R$ 0,00</strong></div><div><small>Rendimento após o IRRF</small><strong id="irrf-effective-after">R$ 0,00</strong></div></div></div></section>',
+      '<section class="card irrf-effective-comparison"><header class="card-header"><div><h2>Comparação das deduções</h2><small>Veja por que o método foi selecionado</small></div></header><div class="card-body"><div><span>Deduções legais</span><b id="irrf-legal-comparison">R$ 0,00</b><i><em id="irrf-legal-bar"></em></i></div><div><span>Desconto simplificado</span><b id="irrf-simplified-comparison">R$ 607,20</b><i><em id="irrf-simplified-bar"></em></i></div><p id="irrf-comparison-note">O maior valor reduz mais a base de cálculo.</p></div></section>',
+      '</div><aside class="irrf-effective-side">',
+      '<section class="card irrf-effective-summary"><header class="card-header"><div><h2>Leitura do resultado</h2><small>Diferença entre taxa nominal e efetiva</small></div></header><div class="card-body"><div class="irrf-effective-gauge"><div><span id="irrf-gauge-value">0,00%</span><i><b id="irrf-gauge-bar"></b></i><small>Escala até a alíquota máxima de 27,5%</small></div><h3 id="irrf-effective-title">Sem imposto calculado</h3><p id="irrf-effective-description">Preencha o rendimento e as deduções para visualizar o resultado.</p></div><div class="irrf-effective-definition"><b>Alíquota efetiva</b><p>É a relação percentual entre o IRRF final e a base de cálculo. Ela normalmente é menor do que a alíquota nominal da faixa porque existe uma parcela a deduzir e, em 2026, pode existir redução adicional.</p></div></section>',
+      '<section class="card irrf-effective-table"><header class="card-header"><div><h2>Tabela progressiva mensal</h2><small>Incidência a partir de janeiro de 2026</small></div></header><div class="card-body"><div><span>Até R$ 2.428,80</span><b>Isento</b></div><div><span>R$ 2.428,81 a R$ 2.826,65</span><b>7,5%</b></div><div><span>R$ 2.826,66 a R$ 3.751,05</span><b>15%</b></div><div><span>R$ 3.751,06 a R$ 4.664,68</span><b>22,5%</b></div><div><span>Acima de R$ 4.664,68</span><b>27,5%</b></div></div></section>',
+      '<section class="warning-banner irrf-effective-warning"><strong>Importante:</strong> rendimentos de outras fontes, decisões judiciais, natureza da verba, deduções não comprovadas e regras específicas podem alterar a retenção. A simulação não substitui a folha de pagamento nem a declaração anual.</section>',
+      '</aside></div>',
+      '<section class="card irrf-effective-sources"><header class="card-header"><div><h2>Fontes oficiais e atualização</h2><small>Parâmetros utilizados na simulação</small></div><span class="tag tag--success">Conferido em 20/08/2026</span></header><div class="card-body"><a href="https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/tabelas/2026" target="_blank" rel="noopener noreferrer"><b>Receita Federal — tributação de 2026</b><span>Tabela mensal, dependentes, desconto simplificado e redução ↗</span></a><a href="https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/tabelas/exemplos-de-aplicacao-da-lei-15-270-2025" target="_blank" rel="noopener noreferrer"><b>Receita Federal — exemplos oficiais</b><span>Aplicação prática do método mais vantajoso e da redução ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/_ato2023-2026/2025/lei/l15191.htm" target="_blank" rel="noopener noreferrer"><b>Lei nº 15.191/2025</b><span>Tabela progressiva mensal vigente em 2026 ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/_ato2023-2026/2025/lei/l15270.htm" target="_blank" rel="noopener noreferrer"><b>Lei nº 15.270/2025</b><span>Redução mensal para rendimentos até R$ 7.350,00 ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/l9430.htm" target="_blank" rel="noopener noreferrer"><b>Lei nº 9.430/1996 — art. 67</b><span>Dispensa de retenção igual ou inferior a R$ 10,00 ↗</span></a><a href="https://www.econeteditora.com.br/novo/?url=/links_pagina_inicial/calculos/federal/irrf/index.php" target="_blank" rel="noopener noreferrer"><b>Referência visual indicada</b><span>Organização da calculadora Econet; implementação própria ↗</span></a></div></section>'
+    ].join('');
+  }
+  function updateIrrfEffectiveRate(scheduleSave) {
+    if (!$('#irrf-effective-calculator')) return;
+    var data = readIrrfEffectiveSimulation(), result = calculateIrrfEffective(data);
+    var text = function (id, value) { var element = $('#' + id); if (element) element.textContent = value; };
+    var percent = function (value) { return Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'; };
+    text('irrf-effective-rate', percent(result.effectiveBaseRate)); text('irrf-effective-tax', money(result.irrf)); text('irrf-effective-base', money(result.taxableBase)); text('irrf-effective-nominal', percent(result.bracket.rate * 100)); text('irrf-effective-reduction', money(result.reduction));
+    text('irrf-memory-gross', money(data.gross)); text('irrf-memory-dependents-formula', data.dependents + ' × ' + money(IRRF_MONTHLY_2026.dependent)); text('irrf-memory-dependents', money(result.dependentDeduction)); text('irrf-memory-legal', money(result.legalDeductions)); text('irrf-memory-simplified', money(result.simplifiedDeduction));
+    text('irrf-memory-method', result.method); text('irrf-memory-applied', money(result.appliedDeduction)); text('irrf-memory-base', money(result.taxableBase)); text('irrf-memory-table-formula', money(result.taxableBase) + ' × ' + percent(result.bracket.rate * 100) + ' − ' + money(result.bracket.deduction)); text('irrf-memory-before', money(result.beforeReduction)); text('irrf-memory-reduction-formula', result.reductionFormula); text('irrf-memory-reduction', money(result.reduction)); text('irrf-memory-waiver', result.waived ? 'Dispensa de retenção: imposto igual ou inferior a R$ 10,00' : 'Após aplicação da redução mensal'); text('irrf-memory-final', money(result.irrf));
+    text('irrf-effective-gross-rate', percent(result.effectiveGrossRate)); text('irrf-effective-savings', money(result.savings)); text('irrf-effective-after', money(result.grossAfterIrrf));
+    text('irrf-legal-comparison', money(result.legalDeductions)); text('irrf-simplified-comparison', money(result.simplifiedDeduction));
+    var maxDeduction = Math.max(1, result.legalDeductions, result.simplifiedDeduction), legalBar = $('#irrf-legal-bar'), simplifiedBar = $('#irrf-simplified-bar'); if (legalBar) legalBar.style.width = Math.min(100, result.legalDeductions / maxDeduction * 100) + '%'; if (simplifiedBar) simplifiedBar.style.width = Math.min(100, result.simplifiedDeduction / maxDeduction * 100) + '%';
+    text('irrf-comparison-note', result.method + ' foi aplicado. Dedução selecionada: ' + money(result.appliedDeduction) + '.');
+    text('irrf-gauge-value', percent(result.effectiveBaseRate)); var gauge = $('#irrf-gauge-bar'); if (gauge) gauge.style.width = Math.min(100, result.effectiveBaseRate / 27.5 * 100) + '%';
+    var title = result.waived ? 'Retenção dispensada' : result.irrf === 0 ? (data.gross <= 5000 ? 'IRRF zerado pela regra de 2026' : 'Sem imposto calculado') : 'IRRF calculado na faixa de ' + percent(result.bracket.rate * 100);
+    var description = result.waived ? 'O imposto apurado foi igual ou inferior a R$ 10,00 e a retenção foi dispensada conforme o art. 67 da Lei nº 9.430/1996.' : result.irrf === 0 ? 'A alíquota efetiva é zero após as deduções e a redução aplicável.' : 'A alíquota nominal da faixa é ' + percent(result.bracket.rate * 100) + ', enquanto a alíquota efetiva sobre a base ficou em ' + percent(result.effectiveBaseRate) + '.';
+    text('irrf-effective-title', title); text('irrf-effective-description', description);
+    if (scheduleSave) {
+      window.clearTimeout(state.irrfEffectiveSaveTimer);
+      state.irrfEffectiveSaveTimer = window.setTimeout(function () { state.settings.irrfEffectiveDraft = data; storageSet(KEYS.settings, state.settings); }, 250);
+    }
+  }
+  function saveIrrfEffectiveSimulation() {
+    var data = readIrrfEffectiveSimulation(), result = calculateIrrfEffective(data);
+    if (!data.gross) { toast('Rendimento obrigatório', 'Informe o rendimento tributável antes de salvar.', 'error'); return; }
+    state.settings.irrfEffectiveSimulation = Object.assign({}, data, { savedAt: nowISO(), result: result }); state.settings.irrfEffectiveDraft = data; persist();
+    audit('Alíquota efetiva do IRRF simulada', money(data.gross) + ' · efetiva ' + number(result.effectiveBaseRate) + '%'); toast('Simulação salva', 'Deduções, base, redução, IRRF e alíquota efetiva foram armazenados.');
+  }
+  function resetIrrfEffectiveSimulation() {
+    if (!window.confirm('Limpar a simulação da alíquota efetiva e restaurar os dados de exemplo?')) return;
+    state.settings.irrfEffectiveSimulation = irrfEffectiveDefaults(); state.settings.irrfEffectiveDraft = null; persist(); route(); toast('Simulação limpa', 'Os valores iniciais foram restaurados.');
+  }
+  function exportIrrfEffectiveSimulation() {
+    var data = readIrrfEffectiveSimulation(), result = calculateIrrfEffective(data);
+    if (!data.gross) { toast('Relatório não gerado', 'Informe o rendimento tributável.', 'error'); return; }
+    downloadFile('aliquota-efetiva-irrf-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.irrf-aliquota-efetiva.v1', generatedAt: nowISO(), legalReview: '20/08/2026', parameters: IRRF_MONTHLY_2026, data: data, result: result, sources: ['Receita Federal — Tributação 2026', 'Lei 15.191/2025', 'Lei 15.270/2025', 'Lei 9.430/1996, art. 67'] }, null, 2));
+    audit('Alíquota efetiva do IRRF exportada', money(data.gross) + ' · JSON'); toast('Relatório exportado', 'A memória completa e os parâmetros legais foram salvos em JSON.');
+  }
+
+  var ALIMONY_INSS_2026 = [
+    { limit: 1621.00, rate: .075 },
+    { limit: 2902.84, rate: .09 },
+    { limit: 4354.27, rate: .12 },
+    { limit: 8475.55, rate: .14 }
+  ];
+  function employeeInss2026(gross) {
+    var base = Math.max(0, Math.min(Number(gross || 0), ALIMONY_INSS_2026[ALIMONY_INSS_2026.length - 1].limit));
+    var previous = 0, total = 0;
+    ALIMONY_INSS_2026.forEach(function (range) {
+      var taxable = Math.max(0, Math.min(base, range.limit) - previous);
+      total += taxable * range.rate;
+      previous = range.limit;
+    });
+    return Math.round(total * 100) / 100;
+  }
+  function alimonyDefaults() {
+    return { competence: '2026-08', method: 'net', gross: 5000, dependents: 0, inssAuto: true, inssManual: 0, otherIrrfDeductions: 0, baseDeductions: 0, percent: 30, fixedAmount: 0, includeIrrfInNet: true, deductAlimonyFromIrrf: true, caseReference: '', notes: '' };
+  }
+  function readAlimonySimulation() {
+    var fallback = Object.assign(alimonyDefaults(), state.settings.alimonyDraft || state.settings.alimonySimulation || {});
+    var value = function (id, defaultValue) { var element = $('#' + id); return element ? element.value : defaultValue; };
+    var amount = function (id, defaultValue) { return Math.max(0, parseLocaleNumber(value(id, defaultValue))); };
+    var flag = function (id, defaultValue) { var element = $('#' + id); return element ? element.checked : Boolean(defaultValue); };
+    return {
+      competence: value('alimony-competence', fallback.competence), method: value('alimony-method', fallback.method), gross: amount('alimony-gross', fallback.gross),
+      dependents: Math.max(0, Math.floor(amount('alimony-dependents', fallback.dependents))), inssAuto: flag('alimony-inss-auto', fallback.inssAuto), inssManual: amount('alimony-inss-manual', fallback.inssManual),
+      otherIrrfDeductions: amount('alimony-other-irrf', fallback.otherIrrfDeductions), baseDeductions: amount('alimony-base-deductions', fallback.baseDeductions), percent: Math.min(100, amount('alimony-percent', fallback.percent)),
+      fixedAmount: amount('alimony-fixed', fallback.fixedAmount), includeIrrfInNet: flag('alimony-include-irrf', fallback.includeIrrfInNet), deductAlimonyFromIrrf: flag('alimony-deduct-irrf', fallback.deductAlimonyFromIrrf),
+      caseReference: value('alimony-case', fallback.caseReference).trim(), notes: value('alimony-notes', fallback.notes).trim()
+    };
+  }
+  function calculateAlimony(data) {
+    var inss = data.inssAuto ? employeeInss2026(data.gross) : Math.min(data.gross, data.inssManual), pension = data.method === 'fixed' ? Math.min(data.gross, data.fixedAmount) : 0, irrfResult;
+    var calculateTax = function (alimonyValue) {
+      return calculateIrrfEffective({ year: 2026, gross: data.gross, dependents: data.dependents, alimony: data.deductAlimonyFromIrrf ? alimonyValue : 0, otherDeductions: data.otherIrrfDeductions, officialSocialSecurity: inss, deductionMode: 'legal' });
+    };
+    if (data.method === 'net') {
+      for (var i = 0; i < 40; i += 1) {
+        irrfResult = calculateTax(pension);
+        var calculatedBase = Math.max(0, data.gross - inss - data.baseDeductions - (data.includeIrrfInNet ? irrfResult.irrf : 0));
+        var nextPension = Math.max(0, calculatedBase * data.percent / 100);
+        if (Math.abs(nextPension - pension) < .005) { pension = nextPension; break; }
+        pension = nextPension;
+      }
+    } else if (data.method === 'gross') pension = Math.max(0, data.gross * data.percent / 100);
+    irrfResult = calculateTax(pension);
+    var pensionBase = data.method === 'gross' ? data.gross : data.method === 'fixed' ? pension : Math.max(0, data.gross - inss - data.baseDeductions - (data.includeIrrfInNet ? irrfResult.irrf : 0));
+    if (data.method === 'net') pension = Math.max(0, pensionBase * data.percent / 100);
+    pension = Math.min(data.gross, pension);
+    var disposable = Math.max(0, data.gross - inss - irrfResult.irrf - data.baseDeductions - pension), effectivePercent = data.gross ? pension / data.gross * 100 : 0;
+    var alerts = [];
+    if (!data.gross) alerts.push('Informe o rendimento bruto mensal para iniciar o cálculo.');
+    if (data.method !== 'fixed' && !data.percent) alerts.push('Informe o percentual determinado para a pensão.');
+    if (data.method === 'fixed' && !data.fixedAmount) alerts.push('Informe o valor fixo previsto no título judicial.');
+    if (!data.deductAlimonyFromIrrf) alerts.push('A pensão não foi usada como dedução do IRRF. Confirme se o pagamento decorre de decisão judicial, acordo homologado ou escritura pública válida.');
+    if (data.percent > 50) alerts.push('Percentual superior a 50%: confira cuidadosamente a decisão, os beneficiários e a base de incidência.');
+    if (data.baseDeductions) alerts.push('Foram excluídos ' + money(data.baseDeductions) + ' da base líquida. Essa exclusão deve constar do título judicial.');
+    if (!data.caseReference) alerts.push('Registre o número do processo, acordo homologado ou escritura para manter a memória do fundamento.');
+    var roundMoney = function (value) { return Math.round(Number(value || 0) * 100) / 100; };
+    var irrfSimplifiedResult = calculateIrrfEffective({ year: 2026, gross: data.gross, dependents: data.dependents, alimony: 0, otherDeductions: 0, officialSocialSecurity: 0, deductionMode: 'simplified' });
+    return { inss: roundMoney(inss), irrf: roundMoney(irrfResult.irrf), irrfResult: irrfResult, pensionBase: roundMoney(pensionBase), pension: roundMoney(pension), disposable: roundMoney(disposable), effectivePercent: effectivePercent, alerts: alerts, iterations: data.method === 'net' && data.deductAlimonyFromIrrf ? 'Cálculo conjunto convergente entre pensão e IRRF' : 'Cálculo direto', irrfSimplifiedResult: irrfSimplifiedResult };
+  }
+  function renderAlimonyCalculator() {
+    var data = Object.assign(alimonyDefaults(), state.settings.alimonyDraft || state.settings.alimonySimulation || {}), selected = function (value) { return data.method === value ? ' selected' : ''; };
+    return [
+      pageHeading('Pensão Alimentícia', 'Simulação mensal do percentual judicial sobre o rendimento líquido, bruto ou em valor fixo.', '<button class="secondary-button" data-action="alimony-export">↧ Exportar JSON</button><button class="secondary-button" data-action="alimony-print">▣ PDF / imprimir</button><button class="primary-button" data-action="alimony-save">▣ Salvar simulação</button>'),
+      '<div class="info-banner alimony-law-banner"><span>⚖</span><div><strong>Cálculo orientativo conforme o título judicial.</strong> A base, o percentual, as verbas incluídas e a incidência sobre férias, 13º salário e verbas rescisórias devem seguir exatamente a decisão, o acordo homologado ou a escritura pública aplicável.</div><span class="tag tag--success">Tabelas 2026</span></div>',
+      '<div class="alimony-layout" id="alimony-calculator"><div class="alimony-main">',
+      '<section class="card alimony-form-card"><header class="card-header"><div><h2>Dados para o cálculo</h2><small>O resultado é atualizado imediatamente durante o preenchimento</small></div><span class="live-badge"><i></i> Cálculo instantâneo</span></header><div class="card-body"><div class="form-grid alimony-form-grid">',
+      '<label class="field"><span>Competência</span><input id="alimony-competence" data-alimony-input type="month" min="2026-01" max="2026-12" value="' + esc(data.competence) + '"><small>Tabelas disponíveis para 2026.</small></label>',
+      '<label class="field"><span>Forma determinada *</span><select id="alimony-method" data-alimony-input><option value="net"' + selected('net') + '>Percentual sobre rendimento líquido</option><option value="gross"' + selected('gross') + '>Percentual sobre rendimento bruto</option><option value="fixed"' + selected('fixed') + '>Valor mensal fixo</option></select></label>',
+      '<label class="field"><span>Rendimento bruto mensal *</span><div class="input-prefix"><b>R$</b><input id="alimony-gross" data-alimony-input type="number" min="0" step="0.01" inputmode="decimal" value="' + Number(data.gross) + '"></div></label>',
+      '<label class="field"><span>Dependentes para o IRRF</span><input id="alimony-dependents" data-alimony-input type="number" min="0" step="1" value="' + Number(data.dependents) + '"><small>R$ 189,59 por dependente em 2026.</small></label>',
+      '<label class="field"><span>Percentual fixado</span><div class="input-suffix"><input id="alimony-percent" data-alimony-input type="number" min="0" max="100" step="0.01" value="' + Number(data.percent) + '"><b>%</b></div></label>',
+      '<label class="field"><span>Valor fixo da pensão</span><div class="input-prefix"><b>R$</b><input id="alimony-fixed" data-alimony-input type="number" min="0" step="0.01" value="' + Number(data.fixedAmount) + '"></div></label>',
+      '<label class="field"><span>Contribuição ao INSS</span><div class="input-prefix"><b>R$</b><input id="alimony-inss-manual" data-alimony-input type="number" min="0" step="0.01" value="' + Number(data.inssManual) + '"></div><small id="alimony-inss-help">Calculada pela tabela progressiva de empregado.</small></label>',
+      '<label class="field"><span>Outras deduções do IRRF</span><div class="input-prefix"><b>R$</b><input id="alimony-other-irrf" data-alimony-input type="number" min="0" step="0.01" value="' + Number(data.otherIrrfDeductions) + '"></div></label>',
+      '<label class="field"><span>Outros descontos da base líquida</span><div class="input-prefix"><b>R$</b><input id="alimony-base-deductions" data-alimony-input type="number" min="0" step="0.01" value="' + Number(data.baseDeductions) + '"></div><small>Use somente quando previstos na decisão.</small></label>',
+      '<label class="field"><span>Processo / acordo / escritura</span><input id="alimony-case" data-alimony-input value="' + esc(data.caseReference) + '" placeholder="Ex.: processo nº 0000000-00.2026..."></label>',
+      '<label class="field field--full"><span>Observações da decisão</span><textarea id="alimony-notes" data-alimony-input rows="2" placeholder="Verbas incluídas, beneficiários, vencimento, férias, 13º, rescisão...">' + esc(data.notes) + '</textarea></label>',
+      '</div><div class="alimony-options"><label class="check"><input id="alimony-inss-auto" data-alimony-input type="checkbox"' + checked(data.inssAuto) + '><span><b>Calcular INSS automaticamente</b><small>Tabela progressiva de empregado, doméstico e avulso de 2026.</small></span></label><label class="check"><input id="alimony-include-irrf" data-alimony-input type="checkbox"' + checked(data.includeIrrfInNet) + '><span><b>Descontar IRRF da base líquida</b><small>Utilizado no percentual sobre o líquido.</small></span></label><label class="check"><input id="alimony-deduct-irrf" data-alimony-input type="checkbox"' + checked(data.deductAlimonyFromIrrf) + '><span><b>Considerar a pensão como dedução do IRRF</b><small>Somente quando juridicamente dedutível e comprovada.</small></span></label></div><div class="alimony-form-actions"><button class="secondary-button" data-action="alimony-clear">Limpar dados</button><button class="primary-button" data-action="alimony-calculate">Calcular agora</button></div></div></section>',
+      '<section class="alimony-result-hero" id="alimony-result-hero"><div><small>VALOR MENSAL ESTIMADO DA PENSÃO</small><strong id="alimony-result-total">R$ 0,00</strong><span id="alimony-result-rule">Percentual sobre o rendimento líquido</span></div><div class="alimony-result-metrics"><p><small>Rendimento bruto</small><b id="alimony-result-gross">R$ 0,00</b></p><p><small>INSS</small><b id="alimony-result-inss">R$ 0,00</b></p><p><small>IRRF</small><b id="alimony-result-irrf">R$ 0,00</b></p><p><small>Base da pensão</small><b id="alimony-result-base">R$ 0,00</b></p></div></section>',
+      '<section class="card alimony-memory-card"><header class="card-header"><div><h2>Memória completa do cálculo</h2><small>Rendimento, deduções, imposto, base judicial e pensão</small></div><span class="tag tag--info">Competência <b id="alimony-memory-competence">08/2026</b></span></header><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Etapa</th><th>Critério aplicado</th><th>Valor</th></tr></thead><tbody><tr><td><b>Rendimento bruto</b></td><td>Valor mensal informado</td><td id="alimony-memory-gross">R$ 0,00</td></tr><tr><td><b>INSS</b></td><td id="alimony-memory-inss-rule">Tabela progressiva 2026</td><td id="alimony-memory-inss">R$ 0,00</td></tr><tr><td><b>Base do IRRF</b></td><td>Deduções legais utilizadas</td><td id="alimony-memory-irrf-base">R$ 0,00</td></tr><tr><td><b>Alíquota / parcela do IRRF</b></td><td id="alimony-memory-irrf-rule">Isento</td><td id="alimony-memory-irrf-before">R$ 0,00</td></tr><tr><td><b>Redução do IR em 2026</b></td><td>Lei nº 15.270/2025</td><td id="alimony-memory-reduction">R$ 0,00</td></tr><tr><td><b>IRRF final</b></td><td id="alimony-memory-irrf-status">Após redução legal</td><td id="alimony-memory-irrf">R$ 0,00</td></tr><tr><td><b>Base definida para a pensão</b></td><td id="alimony-memory-base-rule">Bruto − INSS − IRRF</td><td id="alimony-memory-base">R$ 0,00</td></tr><tr class="alimony-total-row"><td><strong>Pensão alimentícia</strong></td><td id="alimony-memory-pension-rule">Base × percentual</td><td id="alimony-memory-total">R$ 0,00</td></tr></tbody></table></div><div class="alimony-memory-footer"><span><small>Percentual efetivo sobre o bruto</small><b id="alimony-effective-percent">0,00%</b></span><span><small>Saldo após descontos e pensão</small><b id="alimony-disposable">R$ 0,00</b></span><span><small>Método matemático</small><b id="alimony-iteration">Cálculo direto</b></span></div></div></section>',
+      '<section class="card alimony-simplified-card"><header class="card-header"><div><h2>Valor do IRRF com desconto simplificado</h2><small>Comparativo — mesmo modelo da calculadora Econet Editora</small></div></header><div class="card-body"><div class="table-wrap"><table><tbody><tr><td><b>Rendimento bruto</b></td><td id="alimony-simplified-gross">R$ 0,00</td></tr><tr><td><b>Desconto simplificado</b></td><td id="alimony-simplified-deduction">R$ 0,00</td></tr><tr><td><b>Base de cálculo</b></td><td id="alimony-simplified-base">R$ 0,00</td></tr><tr class="alimony-total-row"><td><strong>IRRF pelo desconto simplificado</strong></td><td id="alimony-simplified-irrf">R$ 0,00</td></tr></tbody></table></div><small>Informativo: a pensão acima é calculada pelas deduções legais (dependentes, INSS e demais deduções), critério aplicável quando há valores comprovados. O desconto simplificado é apenas uma alternativa de comparação.</small></div></section>',
+      '</div><aside class="alimony-side"><section class="card alimony-summary-card"><header class="card-header"><div><h2>Resumo da obrigação</h2><small>Conferência rápida antes do desconto</small></div></header><div class="card-body"><div class="alimony-summary-value"><small>Valor a descontar</small><strong id="alimony-summary-total">R$ 0,00</strong><span id="alimony-summary-percent">0,00% do rendimento bruto</span></div><dl><div><dt>Forma</dt><dd id="alimony-summary-method">Líquido</dd></div><div><dt>Referência</dt><dd id="alimony-summary-case">Não informada</dd></div><div><dt>Competência</dt><dd id="alimony-summary-competence">08/2026</dd></div><div><dt>Dedução no IRRF</dt><dd id="alimony-summary-deductible">Simulada</dd></div></dl></div></section><section class="card alimony-alert-card"><header class="card-header"><div><h2>Validações e alertas</h2><small>Pontos que exigem conferência</small></div></header><div class="card-body" id="alimony-alerts"></div></section><section class="warning-banner alimony-warning"><strong>Não substitui a decisão judicial.</strong> O percentual e a expressão “rendimento líquido” podem possuir definição própria no processo. O sistema não cria, altera nem interpreta o título.</section></aside></div>',
+      '<section class="card alimony-sources"><header class="card-header"><div><h2>Fontes oficiais e atualização</h2><small>Parâmetros aplicados pelo simulador</small></div><span class="tag tag--success">Conferido em 20/08/2026</span></header><div class="card-body"><a href="https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/tabelas/2026" target="_blank" rel="noopener noreferrer"><b>Receita Federal — Tributação 2026</b><span>IRRF, dependentes e redução mensal ↗</span></a><a href="https://www.gov.br/inss/pt-br/direitos-e-deveres/inscricao-e-contribuicao/tabela-de-contribuicao-mensal" target="_blank" rel="noopener noreferrer"><b>INSS — Tabela de contribuição 2026</b><span>Faixas progressivas e teto previdenciário ↗</span></a><a href="https://www.gov.br/receitafederal/pt-br/acesso-a-informacao/perguntas-frequentes/imposto-de-renda/dirpf/deducoes/despesa-de-pensao-alimenticia" target="_blank" rel="noopener noreferrer"><b>Receita Federal — dedutibilidade</b><span>Decisão, acordo homologado ou escritura pública ↗</span></a><a href="https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/malha-fiscal/antecipacao/pensao-alimenticia" target="_blank" rel="noopener noreferrer"><b>Receita Federal — conferência da pensão</b><span>Valor conforme o título e os comprovantes ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2015/lei/l13105.htm" target="_blank" rel="noopener noreferrer"><b>Código de Processo Civil</b><span>Execução e desconto de prestação alimentícia ↗</span></a><a href="https://www.econeteditora.com.br/?url=links_pagina_inicial/calculos/federal/pensao/index.php" target="_blank" rel="noopener noreferrer"><b>Referência visual indicada</b><span>Organização da calculadora; implementação própria ↗</span></a></div></section>'
+    ].join('');
+  }
+  function updateAlimonyCalculator(scheduleSave) {
+    if (!$('#alimony-calculator')) return;
+    var data = readAlimonySimulation(), result = calculateAlimony(data), text = function (id, value) { var element = $('#' + id); if (element) element.textContent = value; }, percent = function (value) { return Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'; };
+    var methodLabels = { net: 'Percentual sobre o rendimento líquido', gross: 'Percentual sobre o rendimento bruto', fixed: 'Valor mensal fixo' }, methodShort = { net: 'Líquido', gross: 'Bruto', fixed: 'Valor fixo' };
+    var manual = $('#alimony-inss-manual'); if (manual) manual.disabled = data.inssAuto;
+    text('alimony-inss-help', data.inssAuto ? 'Calculada automaticamente: ' + money(result.inss) + '.' : 'Valor manual informado para a competência.');
+    text('alimony-result-total', money(result.pension)); text('alimony-result-rule', methodLabels[data.method]); text('alimony-result-gross', money(data.gross)); text('alimony-result-inss', money(result.inss)); text('alimony-result-irrf', money(result.irrf)); text('alimony-result-base', money(result.pensionBase));
+    text('alimony-memory-competence', String(data.competence || '2026-08').split('-').reverse().join('/')); text('alimony-memory-gross', money(data.gross)); text('alimony-memory-inss-rule', data.inssAuto ? 'Tabela progressiva do INSS de 2026' : 'Valor informado pelo usuário'); text('alimony-memory-inss', money(result.inss)); text('alimony-memory-irrf-base', money(result.irrfResult.taxableBase));
+    text('alimony-memory-irrf-rule', percent(result.irrfResult.bracket.rate * 100) + ' − ' + money(result.irrfResult.bracket.deduction)); text('alimony-memory-irrf-before', money(result.irrfResult.beforeReduction)); text('alimony-memory-reduction', money(result.irrfResult.reduction)); text('alimony-memory-irrf-status', result.irrfResult.waived ? 'Retenção dispensada até R$ 10,00' : 'Após redução legal'); text('alimony-memory-irrf', money(result.irrf));
+    var baseRule = data.method === 'net' ? 'Bruto − INSS' + (data.includeIrrfInNet ? ' − IRRF' : '') + (data.baseDeductions ? ' − outros descontos' : '') : data.method === 'gross' ? 'Rendimento bruto informado' : 'Valor fixado no título';
+    text('alimony-memory-base-rule', baseRule); text('alimony-memory-base', money(result.pensionBase)); text('alimony-memory-pension-rule', data.method === 'fixed' ? 'Valor mensal determinado' : money(result.pensionBase) + ' × ' + percent(data.percent)); text('alimony-memory-total', money(result.pension)); text('alimony-effective-percent', percent(result.effectivePercent)); text('alimony-disposable', money(result.disposable)); text('alimony-iteration', result.iterations);
+    text('alimony-summary-total', money(result.pension)); text('alimony-summary-percent', percent(result.effectivePercent) + ' do rendimento bruto'); text('alimony-summary-method', methodShort[data.method]); text('alimony-summary-case', data.caseReference || 'Não informada'); text('alimony-summary-competence', String(data.competence || '2026-08').split('-').reverse().join('/')); text('alimony-summary-deductible', data.deductAlimonyFromIrrf ? 'Simulada' : 'Não aplicada');
+    text('alimony-simplified-gross', money(data.gross)); text('alimony-simplified-deduction', money(result.irrfSimplifiedResult.simplifiedDeduction)); text('alimony-simplified-base', money(result.irrfSimplifiedResult.taxableBase)); text('alimony-simplified-irrf', money(result.irrfSimplifiedResult.irrf));
+    var alerts = $('#alimony-alerts'); if (alerts) alerts.innerHTML = result.alerts.length ? result.alerts.map(function (message) { return '<article><span>!</span><p>' + esc(message) + '</p></article>'; }).join('') : '<article class="is-ok"><span>✓</span><p>Dados essenciais preenchidos. Confira a redação do título antes de efetuar o desconto.</p></article>';
+    if ($('#alimony-percent')) $('#alimony-percent').disabled = data.method === 'fixed'; if ($('#alimony-fixed')) $('#alimony-fixed').disabled = data.method !== 'fixed';
+    if (scheduleSave) { window.clearTimeout(state.alimonySaveTimer); state.alimonySaveTimer = window.setTimeout(function () { state.settings.alimonyDraft = data; storageSet(KEYS.settings, state.settings); }, 250); }
+  }
+  function saveAlimonySimulation() {
+    var data = readAlimonySimulation(), result = calculateAlimony(data); if (!data.gross || !result.pension) { toast('Dados incompletos', 'Informe rendimento e percentual ou valor fixo antes de salvar.', 'error'); return; }
+    state.settings.alimonySimulation = Object.assign({}, data, { savedAt: nowISO(), result: result }); state.settings.alimonyDraft = data; persist(); audit('Pensão alimentícia simulada', money(result.pension) + ' · ' + data.method); toast('Simulação salva', 'A memória completa da pensão foi armazenada.');
+  }
+  function resetAlimonySimulation() {
+    if (!window.confirm('Limpar a simulação de pensão alimentícia e restaurar os valores iniciais?')) return; state.settings.alimonySimulation = alimonyDefaults(); state.settings.alimonyDraft = null; persist(); route(); toast('Simulação limpa', 'Os valores iniciais foram restaurados.');
+  }
+  function exportAlimonySimulation() {
+    var data = readAlimonySimulation(), result = calculateAlimony(data); if (!data.gross || !result.pension) { toast('Relatório não gerado', 'Informe rendimento e percentual ou valor fixo.', 'error'); return; }
+    downloadFile('pensao-alimenticia-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.pensao-alimenticia.v1', generatedAt: nowISO(), legalReview: '20/08/2026', data: data, result: result, parameters: { irrf: IRRF_MONTHLY_2026, inss: ALIMONY_INSS_2026 }, sources: ['Receita Federal — Tributação 2026', 'INSS — Tabela de contribuição 2026', 'Receita Federal — Dedução de pensão alimentícia', 'Código de Processo Civil'] }, null, 2)); audit('Pensão alimentícia exportada', money(result.pension) + ' · JSON'); toast('Relatório exportado', 'Dados, resultado, parâmetros e memória foram salvos em JSON.');
+  }
+
+  var BALANCE_METRICS = [
+    { key: 'currentLiquidity', group: 'Liquidez', label: 'Liquidez corrente', formula: 'Ativo circulante ÷ Passivo circulante', type: 'ratio', scale: 2 },
+    { key: 'quickLiquidity', group: 'Liquidez', label: 'Liquidez seca', formula: '(Ativo circulante − Estoques) ÷ Passivo circulante', type: 'ratio', scale: 2 },
+    { key: 'immediateLiquidity', group: 'Liquidez', label: 'Liquidez imediata', formula: 'Disponibilidades ÷ Passivo circulante', type: 'ratio', scale: 1 },
+    { key: 'generalLiquidity', group: 'Liquidez', label: 'Liquidez geral', formula: '(AC + Realizável a LP) ÷ (PC + PNC)', type: 'ratio', scale: 2 },
+    { key: 'debtRatio', group: 'Estrutura', label: 'Endividamento geral', formula: '(PC + PNC) ÷ Ativo total × 100', type: 'percent', scale: 100 },
+    { key: 'debtComposition', group: 'Estrutura', label: 'Composição do endividamento', formula: 'Passivo circulante ÷ Capital de terceiros × 100', type: 'percent', scale: 100 },
+    { key: 'debtToEquity', group: 'Estrutura', label: 'Participação de terceiros', formula: 'Capital de terceiros ÷ Patrimônio líquido', type: 'ratio', scale: 2 },
+    { key: 'fixedEquity', group: 'Estrutura', label: 'Imobilização do PL', formula: '(Investimentos + Imobilizado + Intangível) ÷ PL × 100', type: 'percent', scale: 120 },
+    { key: 'solvency', group: 'Solvência', label: 'Solvência geral', formula: 'Ativo total ÷ Capital de terceiros', type: 'ratio', scale: 3 },
+    { key: 'netMargin', group: 'Rentabilidade', label: 'Margem líquida', formula: 'Resultado líquido ÷ Vendas líquidas × 100', type: 'percent', scale: 30 },
+    { key: 'roa', group: 'Rentabilidade', label: 'Retorno sobre ativos (ROA)', formula: 'Resultado líquido ÷ Ativo total × 100', type: 'percent', scale: 30 },
+    { key: 'roe', group: 'Rentabilidade', label: 'Retorno sobre o PL (ROE)', formula: 'Resultado líquido ÷ Patrimônio líquido × 100', type: 'percent', scale: 40 },
+    { key: 'assetTurnover', group: 'Atividade', label: 'Giro do ativo', formula: 'Vendas líquidas ÷ Ativo total', type: 'ratio', scale: 2 }
+  ];
+  function balanceAnalysisDefaults() {
+    return {
+      company: '', period: '2025-12-31', currentAssets: 420000, cash: 90000, inventory: 110000,
+      nonCurrentAssets: 580000, longReceivables: 80000, investments: 50000, fixedAssets: 390000, intangibles: 60000,
+      currentLiabilities: 230000, nonCurrentLiabilities: 270000, equity: 500000, capital: 300000,
+      netSales: 1450000, netIncome: 174000
+    };
+  }
+  function readBalanceAnalysis() {
+    var fallback = Object.assign(balanceAnalysisDefaults(), state.settings.balanceAnalysisDraft || state.settings.balanceAnalysis || {});
+    var value = function (id, defaultValue) { var element = $('#' + id); return element ? element.value : defaultValue; };
+    var amount = function (id, defaultValue) { return Math.max(0, parseLocaleNumber(value(id, defaultValue))); };
+    var signedAmount = function (id, defaultValue) { var parsed = parseLocaleNumber(value(id, defaultValue)); return Number.isFinite(parsed) ? parsed : 0; };
+    return {
+      company: String(value('balance-company', fallback.company) || '').trim(), period: value('balance-period', fallback.period),
+      currentAssets: amount('balance-current-assets', fallback.currentAssets), cash: amount('balance-cash', fallback.cash), inventory: amount('balance-inventory', fallback.inventory),
+      nonCurrentAssets: amount('balance-noncurrent-assets', fallback.nonCurrentAssets), longReceivables: amount('balance-long-receivables', fallback.longReceivables),
+      investments: amount('balance-investments', fallback.investments), fixedAssets: amount('balance-fixed-assets', fallback.fixedAssets), intangibles: amount('balance-intangibles', fallback.intangibles),
+      currentLiabilities: amount('balance-current-liabilities', fallback.currentLiabilities), nonCurrentLiabilities: amount('balance-noncurrent-liabilities', fallback.nonCurrentLiabilities),
+      equity: signedAmount('balance-equity', fallback.equity), capital: amount('balance-capital', fallback.capital), netSales: amount('balance-net-sales', fallback.netSales), netIncome: signedAmount('balance-net-income', fallback.netIncome)
+    };
+  }
+  function balanceSafeRatio(numerator, denominator, allowNegativeDenominator) {
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0 || (!allowNegativeDenominator && denominator < 0)) return null;
+    return numerator / denominator;
+  }
+  function balanceMetricStatus(key, value) {
+    if (value == null || !Number.isFinite(value)) return { tone: 'neutral', label: 'Não calculado' };
+    var favorable = false, adequate = false;
+    if (key === 'currentLiquidity') { favorable = value >= 1.5; adequate = value >= 1; }
+    else if (key === 'quickLiquidity') { favorable = value >= 1; adequate = value >= .8; }
+    else if (key === 'immediateLiquidity') { favorable = value >= .3; adequate = value >= .1; }
+    else if (key === 'generalLiquidity') { favorable = value >= 1.2; adequate = value >= 1; }
+    else if (key === 'debtRatio') { favorable = value <= 40; adequate = value <= 60; }
+    else if (key === 'debtComposition') { favorable = value <= 50; adequate = value <= 70; }
+    else if (key === 'debtToEquity') { favorable = value <= .8; adequate = value <= 1.5; }
+    else if (key === 'fixedEquity') { favorable = value <= 70; adequate = value <= 100; }
+    else if (key === 'solvency') { favorable = value >= 2; adequate = value >= 1; }
+    else if (key === 'netMargin') { favorable = value >= 10; adequate = value >= 0; }
+    else if (key === 'roa') { favorable = value >= 10; adequate = value >= 0; }
+    else if (key === 'roe') { favorable = value >= 15; adequate = value >= 0; }
+    else if (key === 'assetTurnover') { favorable = value >= 1.2; adequate = value >= .7; }
+    return favorable ? { tone: 'success', label: 'Favorável' } : adequate ? { tone: 'warning', label: 'Intermediário' } : { tone: 'danger', label: 'Atenção' };
+  }
+  function formatBalanceMetric(value, type) {
+    if (value == null || !Number.isFinite(value)) return '—';
+    var formatted = Number(value).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return type === 'percent' ? formatted + '%' : formatted + 'x';
+  }
+  function calculateBalanceAnalysis(data) {
+    var totalAssets = data.currentAssets + data.nonCurrentAssets;
+    var thirdPartyCapital = data.currentLiabilities + data.nonCurrentLiabilities;
+    var totalLiabilitiesEquity = thirdPartyCapital + data.equity;
+    var difference = totalAssets - totalLiabilitiesEquity;
+    var balanceTolerance = Math.max(1, Math.abs(totalAssets) * .000001);
+    var fixedResources = data.investments + data.fixedAssets + data.intangibles;
+    var metrics = {
+      currentLiquidity: balanceSafeRatio(data.currentAssets, data.currentLiabilities),
+      quickLiquidity: balanceSafeRatio(data.currentAssets - data.inventory, data.currentLiabilities),
+      immediateLiquidity: balanceSafeRatio(data.cash, data.currentLiabilities),
+      generalLiquidity: balanceSafeRatio(data.currentAssets + data.longReceivables, thirdPartyCapital),
+      debtRatio: balanceSafeRatio(thirdPartyCapital * 100, totalAssets),
+      debtComposition: balanceSafeRatio(data.currentLiabilities * 100, thirdPartyCapital),
+      debtToEquity: balanceSafeRatio(thirdPartyCapital, data.equity),
+      fixedEquity: balanceSafeRatio(fixedResources * 100, data.equity),
+      solvency: balanceSafeRatio(totalAssets, thirdPartyCapital),
+      netMargin: balanceSafeRatio(data.netIncome * 100, data.netSales),
+      roa: balanceSafeRatio(data.netIncome * 100, totalAssets),
+      roe: data.equity > 0 ? balanceSafeRatio(data.netIncome * 100, data.equity) : null,
+      assetTurnover: balanceSafeRatio(data.netSales, totalAssets)
+    };
+    var warnings = [];
+    if (data.cash > data.currentAssets) warnings.push('Disponibilidades não podem superar o total do Ativo Circulante.');
+    if (data.inventory > data.currentAssets) warnings.push('Estoques não podem superar o total do Ativo Circulante.');
+    if (data.cash + data.inventory > data.currentAssets + balanceTolerance) warnings.push('Disponibilidades e estoques, somados, superam o Ativo Circulante informado.');
+    if (data.longReceivables + fixedResources > data.nonCurrentAssets + balanceTolerance) warnings.push('Os detalhamentos do Ativo Não Circulante superam o total informado para o grupo.');
+    if (data.equity >= 0 && data.capital > data.equity + balanceTolerance) warnings.push('O Capital Social supera o Patrimônio Líquido; confirme reservas, prejuízos acumulados e demais contas do PL.');
+    return {
+      totalAssets: totalAssets, thirdPartyCapital: thirdPartyCapital, totalLiabilitiesEquity: totalLiabilitiesEquity, equity: data.equity,
+      difference: difference, balanced: Math.abs(difference) <= balanceTolerance, balanceTolerance: balanceTolerance, fixedResources: fixedResources,
+      workingCapital: data.currentAssets - data.currentLiabilities, netIncome: data.netIncome, metrics: metrics, warnings: warnings
+    };
+  }
+  function balanceInsights(data, result) {
+    var insights = [];
+    if (result.balanced) insights.push({ tone: 'success', title: 'Equação patrimonial conferida', text: 'O Ativo total coincide com Passivo mais Patrimônio Líquido dentro da tolerância de arredondamento.' });
+    else insights.push({ tone: 'danger', title: 'Balanço não fecha', text: 'Existe uma diferença de ' + money(Math.abs(result.difference)) + '. Revise os totais e a classificação das contas antes de interpretar os índices.' });
+    if (result.workingCapital >= 0) insights.push({ tone: 'success', title: 'Capital de giro líquido positivo', text: 'O Ativo Circulante supera o Passivo Circulante em ' + money(result.workingCapital) + '.' });
+    else insights.push({ tone: 'danger', title: 'Pressão de curto prazo', text: 'O Passivo Circulante supera o Ativo Circulante em ' + money(Math.abs(result.workingCapital)) + '.' });
+    var currentStatus = balanceMetricStatus('currentLiquidity', result.metrics.currentLiquidity);
+    insights.push({ tone: currentStatus.tone, title: 'Liquidez corrente ' + currentStatus.label.toLowerCase(), text: result.metrics.currentLiquidity == null ? 'Informe o Passivo Circulante para calcular a cobertura das obrigações de curto prazo.' : 'Para cada R$ 1,00 de dívida de curto prazo, existem ' + money(result.metrics.currentLiquidity).replace('R$', 'R$') + ' em ativos circulantes.' });
+    var debtStatus = balanceMetricStatus('debtRatio', result.metrics.debtRatio);
+    insights.push({ tone: debtStatus.tone, title: 'Estrutura de capital ' + debtStatus.label.toLowerCase(), text: result.metrics.debtRatio == null ? 'O endividamento não pôde ser calculado.' : number(result.metrics.debtRatio) + '% do Ativo é financiado por capital de terceiros.' });
+    if (data.equity <= 0) insights.push({ tone: 'danger', title: 'Patrimônio Líquido não positivo', text: 'O ROE e alguns índices de estrutura perdem significado econômico quando o Patrimônio Líquido é nulo ou negativo.' });
+    else if (data.netSales > 0) {
+      var marginStatus = balanceMetricStatus('netMargin', result.metrics.netMargin);
+      insights.push({ tone: marginStatus.tone, title: 'Margem líquida ' + marginStatus.label.toLowerCase(), text: 'O resultado líquido representa ' + formatBalanceMetric(result.metrics.netMargin, 'percent') + ' das vendas líquidas informadas.' });
+    }
+    result.warnings.forEach(function (warning) { insights.push({ tone: 'danger', title: 'Conferência cadastral', text: warning }); });
+    return insights;
+  }
+  function renderBalanceAnalysis() {
+    var data = Object.assign(balanceAnalysisDefaults(), state.settings.balanceAnalysisDraft || state.settings.balanceAnalysis || {});
+    var client = currentClient(); if (!data.company) data.company = client ? client.name : 'Empresa demonstrativa';
+    var accountInput = function (id, label, value, detail, signed, hint) {
+      return '<label class="balance-account-row' + (detail ? ' is-detail' : '') + '" for="' + id + '"><span><b>' + esc(label) + '</b>' + (hint ? '<small>' + esc(hint) + '</small>' : '') + '</span><div class="input-prefix"><b>R$</b><input id="' + id + '" data-balance-input type="number" ' + (signed ? '' : 'min="0" ') + 'step="0.01" inputmode="decimal" value="' + Number(value || 0) + '" aria-label="' + esc(label) + '"></div></label>';
+    };
+    var metricCards = BALANCE_METRICS.map(function (metric) {
+      return '<article class="balance-metric-card" id="balance-card-' + metric.key + '"><header><span>' + esc(metric.group) + '</span><em id="balance-status-' + metric.key + '" class="balance-metric-status is-neutral">Não calculado</em></header><h3>' + esc(metric.label) + '</h3><strong id="balance-metric-' + metric.key + '">—</strong><p>' + esc(metric.formula) + '</p><i><b id="balance-bar-' + metric.key + '"></b></i></article>';
+    }).join('');
+    var formulaRows = BALANCE_METRICS.map(function (metric) { return '<tr><td><b>' + esc(metric.label) + '</b><small>' + esc(metric.group) + '</small></td><td>' + esc(metric.formula) + '</td><td id="balance-formula-' + metric.key + '">—</td></tr>'; }).join('');
+    return [
+      pageHeading('Análise de Balanço', 'Transforme o Balanço Patrimonial e a DRE em indicadores financeiros com cálculo instantâneo.', '<button class="secondary-button" data-action="balance-export">↧ Exportar JSON</button><button class="secondary-button" data-action="balance-print">▣ PDF / imprimir</button><button class="primary-button" data-action="balance-save">▣ Salvar análise</button>'),
+      '<div class="info-banner balance-law-banner"><span>▦</span><div><strong>Análise econômico-financeira em uma única tela.</strong> Os grupos seguem a estrutura patrimonial da Lei nº 6.404/1976 e do CPC 26. As faixas de leitura são orientativas e devem ser comparadas com o setor, o porte e o histórico da empresa.</div><span class="live-badge"><i></i> Cálculo instantâneo</span></div>',
+      '<div id="balance-analysis-calculator" class="balance-analysis-page">',
+      '<section class="card balance-entry-card"><header class="card-header"><div><h2>Balanço Patrimonial</h2><small>Informe os saldos finais do mesmo período contábil</small></div><span class="tag tag--info">Valores em reais</span></header><div class="card-body">',
+      '<div class="balance-meta-grid"><label class="field"><span>Empresa analisada</span><input id="balance-company" data-balance-input value="' + esc(data.company) + '" placeholder="Nome empresarial"></label><label class="field"><span>Data-base</span><input id="balance-period" data-balance-input type="date" value="' + esc(data.period) + '"></label></div>',
+      '<div class="balance-statement-grid"><section class="balance-statement-side balance-assets"><header><span>ATIVO</span><b>Valor (R$)</b></header>',
+      accountInput('balance-current-assets', 'Ativo Circulante (AC)', data.currentAssets, false, false, 'Inclusive disponibilidades e estoques') +
+      accountInput('balance-cash', 'Disponibilidades', data.cash, true, false, 'Caixa e equivalentes de caixa') +
+      accountInput('balance-inventory', 'Estoques', data.inventory, true, false, 'Subconta do Ativo Circulante') +
+      accountInput('balance-noncurrent-assets', 'Ativo Não Circulante (ANC)', data.nonCurrentAssets, false, false, 'Total do grupo') +
+      accountInput('balance-long-receivables', 'Realizável a Longo Prazo', data.longReceivables, true, false, '') +
+      accountInput('balance-investments', 'Investimentos', data.investments, true, false, '') +
+      accountInput('balance-fixed-assets', 'Imobilizado', data.fixedAssets, true, false, '') +
+      accountInput('balance-intangibles', 'Intangível', data.intangibles, true, false, '') +
+      '<div class="balance-total-row"><span>ATIVO TOTAL</span><strong id="balance-entry-total-assets">R$ 0,00</strong></div></section>',
+      '<section class="balance-statement-side balance-liabilities"><header><span>PASSIVO + PATRIMÔNIO LÍQUIDO</span><b>Valor (R$)</b></header>',
+      accountInput('balance-current-liabilities', 'Passivo Circulante (PC)', data.currentLiabilities, false, false, 'Obrigações de curto prazo') +
+      accountInput('balance-noncurrent-liabilities', 'Passivo Não Circulante (PNC)', data.nonCurrentLiabilities, false, false, 'Obrigações de longo prazo') +
+      accountInput('balance-equity', 'Patrimônio Líquido (PL)', data.equity, false, true, 'Informe valor negativo quando aplicável') +
+      accountInput('balance-capital', 'Capital Social', data.capital, true, false, 'Subconta do Patrimônio Líquido') +
+      '<div class="balance-statement-spacer"><div><b>Capital de terceiros</b><small>PC + PNC</small></div><strong id="balance-entry-third-party">R$ 0,00</strong></div>' +
+      '<div class="balance-total-row"><span>PASSIVO + PL</span><strong id="balance-entry-total-liabilities">R$ 0,00</strong></div></section></div>',
+      '<div id="balance-equation-check" class="balance-equation-check"><span>∑</span><div><b>Conferindo equação patrimonial</b><small>Ativo = Passivo + Patrimônio Líquido</small></div><strong id="balance-difference">R$ 0,00</strong></div>',
+      '</div></section>',
+      '<section class="card balance-performance-card"><header class="card-header"><div><h2>Dados da Demonstração do Resultado</h2><small>Necessários para margem, giro e rentabilidade</small></div></header><div class="card-body"><div class="balance-performance-grid">' +
+      accountInput('balance-net-sales', 'Vendas líquidas no período', data.netSales, false, false, 'Receita líquida de vendas e serviços') +
+      accountInput('balance-net-income', 'Resultado líquido do exercício', data.netIncome, false, true, 'Lucro positivo ou prejuízo negativo') +
+      '</div><div class="balance-form-actions"><button class="secondary-button" data-action="balance-clear">Limpar dados</button><button class="primary-button" data-action="balance-calculate">Analisar balanço agora</button></div></div></section>',
+      '<section class="balance-summary-grid"><article><span>Ativo total</span><strong id="balance-summary-assets">R$ 0,00</strong><small>AC + ANC</small></article><article><span>Capital de terceiros</span><strong id="balance-summary-debt">R$ 0,00</strong><small>PC + PNC</small></article><article><span>Patrimônio líquido</span><strong id="balance-summary-equity">R$ 0,00</strong><small>Recursos próprios</small></article><article><span>Capital de giro líquido</span><strong id="balance-summary-working-capital">R$ 0,00</strong><small>AC − PC</small></article><article><span>Resultado líquido</span><strong id="balance-summary-income">R$ 0,00</strong><small>Lucro ou prejuízo</small></article></section>',
+      '<section class="card balance-indicators-card"><header class="card-header"><div><h2>Indicadores econômico-financeiros</h2><small>Liquidez, estrutura, solvência, atividade e rentabilidade</small></div><span class="tag tag--success">13 indicadores</span></header><div class="card-body"><div class="balance-metrics-grid">' + metricCards + '</div></div></section>',
+      '<div class="balance-analysis-bottom"><section class="card balance-insights-card"><header class="card-header"><div><h2>Diagnóstico executivo</h2><small>Pontos de atenção identificados automaticamente</small></div></header><div class="card-body" id="balance-insights"></div></section>',
+      '<section class="card balance-formulas-card"><header class="card-header"><div><h2>Memória das fórmulas</h2><small>Rastreabilidade completa dos resultados</small></div></header><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Indicador</th><th>Fórmula</th><th>Resultado</th></tr></thead><tbody>' + formulaRows + '</tbody></table></div></div></section></div>',
+      '<section class="warning-banner balance-method-warning"><strong>Leitura responsável:</strong> não existe um índice universalmente “bom” para todos os negócios. Compare os resultados com exercícios anteriores, orçamento, empresas do mesmo setor, sazonalidade e notas explicativas. Esta ferramenta não substitui parecer contábil, auditoria ou análise de crédito.</section>',
+      '<section class="card balance-sources"><header class="card-header"><div><h2>Fontes e critérios</h2><small>Estrutura contábil e referência da ferramenta</small></div><span class="tag tag--success">Conferido em 20/08/2026</span></header><div class="card-body"><a href="https://www.planalto.gov.br/ccivil_03/leis/l6404consol.htm" target="_blank" rel="noopener noreferrer"><b>Lei nº 6.404/1976 — texto compilado</b><span>Arts. 178 a 182: grupos do Balanço Patrimonial; art. 187: DRE ↗</span></a><a href="https://www.cpc.org.br/CPC/Documentos-Emitidos/Pronunciamentos/Pronunciamento?Id=57" target="_blank" rel="noopener noreferrer"><b>CPC 26 (R1)</b><span>Apresentação das Demonstrações Contábeis ↗</span></a><a href="https://www.econeteditora.com.br/?url=/links_pagina_inicial/calculos/contabil/analise_balanco/index.php" target="_blank" rel="noopener noreferrer"><b>Referência visual indicada</b><span>Organização da calculadora Econet; implementação e diagnóstico próprios ↗</span></a></div></section>',
+      '</div>'
+    ].join('');
+  }
+  function updateBalanceAnalysis(scheduleSave) {
+    if (!$('#balance-analysis-calculator')) return;
+    var data = readBalanceAnalysis(), result = calculateBalanceAnalysis(data);
+    var text = function (id, value) { var element = $('#' + id); if (element) element.textContent = value; };
+    text('balance-entry-total-assets', money(result.totalAssets)); text('balance-entry-third-party', money(result.thirdPartyCapital)); text('balance-entry-total-liabilities', money(result.totalLiabilitiesEquity));
+    text('balance-summary-assets', money(result.totalAssets)); text('balance-summary-debt', money(result.thirdPartyCapital)); text('balance-summary-equity', money(data.equity)); text('balance-summary-working-capital', money(result.workingCapital)); text('balance-summary-income', money(data.netIncome));
+    var equation = $('#balance-equation-check');
+    if (equation) { equation.className = 'balance-equation-check ' + (result.balanced ? 'is-balanced' : 'is-unbalanced'); equation.querySelector('b').textContent = result.balanced ? 'Balanço patrimonial fechado' : 'Diferença na equação patrimonial'; equation.querySelector('small').textContent = result.balanced ? 'Ativo = Passivo + Patrimônio Líquido' : 'Revise os saldos antes da análise definitiva'; }
+    text('balance-difference', result.balanced ? 'Diferença R$ 0,00' : 'Diferença ' + money(Math.abs(result.difference)));
+    BALANCE_METRICS.forEach(function (definition) {
+      var value = result.metrics[definition.key], status = balanceMetricStatus(definition.key, value);
+      text('balance-metric-' + definition.key, formatBalanceMetric(value, definition.type)); text('balance-formula-' + definition.key, formatBalanceMetric(value, definition.type));
+      var badge = $('#balance-status-' + definition.key); if (badge) { badge.className = 'balance-metric-status is-' + status.tone; badge.textContent = status.label; }
+      var card = $('#balance-card-' + definition.key); if (card) card.dataset.tone = status.tone;
+      var bar = $('#balance-bar-' + definition.key); if (bar) bar.style.width = value == null ? '0%' : Math.max(0, Math.min(100, Math.abs(value) / definition.scale * 100)) + '%';
+    });
+    var insights = balanceInsights(data, result), insightBox = $('#balance-insights');
+    if (insightBox) insightBox.innerHTML = insights.map(function (item) { return '<article class="balance-insight is-' + item.tone + '"><span>' + (item.tone === 'success' ? '✓' : item.tone === 'danger' ? '!' : 'i') + '</span><div><b>' + esc(item.title) + '</b><p>' + esc(item.text) + '</p></div></article>'; }).join('');
+    if (scheduleSave) {
+      window.clearTimeout(state.balanceAnalysisSaveTimer);
+      state.balanceAnalysisSaveTimer = window.setTimeout(function () { state.settings.balanceAnalysisDraft = data; storageSet(KEYS.settings, state.settings); }, 250);
+    }
+  }
+  function saveBalanceAnalysis() {
+    var data = readBalanceAnalysis(), result = calculateBalanceAnalysis(data);
+    if (!result.totalAssets) { toast('Análise não salva', 'Informe os valores do Balanço Patrimonial.', 'error'); return; }
+    if (!result.balanced && !window.confirm('O balanço apresenta diferença de ' + money(Math.abs(result.difference)) + '. Deseja salvar mesmo assim?')) return;
+    state.settings.balanceAnalysis = Object.assign({}, data, { savedAt: nowISO(), result: result }); state.settings.balanceAnalysisDraft = data; persist();
+    audit('Análise de balanço salva', (data.company || 'Empresa não informada') + ' · ' + dateBR(data.period)); toast('Análise salva', 'O balanço, os indicadores e o diagnóstico foram armazenados.');
+  }
+  function resetBalanceAnalysis() {
+    if (!window.confirm('Limpar a análise atual e restaurar os valores de demonstração?')) return;
+    state.settings.balanceAnalysis = balanceAnalysisDefaults(); state.settings.balanceAnalysisDraft = null; persist(); route(); toast('Análise limpa', 'Os valores demonstrativos foram restaurados.');
+  }
+  function exportBalanceAnalysis() {
+    var data = readBalanceAnalysis(), result = calculateBalanceAnalysis(data);
+    if (!result.totalAssets) { toast('Relatório não gerado', 'Informe os valores do Balanço Patrimonial.', 'error'); return; }
+    var metrics = {}; BALANCE_METRICS.forEach(function (definition) { metrics[definition.key] = { label: definition.label, formula: definition.formula, value: result.metrics[definition.key], formatted: formatBalanceMetric(result.metrics[definition.key], definition.type), assessment: balanceMetricStatus(definition.key, result.metrics[definition.key]).label }; });
+    downloadFile('analise-balanco-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.analise-balanco.v1', generatedAt: nowISO(), legalReview: '20/08/2026', data: data, totals: { assets: result.totalAssets, thirdPartyCapital: result.thirdPartyCapital, liabilitiesAndEquity: result.totalLiabilitiesEquity, difference: result.difference, balanced: result.balanced, workingCapital: result.workingCapital }, metrics: metrics, insights: balanceInsights(data, result), warnings: result.warnings, sources: ['Lei 6.404/1976, arts. 178 a 182 e 187', 'CPC 26 (R1) — Apresentação das Demonstrações Contábeis'] }, null, 2));
+    audit('Análise de balanço exportada', (data.company || 'Empresa não informada') + ' · JSON'); toast('Relatório exportado', 'Dados, fórmulas, indicadores e diagnóstico foram incluídos no JSON.');
+  }
+
+  function overtimeNightDefaults() {
+    return {
+      remunerationType: 'mensalista', employeeType: 'urbano', salary: 3500, gratification: 500, monthlyHours: '220:00', competence: '2026-08', usefulDays: 26, nonUsefulDays: 5,
+      weekdayOvertime: '10:00', restDayOvertime: '04:00', regularNightHours: '30:00', nightOvertime: '05:00',
+      overtimePercent: 50, restDayPercent: 100, nightPercent: 20, nightHourMinutes: 52.5, reducedNightHour: true, includeDsr: true
+    };
+  }
+  function parseHoursQuantity(value) {
+    var raw = String(value == null ? '' : value).trim().replace(',', '.');
+    if (!raw) return 0;
+    var parts = raw.match(/^(\d+):([0-5]?\d)$/);
+    if (parts) return Math.max(0, Number(parts[1]) + Number(parts[2]) / 60);
+    var parsed = Number(raw); return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+  }
+  function formatHoursQuantity(value) {
+    if (value == null || !Number.isFinite(value)) return '00:00';
+    var minutes = Math.round(Math.max(0, value) * 60), hours = Math.floor(minutes / 60), remaining = minutes % 60;
+    return String(hours).padStart(2, '0') + ':' + String(remaining).padStart(2, '0');
+  }
+  function overtimeEmployeeRule(type) {
+    if (type === 'rural-lavoura') return { label: 'Rural — lavoura', period: '21h às 5h', minimumNightPercent: 25, reducedByLaw: false, legalMinutes: 60 };
+    if (type === 'rural-pecuaria') return { label: 'Rural — pecuária', period: '20h às 4h', minimumNightPercent: 25, reducedByLaw: false, legalMinutes: 60 };
+    return { label: 'Urbano', period: '22h às 5h', minimumNightPercent: 20, reducedByLaw: true, legalMinutes: 52.5 };
+  }
+  function readOvertimeNightSimulation() {
+    var fallback = Object.assign(overtimeNightDefaults(), state.settings.overtimeNightDraft || state.settings.overtimeNightSimulation || {});
+    var value = function (id, defaultValue) { var element = $('#' + id); return element ? element.value : defaultValue; };
+    var amount = function (id, defaultValue) { return Math.max(0, parseLocaleNumber(value(id, defaultValue))); };
+    var checked = function (id, defaultValue) { var element = $('#' + id); return element ? element.checked : defaultValue; };
+    return {
+      remunerationType: value('overtime-remuneration-type', fallback.remunerationType), employeeType: value('overtime-employee-type', fallback.employeeType),
+      salary: amount('overtime-salary', fallback.salary), gratification: amount('overtime-gratification', fallback.gratification), monthlyHours: value('overtime-monthly-hours', fallback.monthlyHours), competence: value('overtime-competence', fallback.competence),
+      usefulDays: Math.max(0, Math.floor(amount('overtime-useful-days', fallback.usefulDays))), nonUsefulDays: Math.max(0, Math.floor(amount('overtime-non-useful-days', fallback.nonUsefulDays))),
+      weekdayOvertime: value('overtime-weekday-hours', fallback.weekdayOvertime), restDayOvertime: value('overtime-rest-hours', fallback.restDayOvertime), regularNightHours: value('overtime-night-regular-hours', fallback.regularNightHours), nightOvertime: value('overtime-night-extra-hours', fallback.nightOvertime),
+      overtimePercent: amount('overtime-extra-percent', fallback.overtimePercent), restDayPercent: amount('overtime-rest-percent', fallback.restDayPercent), nightPercent: amount('overtime-night-percent', fallback.nightPercent),
+      nightHourMinutes: Math.max(1, Math.min(60, amount('overtime-night-minutes', fallback.nightHourMinutes))), reducedNightHour: checked('overtime-reduced-hour', fallback.reducedNightHour), includeDsr: checked('overtime-include-dsr', fallback.includeDsr)
+    };
+  }
+  function calculateOvertimeNight(data) {
+    var divisor = parseHoursQuantity(data.monthlyHours), weekdayHours = parseHoursQuantity(data.weekdayOvertime), restHours = parseHoursQuantity(data.restDayOvertime), regularNightClockHours = parseHoursQuantity(data.regularNightHours), nightOvertimeClockHours = parseHoursQuantity(data.nightOvertime);
+    var rule = overtimeEmployeeRule(data.employeeType);
+    var monthlyBase = data.remunerationType === 'horista' ? data.salary * divisor + data.gratification : data.salary + data.gratification;
+    var hourlyRate = divisor > 0 ? (data.remunerationType === 'horista' ? data.salary + data.gratification / divisor : monthlyBase / divisor) : 0;
+    var nightFactor = data.reducedNightHour ? 60 / data.nightHourMinutes : 1;
+    var regularNightReducedHours = regularNightClockHours * nightFactor, nightOvertimeReducedHours = nightOvertimeClockHours * nightFactor;
+    var weekdayOvertimeValue = weekdayHours * hourlyRate * (1 + data.overtimePercent / 100);
+    var restDayOvertimeValue = restHours * hourlyRate * (1 + data.restDayPercent / 100);
+    var regularNightPremium = regularNightReducedHours * hourlyRate * data.nightPercent / 100;
+    var nightOvertimeValue = nightOvertimeReducedHours * hourlyRate * (1 + data.nightPercent / 100) * (1 + data.overtimePercent / 100);
+    var variablePay = weekdayOvertimeValue + restDayOvertimeValue + regularNightPremium + nightOvertimeValue;
+    var dsr = data.includeDsr && data.usefulDays > 0 ? variablePay / data.usefulDays * data.nonUsefulDays : 0;
+    var totalAdditions = variablePay + dsr, estimatedMonthlyPay = monthlyBase + totalAdditions;
+    var warnings = [];
+    if (!data.salary) warnings.push('Informe o salário mensal ou o valor da hora contratual.');
+    if (!divisor) warnings.push('A jornada mensal precisa ser maior que zero para calcular o salário-hora.');
+    if (data.overtimePercent < 50) warnings.push('O adicional de hora extra informado está abaixo do mínimo geral de 50% previsto no art. 59, § 1º, da CLT.');
+    if (data.nightPercent < rule.minimumNightPercent) warnings.push('O adicional noturno informado está abaixo do mínimo de ' + rule.minimumNightPercent + '% para ' + rule.label.toLowerCase() + '.');
+    if (data.employeeType === 'urbano' && !data.reducedNightHour) warnings.push('A hora noturna urbana de 52min30s foi desativada. Faça isso somente quando houver norma coletiva válida e condição compensatória aplicável.');
+    if (data.employeeType !== 'urbano' && data.reducedNightHour) warnings.push('A Lei nº 5.889/1973 não estabelece hora reduzida para o empregado rural; confirme se existe previsão coletiva específica.');
+    if (data.includeDsr && !data.usefulDays) warnings.push('O reflexo no descanso semanal não foi calculado porque a quantidade de dias úteis está zerada.');
+    if (data.remunerationType === 'horista') warnings.push('Para horistas, o total mensal demonstrado considera o valor-hora multiplicado pelo divisor informado; confira também o DSR das horas ordinárias na folha.');
+    return {
+      divisor: divisor, rule: rule, monthlyBase: monthlyBase, hourlyRate: hourlyRate, nightFactor: nightFactor,
+      weekdayHours: weekdayHours, restHours: restHours, regularNightClockHours: regularNightClockHours, nightOvertimeClockHours: nightOvertimeClockHours,
+      regularNightReducedHours: regularNightReducedHours, nightOvertimeReducedHours: nightOvertimeReducedHours,
+      weekdayOvertimeValue: weekdayOvertimeValue, restDayOvertimeValue: restDayOvertimeValue, regularNightPremium: regularNightPremium, nightOvertimeValue: nightOvertimeValue,
+      variablePay: variablePay, dsr: dsr, totalAdditions: totalAdditions, estimatedMonthlyPay: estimatedMonthlyPay, warnings: warnings
+    };
+  }
+  function renderOvertimeNightCalculator() {
+    var data = Object.assign(overtimeNightDefaults(), state.settings.overtimeNightDraft || state.settings.overtimeNightSimulation || {});
+    var selected = function (current, value) { return current === value ? ' selected' : ''; }, checked = function (value) { return value ? ' checked' : ''; };
+    var moneyInput = function (id, label, value, hint) { return '<label class="field"><span>' + esc(label) + '</span><div class="input-prefix"><b>R$</b><input id="' + id + '" data-overtime-input type="number" min="0" step="0.01" inputmode="decimal" value="' + Number(value || 0) + '"></div>' + (hint ? '<small>' + esc(hint) + '</small>' : '') + '</label>'; };
+    var hoursInput = function (id, label, value, hint) { return '<label class="field"><span>' + esc(label) + '</span><input id="' + id + '" data-overtime-input type="text" inputmode="decimal" value="' + esc(value) + '" placeholder="00:00"><small>' + esc(hint || 'Use o formato horas:minutos.') + '</small></label>'; };
+    return [
+      pageHeading('Horas Extras e Trabalho Noturno', 'Calcule imediatamente horas extraordinárias, adicional noturno, hora reduzida e reflexo no descanso semanal.', '<button class="secondary-button" data-action="overtime-export">↧ Exportar JSON</button><button class="secondary-button" data-action="overtime-print">▣ PDF / imprimir</button><button class="primary-button" data-action="overtime-save">▣ Salvar simulação</button>'),
+      '<div class="info-banner overtime-law-banner"><span>◷</span><div><strong>Simulação trabalhista com parâmetros ajustáveis.</strong> Os percentuais mínimos legais já estão preenchidos. Confira a convenção coletiva, o regime de jornada, a habitualidade e as parcelas salariais de cada empregado.</div><span class="live-badge"><i></i> Resultado imediato</span></div>',
+      '<div class="overtime-stepper"><div class="is-active"><span>1</span><b>Dados iniciais</b></div><i></i><div class="is-active"><span>2</span><b>Horas trabalhadas</b></div><i></i><div class="is-active"><span>3</span><b>Resultado</b></div></div>',
+      '<div id="overtime-night-calculator" class="overtime-layout"><div class="overtime-main">',
+      '<section class="card overtime-contract-card"><header class="card-header"><div><h2>Informações do contrato</h2><small>Base da remuneração e jornada mensal</small></div><span class="tag tag--info">Competência mensal</span></header><div class="card-body"><div class="form-grid overtime-form-grid">',
+      '<label class="field"><span>Tipo de remuneração</span><select id="overtime-remuneration-type" data-overtime-input><option value="mensalista"' + selected(data.remunerationType, 'mensalista') + '>Mensalista</option><option value="horista"' + selected(data.remunerationType, 'horista') + '>Horista</option></select><small>Para horista, informe o valor contratual da hora.</small></label>',
+      '<label class="field"><span>Tipo de empregado</span><select id="overtime-employee-type" data-overtime-input><option value="urbano"' + selected(data.employeeType, 'urbano') + '>Urbano</option><option value="rural-lavoura"' + selected(data.employeeType, 'rural-lavoura') + '>Rural — lavoura</option><option value="rural-pecuaria"' + selected(data.employeeType, 'rural-pecuaria') + '>Rural — pecuária</option></select><small id="overtime-night-period-hint">Período noturno legal</small></label>',
+      moneyInput('overtime-salary', data.remunerationType === 'horista' ? 'Valor da hora contratual' : 'Salário mensal', data.salary, 'Valor-base sem os adicionais desta simulação.') +
+      moneyInput('overtime-gratification', 'Gratificação salarial', data.gratification, 'Incluída na base do salário-hora, conforme a natureza informada.') +
+      hoursInput('overtime-monthly-hours', 'Jornada mensal / divisor', data.monthlyHours, 'Ex.: 220:00 para a jornada mensal informada.') +
+      '<label class="field"><span>Competência</span><input id="overtime-competence" data-overtime-input type="month" value="' + esc(data.competence) + '"><small>Período da folha a ser simulada.</small></label>',
+      '<label class="field"><span>Dias úteis</span><input id="overtime-useful-days" data-overtime-input type="number" min="0" max="31" step="1" value="' + Number(data.usefulDays) + '"><small>Usado no reflexo do descanso semanal.</small></label>',
+      '<label class="field"><span>Dias não úteis</span><input id="overtime-non-useful-days" data-overtime-input type="number" min="0" max="31" step="1" value="' + Number(data.nonUsefulDays) + '"><small>Domingos, feriados e descansos do período.</small></label>',
+      '</div></div></section>',
+      '<section class="card overtime-hours-card"><header class="card-header"><div><h2>Horas realizadas no período</h2><small>Digite a quantidade mensal no formato HH:MM</small></div><span class="live-badge"><i></i> Calculando</span></header><div class="card-body"><div class="overtime-hours-grid">' +
+      hoursInput('overtime-weekday-hours', 'Horas extras em dias úteis', data.weekdayOvertime, 'Adicional padrão informado abaixo.') +
+      hoursInput('overtime-rest-hours', 'Horas extras em folgas/feriados', data.restDayOvertime, 'Utiliza o percentual específico de repouso/feriado.') +
+      hoursInput('overtime-night-regular-hours', 'Horas noturnas normais', data.regularNightHours, 'Horas de relógio dentro do período noturno.') +
+      hoursInput('overtime-night-extra-hours', 'Horas extras noturnas', data.nightOvertime, 'Aplica adicional noturno e adicional extraordinário.') +
+      '</div></div></section>',
+      '<section class="card overtime-parameters-card"><header class="card-header"><div><h2>Parâmetros legais e coletivos</h2><small>Altere quando a categoria possuir condição mais favorável</small></div></header><div class="card-body"><div class="overtime-parameter-grid">',
+      '<label class="field"><span>Adicional de hora extra</span><div class="input-suffix"><input id="overtime-extra-percent" data-overtime-input type="number" min="0" step="0.01" value="' + Number(data.overtimePercent) + '"><b>%</b></div><small>Mínimo geral: 50%.</small></label>',
+      '<label class="field"><span>Adicional em folga/feriado</span><div class="input-suffix"><input id="overtime-rest-percent" data-overtime-input type="number" min="0" step="0.01" value="' + Number(data.restDayPercent) + '"><b>%</b></div><small>Padrão demonstrativo: 100%.</small></label>',
+      '<label class="field"><span>Adicional noturno</span><div class="input-suffix"><input id="overtime-night-percent" data-overtime-input type="number" min="0" step="0.01" value="' + Number(data.nightPercent) + '"><b>%</b></div><small id="overtime-night-minimum-hint">Mínimo conforme o tipo de empregado.</small></label>',
+      '<label class="field"><span>Duração da hora noturna</span><div class="input-suffix"><input id="overtime-night-minutes" data-overtime-input type="number" min="1" max="60" step="0.5" value="' + Number(data.nightHourMinutes) + '"><b>min</b></div><small>52,5 minutos no trabalho urbano.</small></label>',
+      '</div><div class="overtime-switches"><label><input id="overtime-reduced-hour" data-overtime-input type="checkbox"' + checked(data.reducedNightHour) + '><span><b>Converter pela hora noturna reduzida</b><small>Transforma horas de relógio em horas noturnas remuneradas.</small></span></label><label><input id="overtime-include-dsr" data-overtime-input type="checkbox"' + checked(data.includeDsr) + '><span><b>Calcular reflexo no descanso semanal</b><small>Adicionais variáveis ÷ dias úteis × dias não úteis.</small></span></label></div></div></section>',
+      '<section class="card overtime-memory-card"><header class="card-header"><div><h2>Memória completa do cálculo</h2><small>Valores atualizados a cada alteração</small></div><span class="tag tag--success">Conferência transparente</span></header><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Parcela</th><th>Fórmula aplicada</th><th>Valor</th></tr></thead><tbody><tr><td><b>Salário-hora</b></td><td id="overtime-formula-hourly">Remuneração ÷ divisor</td><td id="overtime-memory-hourly">R$ 0,00</td></tr><tr><td><b>Horas extras em dias úteis</b></td><td id="overtime-formula-weekday">—</td><td id="overtime-memory-weekday">R$ 0,00</td></tr><tr><td><b>Horas em folgas/feriados</b></td><td id="overtime-formula-rest">—</td><td id="overtime-memory-rest">R$ 0,00</td></tr><tr><td><b>Adicional noturno normal</b></td><td id="overtime-formula-night">—</td><td id="overtime-memory-night">R$ 0,00</td></tr><tr><td><b>Horas extras noturnas</b></td><td id="overtime-formula-night-extra">—</td><td id="overtime-memory-night-extra">R$ 0,00</td></tr><tr><td><b>Reflexo no descanso semanal</b></td><td id="overtime-formula-dsr">—</td><td id="overtime-memory-dsr">R$ 0,00</td></tr><tr class="overtime-total-row"><td><strong>Total dos adicionais</strong></td><td>Parcelas variáveis + reflexo</td><td id="overtime-memory-total"><strong>R$ 0,00</strong></td></tr></tbody></table></div></div></section>',
+      '</div><aside class="overtime-side">',
+      '<section class="overtime-result-hero"><small>TOTAL ESTIMADO DOS ADICIONAIS</small><strong id="overtime-total-additions">R$ 0,00</strong><span id="overtime-result-competence">Competência não informada</span><div><p><small>Remuneração-base</small><b id="overtime-base-pay">R$ 0,00</b></p><p><small>Total mensal estimado</small><b id="overtime-estimated-pay">R$ 0,00</b></p></div></section>',
+      '<section class="card overtime-summary-card"><header class="card-header"><div><h2>Resumo da simulação</h2><small>Principais parâmetros aplicados</small></div></header><div class="card-body"><div class="overtime-summary-stat"><span>Valor da hora normal</span><strong id="overtime-hourly-rate">R$ 0,00</strong></div><div class="overtime-summary-stat"><span>Período noturno</span><strong id="overtime-night-period">22h às 5h</strong></div><div class="overtime-summary-stat"><span>Conversão noturna</span><strong id="overtime-night-conversion">1,1429x</strong></div><div class="overtime-summary-stat"><span>Horas noturnas remuneradas</span><strong id="overtime-night-paid-hours">00:00</strong></div><div class="overtime-summary-stat"><span>Reflexo no descanso</span><strong id="overtime-dsr-result">R$ 0,00</strong></div></div></section>',
+      '<section class="card overtime-composition-card"><header class="card-header"><div><h2>Composição dos adicionais</h2><small>Participação de cada parcela</small></div></header><div class="card-body" id="overtime-composition"></div></section>',
+      '<section class="card overtime-alerts-card"><header class="card-header"><div><h2>Conferências necessárias</h2><small>Regras que podem alterar o resultado</small></div></header><div class="card-body" id="overtime-alerts"></div></section>',
+      '</aside></div>',
+      '<div class="overtime-page-actions"><button class="secondary-button" data-action="overtime-clear">Limpar dados</button><button class="primary-button" data-action="overtime-calculate">Calcular agora</button></div>',
+      '<section class="warning-banner overtime-warning"><strong>Importante:</strong> a simulação não identifica automaticamente banco de horas, jornada 12×36, compensações, habitualidade, prorrogação noturna, regras de feriados, divisor coletivo ou natureza salarial das parcelas. Confira o controle de ponto e a norma coletiva vigente.</section>',
+      '<section class="card overtime-sources"><header class="card-header"><div><h2>Fontes oficiais e atualização</h2><small>Regras utilizadas como parâmetros iniciais</small></div><span class="tag tag--success">Conferido em 20/08/2026</span></header><div class="card-body"><a href="https://www.planalto.gov.br/ccivil_03/decreto-lei/del5452compilado.htm" target="_blank" rel="noopener noreferrer"><b>CLT — arts. 59 e 73</b><span>Hora extra mínima de 50%; adicional noturno urbano de 20%; hora de 52min30s ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/l5889.htm" target="_blank" rel="noopener noreferrer"><b>Lei nº 5.889/1973 — art. 7º</b><span>Trabalho noturno rural, períodos próprios e adicional de 25% ↗</span></a><a href="https://www.tst.jus.br/documents/d/guest/livrointernet-12-pdf" target="_blank" rel="noopener noreferrer"><b>TST — Súmulas 60, 172 e 264</b><span>Prorrogação noturna, descanso semanal e base da hora suplementar ↗</span></a><a href="https://app.econeteditora.com.br/app/calculadora-horas-extras-trabalho-noturno" target="_blank" rel="noopener noreferrer"><b>Referência visual indicada</b><span>Fluxo da calculadora Econet; implementação e cálculos próprios ↗</span></a></div></section>'
+    ].join('');
+  }
+  function updateOvertimeNightCalculator(scheduleSave) {
+    if (!$('#overtime-night-calculator')) return;
+    var data = readOvertimeNightSimulation(), result = calculateOvertimeNight(data);
+    var setText = function (id, value) { var element = $('#' + id); if (element) element.textContent = value; };
+    var pct = function (value) { return number(value) + '%'; };
+    setText('overtime-total-additions', money(result.totalAdditions)); setText('overtime-base-pay', money(result.monthlyBase)); setText('overtime-estimated-pay', money(result.estimatedMonthlyPay));
+    setText('overtime-result-competence', data.competence ? 'Competência ' + data.competence.split('-').reverse().join('/') : 'Competência não informada'); setText('overtime-hourly-rate', money(result.hourlyRate)); setText('overtime-night-period', result.rule.period);
+    setText('overtime-night-conversion', result.nightFactor.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + 'x'); setText('overtime-night-paid-hours', formatHoursQuantity(result.regularNightReducedHours + result.nightOvertimeReducedHours)); setText('overtime-dsr-result', money(result.dsr));
+    setText('overtime-night-period-hint', 'Período legal: ' + result.rule.period + '.'); setText('overtime-night-minimum-hint', 'Mínimo para ' + result.rule.label.toLowerCase() + ': ' + result.rule.minimumNightPercent + '%.');
+    var salaryLabel = $('#overtime-salary') && $('#overtime-salary').closest('.field') ? $('#overtime-salary').closest('.field').querySelector(':scope > span') : null; if (salaryLabel) salaryLabel.textContent = data.remunerationType === 'horista' ? 'Valor da hora contratual' : 'Salário mensal';
+    setText('overtime-memory-hourly', money(result.hourlyRate)); setText('overtime-memory-weekday', money(result.weekdayOvertimeValue)); setText('overtime-memory-rest', money(result.restDayOvertimeValue)); setText('overtime-memory-night', money(result.regularNightPremium)); setText('overtime-memory-night-extra', money(result.nightOvertimeValue)); setText('overtime-memory-dsr', money(result.dsr)); setText('overtime-memory-total', money(result.totalAdditions));
+    setText('overtime-formula-hourly', money(result.monthlyBase) + ' ÷ ' + formatHoursQuantity(result.divisor)); setText('overtime-formula-weekday', formatHoursQuantity(result.weekdayHours) + ' × ' + money(result.hourlyRate) + ' × ' + pct(100 + data.overtimePercent)); setText('overtime-formula-rest', formatHoursQuantity(result.restHours) + ' × ' + money(result.hourlyRate) + ' × ' + pct(100 + data.restDayPercent));
+    setText('overtime-formula-night', formatHoursQuantity(result.regularNightReducedHours) + ' × ' + money(result.hourlyRate) + ' × ' + pct(data.nightPercent)); setText('overtime-formula-night-extra', formatHoursQuantity(result.nightOvertimeReducedHours) + ' × hora × ' + pct(100 + data.nightPercent) + ' × ' + pct(100 + data.overtimePercent)); setText('overtime-formula-dsr', data.includeDsr ? money(result.variablePay) + ' ÷ ' + data.usefulDays + ' × ' + data.nonUsefulDays : 'Reflexo desativado');
+    var pieces = [{ label: 'Extras em dias úteis', value: result.weekdayOvertimeValue, color: '#08397e' }, { label: 'Folgas e feriados', value: result.restDayOvertimeValue, color: '#d18a16' }, { label: 'Adicional noturno', value: result.regularNightPremium, color: '#6553c7' }, { label: 'Extras noturnas', value: result.nightOvertimeValue, color: '#1679aa' }, { label: 'Descanso semanal', value: result.dsr, color: '#b83d55' }];
+    var maxPiece = Math.max.apply(Math, pieces.map(function (item) { return item.value; }).concat([1])), composition = $('#overtime-composition');
+    if (composition) composition.innerHTML = pieces.map(function (item) { return '<div><span><i style="background:' + item.color + '"></i>' + esc(item.label) + '</span><b>' + money(item.value) + '</b><em><u style="width:' + Math.max(0, Math.min(100, item.value / maxPiece * 100)) + '%;background:' + item.color + '"></u></em></div>'; }).join('');
+    var alerts = result.warnings.slice(); alerts.push('Verifique se horas extraordinárias habituais devem repercutir em férias + 1/3, 13º salário, aviso-prévio e FGTS.'); alerts.push('O limite geral da CLT é de duas horas extras por dia; a quantidade mensal não permite conferir esse limite diário.');
+    var alertBox = $('#overtime-alerts'); if (alertBox) alertBox.innerHTML = alerts.map(function (message, index) { return '<article class="' + (index < result.warnings.length ? 'is-warning' : 'is-info') + '"><span>' + (index < result.warnings.length ? '!' : 'i') + '</span><p>' + esc(message) + '</p></article>'; }).join('');
+    if (scheduleSave) { window.clearTimeout(state.overtimeNightSaveTimer); state.overtimeNightSaveTimer = window.setTimeout(function () { state.settings.overtimeNightDraft = data; storageSet(KEYS.settings, state.settings); }, 250); }
+  }
+  function applyOvertimeEmployeeDefaults() {
+    var type = $('#overtime-employee-type') ? $('#overtime-employee-type').value : 'urbano', rule = overtimeEmployeeRule(type);
+    if ($('#overtime-night-percent')) $('#overtime-night-percent').value = rule.minimumNightPercent;
+    if ($('#overtime-night-minutes')) $('#overtime-night-minutes').value = rule.legalMinutes;
+    if ($('#overtime-reduced-hour')) $('#overtime-reduced-hour').checked = rule.reducedByLaw;
+    updateOvertimeNightCalculator(true);
+  }
+  function saveOvertimeNightSimulation() {
+    var data = readOvertimeNightSimulation(), result = calculateOvertimeNight(data);
+    if (!data.salary || !result.divisor) { toast('Simulação não salva', 'Informe a remuneração e a jornada mensal.', 'error'); return; }
+    state.settings.overtimeNightSimulation = Object.assign({}, data, { savedAt: nowISO(), result: result }); state.settings.overtimeNightDraft = data; persist(); audit('Horas extras e adicional noturno salvos', money(result.totalAdditions)); toast('Simulação salva', 'Dados, parâmetros e memória do cálculo foram armazenados.');
+  }
+  function resetOvertimeNightSimulation() {
+    if (!window.confirm('Limpar esta simulação e restaurar os valores demonstrativos?')) return;
+    state.settings.overtimeNightSimulation = overtimeNightDefaults(); state.settings.overtimeNightDraft = null; persist(); route(); toast('Simulação limpa', 'Os valores demonstrativos foram restaurados.');
+  }
+  function exportOvertimeNightSimulation() {
+    var data = readOvertimeNightSimulation(), result = calculateOvertimeNight(data);
+    if (!data.salary || !result.divisor) { toast('Relatório não gerado', 'Informe a remuneração e a jornada mensal.', 'error'); return; }
+    downloadFile('horas-extras-trabalho-noturno-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.horas-extras-noturno.v1', generatedAt: nowISO(), legalReview: '20/08/2026', data: data, result: result, sources: ['CLT, arts. 59 e 73', 'Lei 5.889/1973, art. 7º', 'TST, Súmulas 60, 172 e 264'] }, null, 2)); audit('Horas extras e adicional noturno exportados', money(result.totalAdditions) + ' · JSON'); toast('Relatório exportado', 'Parâmetros, horas, memória e alertas foram incluídos no JSON.');
+  }
+
+  function taxTransitionDefaults() {
+    return {
+      mode: 'manual', year: 2026, operation: 'mercadoria', regime: 'regular', destination: 'consumidor-final',
+      value: 100000, cost: 60000, otherCosts: 5000, currentCredits: 7000, newCredits: 15000,
+      icmsRate: 18, ipiRate: 0, iiRate: 0, pisRate: 1.65, cofinsRate: 7.6, issRate: 0,
+      ibsReference: 17.7, cbsReference: 8.8, selectiveRate: 0, selectiveEnabled: false, keepIpiZfm: false
+    };
+  }
+  function taxTransitionSchedule(year) {
+    year = Math.max(2026, Math.min(2033, Number(year || 2026)));
+    if (year === 2026) return { year: year, legacy: 1, pisCofins: 1, ipi: 1, ibsFixed: .1, ibsFactor: 0, cbsAdjustment: 'test', label: 'Ano-teste' };
+    if (year <= 2028) return { year: year, legacy: 1, pisCofins: 0, ipi: 0, ibsFixed: .1, ibsFactor: 0, cbsAdjustment: 'minus-point-one', label: 'Início da CBS e do IS' };
+    var map = { 2029: [.9, .1], 2030: [.8, .2], 2031: [.7, .3], 2032: [.6, .4], 2033: [0, 1] };
+    var pair = map[year];
+    return { year: year, legacy: pair[0], pisCofins: 0, ipi: 0, ibsFixed: 0, ibsFactor: pair[1], cbsAdjustment: 'full', label: year === 2033 ? 'Novo modelo integral' : 'Transição ICMS/ISS → IBS' };
+  }
+  function taxTransitionYearLabel(year) {
+    var schedule = taxTransitionSchedule(year);
+    if (year === 2026) return '2026 · ano-teste IBS/CBS';
+    if (year <= 2028) return year + ' · CBS, IBS de 0,1% e Imposto Seletivo';
+    if (year === 2033) return '2033 · vigência integral do novo modelo';
+    return year + ' · ' + Math.round(schedule.legacy * 100) + '% de ICMS/ISS e ' + Math.round(schedule.ibsFactor * 100) + '% da alíquota de referência do IBS';
+  }
+  function readTaxTransition() {
+    var fallback = Object.assign(taxTransitionDefaults(), state.settings.taxTransitionDraft || state.settings.taxTransitionSimulation || {});
+    var value = function (id, defaultValue) { var element = $('#' + id); return element ? element.value : defaultValue; };
+    var amount = function (id, defaultValue) { return Math.max(0, parseLocaleNumber(value(id, defaultValue))); };
+    var checked = function (id, defaultValue) { var element = $('#' + id); return element ? element.checked : Boolean(defaultValue); };
+    var root = $('#tax-transition');
+    return {
+      mode: root ? (root.getAttribute('data-mode') || fallback.mode) : fallback.mode,
+      year: Math.max(2026, Math.min(2033, Math.round(amount('transition-year', fallback.year)))),
+      operation: value('transition-operation', fallback.operation), regime: value('transition-regime', fallback.regime), destination: value('transition-destination', fallback.destination),
+      value: amount('transition-value', fallback.value), cost: amount('transition-cost', fallback.cost), otherCosts: amount('transition-other-costs', fallback.otherCosts),
+      currentCredits: amount('transition-current-credits', fallback.currentCredits), newCredits: amount('transition-new-credits', fallback.newCredits),
+      icmsRate: amount('transition-icms', fallback.icmsRate), ipiRate: amount('transition-ipi', fallback.ipiRate), iiRate: amount('transition-ii', fallback.iiRate),
+      pisRate: amount('transition-pis', fallback.pisRate), cofinsRate: amount('transition-cofins', fallback.cofinsRate), issRate: amount('transition-iss', fallback.issRate),
+      ibsReference: amount('transition-ibs', fallback.ibsReference), cbsReference: amount('transition-cbs', fallback.cbsReference), selectiveRate: amount('transition-is', fallback.selectiveRate),
+      selectiveEnabled: checked('transition-is-enabled', fallback.selectiveEnabled), keepIpiZfm: checked('transition-ipi-zfm', fallback.keepIpiZfm)
+    };
+  }
+  function calculateTaxTransition(data, yearOverride) {
+    var year = Number(yearOverride || data.year), schedule = taxTransitionSchedule(year), base = Math.max(0, Number(data.value || 0));
+    var tax = function (rate) { return base * Math.max(0, Number(rate || 0)) / 100; };
+    var baseline = { icms: tax(data.icmsRate), ipi: tax(data.ipiRate), ii: tax(data.iiRate), pis: tax(data.pisRate), cofins: tax(data.cofinsRate), iss: tax(data.issRate) };
+    var baselineGross = Object.keys(baseline).reduce(function (sum, key) { return sum + baseline[key]; }, 0);
+    var legacy = {
+      icms: baseline.icms * schedule.legacy, iss: baseline.iss * schedule.legacy,
+      pis: baseline.pis * schedule.pisCofins, cofins: baseline.cofins * schedule.pisCofins,
+      ipi: baseline.ipi * (data.keepIpiZfm && year >= 2027 ? 1 : schedule.ipi), ii: baseline.ii
+    };
+    var legacyGross = Object.keys(legacy).reduce(function (sum, key) { return sum + legacy[key]; }, 0);
+    var legacyCreditRatio = baselineGross ? Math.min(1, legacyGross / baselineGross) : 0;
+    var legacyCredits = Math.min(legacyGross, data.currentCredits * legacyCreditRatio);
+    var ibsRate = schedule.ibsFixed || data.ibsReference * schedule.ibsFactor;
+    var cbsRate = schedule.cbsAdjustment === 'test' ? .9 : schedule.cbsAdjustment === 'minus-point-one' ? Math.max(0, data.cbsReference - .1) : data.cbsReference;
+    var selectiveRate = data.selectiveEnabled && year >= 2027 ? data.selectiveRate : 0;
+    var newTaxes = { ibs: tax(ibsRate), cbs: tax(cbsRate), selective: tax(selectiveRate) };
+    var newGross = newTaxes.ibs + newTaxes.cbs + newTaxes.selective;
+    var testCompensation = year === 2026 ? Math.min(newGross, baseline.pis + baseline.cofins) : 0;
+    var newCredits = Math.min(Math.max(0, newGross - testCompensation), data.newCredits);
+    var currentNet = Math.max(0, baselineGross - data.currentCredits);
+    var transitionNet = Math.max(0, legacyGross - legacyCredits) + Math.max(0, newGross - testCompensation - newCredits);
+    var difference = transitionNet - currentNet, costs = data.cost + data.otherCosts;
+    return {
+      year: year, schedule: schedule, baseline: baseline, legacy: legacy, newTaxes: newTaxes,
+      baselineGross: baselineGross, currentNet: currentNet, legacyGross: legacyGross, legacyCredits: legacyCredits,
+      ibsRate: ibsRate, cbsRate: cbsRate, selectiveRate: selectiveRate, newGross: newGross, newCredits: newCredits,
+      testCompensation: testCompensation, transitionNet: transitionNet, difference: difference,
+      differencePct: currentNet ? difference / currentNet * 100 : 0,
+      currentEffective: base ? currentNet / base * 100 : 0, transitionEffective: base ? transitionNet / base * 100 : 0,
+      currentMargin: base ? (base - costs - currentNet) / base * 100 : 0, transitionMargin: base ? (base - costs - transitionNet) / base * 100 : 0
+    };
+  }
+  function renderTaxTransition() {
+    var data = Object.assign(taxTransitionDefaults(), state.settings.taxTransitionDraft || state.settings.taxTransitionSimulation || {});
+    var selected = function (value, current) { return value === current ? ' selected' : ''; }, checked = function (value) { return value ? ' checked' : ''; };
+    var years = [2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033].map(function (year) { return '<option value="' + year + '"' + (Number(data.year) === year ? ' selected' : '') + '>' + taxTransitionYearLabel(year) + '</option>'; }).join('');
+    return [
+      pageHeading('Transição da Reforma Tributária', 'Análise comparativa entre ICMS, IPI, II, PIS, Cofins e ISSQN e os novos IBS, CBS e Imposto Seletivo, com projeção anual de 2026 a 2033.', '<button class="secondary-button" data-action="transition-export-json">↧ Exportar JSON</button><button class="secondary-button" data-action="transition-print">▣ PDF / imprimir</button><button class="primary-button" data-action="transition-save">▣ Salvar análise</button>'),
+      '<div class="warning-banner transition-law-banner"><strong>⚠ Reforma Tributária em implementação.</strong><span>O cronograma segue a <a href="https://www.planalto.gov.br/ccivil_03/constituicao/emendas/emc/emc132.htm" target="_blank" rel="noopener noreferrer">EC nº 132/2023</a>, a <a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp214compilado.htm" target="_blank" rel="noopener noreferrer">LC nº 214/2025</a> e a <a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp227.htm" target="_blank" rel="noopener noreferrer">LC nº 227/2026</a>. Alíquotas de referência permanecem editáveis e devem ser confirmadas para a operação.</span><span class="tag tag--warning">Revisado em 20/08/2026</span></div>',
+      '<section class="transition-intro"><div><span>⇄</span><div><small>CONTTECH ERP</small><h2>Simule a transição com visão completa</h2><p>Compare carga líquida, créditos, margem e impacto financeiro. Você pode preencher os dados manualmente ou importar um ou vários XMLs fiscais para preencher os valores identificados.</p></div></div><div class="transition-intro-flow"><span>Tributos atuais</span><i>→</i><span>Período de transição</span><i>→</i><span>IBS + CBS + IS</span></div></section>',
+      '<div id="tax-transition" class="transition-workspace" data-mode="' + esc(data.mode || 'manual') + '"><div class="transition-mode-grid"><button class="transition-mode-card' + ((data.mode || 'manual') === 'manual' ? ' active' : '') + '" data-action="transition-mode" data-mode="manual"><span>▤</span><div><b>Preenchimento manual</b><small>Informe operação, tributos, créditos e custos</small></div><i>✓</i></button><button class="transition-mode-card' + (data.mode === 'xml' ? ' active' : '') + '" data-action="transition-mode" data-mode="xml"><span>⇧</span><div><b>Análise por XML</b><small>Leia XMLs e use os totais fiscais encontrados</small></div><i>✓</i></button></div>',
+      '<section class="transition-mode-panel' + ((data.mode || 'manual') === 'manual' ? ' active' : '') + '" data-transition-mode-panel="manual"><div class="info-banner"><span>i</span><div><strong>Modo manual.</strong> Todos os campos são editáveis e o resultado é recalculado imediatamente durante o preenchimento.</div></div></section>',
+      '<section class="transition-mode-panel' + (data.mode === 'xml' ? ' active' : '') + '" data-transition-mode-panel="xml"><div class="transition-upload-zone"><input id="transition-xml-files" class="is-hidden" type="file" accept=".xml,.zip,application/xml,text/xml,application/zip" multiple><span>⇧</span><div><b>Enviar XMLs ou ZIP</b><small>Selecione arquivos XML ou pacotes ZIP com XMLs. Os totais reconhecidos preencherão automaticamente a simulação.</small></div><button class="primary-button" data-action="transition-select-files">Selecionar arquivos</button></div><div id="transition-xml-summary" class="transition-xml-summary"><span>Nenhum XML processado nesta sessão.</span><small>A leitura ocorre no próprio navegador, com limite seguro de 25 MB por ZIP e 50 MB descompactados; o sistema não inventa dados ausentes.</small></div></section>',
+      '<div class="transition-layout"><div class="transition-form-column"><section class="card"><header class="card-header"><div><h2>1. Operação e período</h2><small>Defina o cenário que será projetado</small></div><span class="tag tag--success">Cálculo instantâneo</span></header><div class="card-body"><div class="form-grid transition-form-grid"><label class="field"><span>Ano da análise</span><select id="transition-year" data-transition-input>' + years + '</select></label><label class="field"><span>Tipo de operação</span><select id="transition-operation" data-transition-input><option value="mercadoria"' + selected('mercadoria', data.operation) + '>Venda de mercadoria</option><option value="servico"' + selected('servico', data.operation) + '>Prestação de serviço</option><option value="mista"' + selected('mista', data.operation) + '>Operação mista</option><option value="importacao"' + selected('importacao', data.operation) + '>Importação</option></select></label><label class="field"><span>Regime tributário</span><select id="transition-regime" data-transition-input><option value="regular"' + selected('regular', data.regime) + '>Regime regular</option><option value="simples"' + selected('simples', data.regime) + '>Simples Nacional</option><option value="mei"' + selected('mei', data.regime) + '>MEI / SIMEI</option></select></label><label class="field"><span>Perfil do destinatário</span><select id="transition-destination" data-transition-input><option value="consumidor-final"' + selected('consumidor-final', data.destination) + '>Consumidor final</option><option value="empresa-credito"' + selected('empresa-credito', data.destination) + '>Empresa com direito potencial a crédito</option><option value="exportacao"' + selected('exportacao', data.destination) + '>Exportação / verificar imunidade</option></select></label><label class="field"><span>Valor da operação (R$)</span><input id="transition-value" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.value) + '"></label><label class="field"><span>Custo da mercadoria/serviço (R$)</span><input id="transition-cost" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.cost) + '"></label><label class="field"><span>Outros custos (R$)</span><input id="transition-other-costs" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.otherCosts) + '"></label></div></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>2. Tributos atuais</h2><small>Alíquotas nominais e créditos da operação</small></div><span id="transition-current-rate" class="tag tag--info">0%</span></header><div class="card-body"><div class="transition-tax-grid"><label class="field"><span>ICMS (%)</span><input id="transition-icms" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.icmsRate) + '"></label><label class="field"><span>IPI (%)</span><input id="transition-ipi" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.ipiRate) + '"></label><label class="field"><span>II (%)</span><input id="transition-ii" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.iiRate) + '"></label><label class="field"><span>PIS (%)</span><input id="transition-pis" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.pisRate) + '"></label><label class="field"><span>Cofins (%)</span><input id="transition-cofins" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.cofinsRate) + '"></label><label class="field"><span>ISSQN (%)</span><input id="transition-iss" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.issRate) + '"></label></div><label class="field"><span>Créditos atuais aproveitáveis (R$)</span><input id="transition-current-credits" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.currentCredits) + '"></label></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>3. Parâmetros do novo modelo</h2><small>Referências editáveis para planejamento</small></div><span class="tag tag--warning">Confirmar na competência</span></header><div class="card-body"><div class="transition-tax-grid transition-tax-grid--new"><label class="field"><span>IBS de referência (%)</span><input id="transition-ibs" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.ibsReference) + '"></label><label class="field"><span>CBS de referência (%)</span><input id="transition-cbs" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.cbsReference) + '"></label><label class="field"><span>Imposto Seletivo (%)</span><input id="transition-is" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.selectiveRate) + '"></label></div><label class="field"><span>Créditos estimados de IBS/CBS (R$)</span><input id="transition-new-credits" data-transition-input type="number" min="0" step="0.01" value="' + Number(data.newCredits) + '"></label><div class="transition-checks"><label class="check"><input id="transition-is-enabled" data-transition-input type="checkbox"' + checked(data.selectiveEnabled) + '> Operação potencialmente sujeita ao Imposto Seletivo</label><label class="check"><input id="transition-ipi-zfm" data-transition-input type="checkbox"' + checked(data.keepIpiZfm) + '> Manter IPI por hipótese ligada à Zona Franca de Manaus</label></div><div class="transition-panel-actions"><button class="secondary-button" data-action="transition-clear">Limpar dados</button><button class="primary-button" data-action="transition-save">▣ Salvar análise</button></div></div></section></div>',
+      '<aside class="card transition-summary"><header class="card-header"><div><h2>Impacto da transição</h2><small id="transition-year-label">—</small></div><span class="live-badge"><i></i> Ao vivo</span></header><div class="transition-summary-hero"><small>Carga líquida projetada</small><strong id="transition-summary-total">R$ 0,00</strong><span id="transition-summary-status">Aguardando dados</span></div><div class="transition-summary-list"><div><span>Modelo atual</span><b id="transition-summary-current">R$ 0,00</b></div><div><span>Diferença</span><b id="transition-summary-difference">R$ 0,00</b></div><div><span>Carga efetiva</span><b id="transition-summary-effective">0%</b></div><div><span>Margem após tributos</span><b id="transition-summary-margin">0%</b></div></div><div class="transition-bars"><div><span>Atual</span><i><b id="transition-current-bar"></b></i><strong id="transition-current-bar-value">0%</strong></div><div><span>Transição</span><i><b id="transition-new-bar"></b></i><strong id="transition-new-bar-value">0%</strong></div></div><footer><span>Atualizado às</span><b id="transition-calculated-at">—</b></footer></aside></div></div>',
+      '<section class="card transition-result"><header class="card-header"><div><h2>Espelho completo da análise</h2><small>Tributos, créditos, compensações, impacto e margem</small></div><span class="tag tag--success">Todas as informações</span></header><div class="card-body"><div id="transition-result-cards" class="transition-result-cards"></div><div class="transition-breakdown" id="transition-breakdown"></div><div id="transition-alerts" class="transition-alerts"></div></div></section>',
+      '<section class="card transition-timeline-card"><header class="card-header"><div><h2>Cronograma comparativo 2026–2033</h2><small>Projeção da mesma operação em cada etapa da transição</small></div></header><div class="table-wrap"><table class="data-table"><thead><tr><th>Ano</th><th>Regra de transição</th><th>Tributos legados líquidos</th><th>IBS/CBS/IS líquidos</th><th>Carga total</th><th>Impacto x atual</th></tr></thead><tbody id="transition-timeline"></tbody></table></div></section>',
+      '<section class="card transition-sources"><header class="card-header"><div><h2>Fontes oficiais e critérios</h2><small>Base legal e orientação utilizadas na ferramenta</small></div><span class="tag tag--success">Consulta oficial</span></header><div class="card-body"><a href="https://www.gov.br/receitafederal/pt-br/acesso-a-informacao/acoes-e-programas/programas-e-atividades/reforma-tributaria-do-consumo/entenda" target="_blank" rel="noopener noreferrer"><b>Receita Federal — entenda a transição</b><span>Cronograma de 2026 a 2033 ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/constituicao/emendas/emc/emc132.htm" target="_blank" rel="noopener noreferrer"><b>Emenda Constitucional nº 132/2023</b><span>Fundamentos constitucionais ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp214compilado.htm" target="_blank" rel="noopener noreferrer"><b>Lei Complementar nº 214/2025</b><span>IBS, CBS e Imposto Seletivo ↗</span></a><a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp227.htm" target="_blank" rel="noopener noreferrer"><b>Lei Complementar nº 227/2026</b><span>Comitê Gestor e regulamentação complementar ↗</span></a><a href="https://www.gov.br/receitafederal/pt-br/acesso-a-informacao/acoes-e-programas/programas-e-atividades/reforma-tributaria-do-consumo/orientacoes-2026" target="_blank" rel="noopener noreferrer"><b>Orientações oficiais para 2026</b><span>Documentos fiscais e ano-teste ↗</span></a><a href="https://reforma.econeteditora.com.br/home" target="_blank" rel="noopener noreferrer"><b>Referência funcional informada pelo usuário</b><span>Fluxo de análise; implementação própria ↗</span></a></div></section>'
+    ].join('');
+  }
+  function updateTaxTransition(scheduleSave) {
+    var root = $('#tax-transition'); if (!root) return;
+    var data = readTaxTransition(), result = calculateTaxTransition(data), text = function (id, value) { var element = $('#' + id); if (element) element.textContent = value; };
+    text('transition-year-label', taxTransitionYearLabel(data.year)); text('transition-summary-total', money(result.transitionNet)); text('transition-summary-current', money(result.currentNet));
+    text('transition-summary-difference', (result.difference > .004 ? '+' : '') + money(result.difference)); text('transition-summary-effective', number(result.transitionEffective) + '%');
+    text('transition-summary-margin', number(result.transitionMargin) + '%'); text('transition-current-rate', number(result.currentEffective) + '% líquido');
+    text('transition-summary-status', result.difference > .004 ? 'Aumento estimado de ' + number(result.differencePct) + '%' : result.difference < -.004 ? 'Redução estimada de ' + number(Math.abs(result.differencePct)) + '%' : 'Carga estimada estável');
+    text('transition-calculated-at', new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    var diff = $('#transition-summary-difference'); if (diff) { diff.classList.toggle('negative-impact', result.difference > .004); diff.classList.toggle('positive-impact', result.difference < -.004); }
+    var maxRate = Math.max(1, result.currentEffective, result.transitionEffective);
+    if ($('#transition-current-bar')) $('#transition-current-bar').style.width = (result.currentEffective / maxRate * 100) + '%';
+    if ($('#transition-new-bar')) $('#transition-new-bar').style.width = (result.transitionEffective / maxRate * 100) + '%';
+    text('transition-current-bar-value', number(result.currentEffective) + '%'); text('transition-new-bar-value', number(result.transitionEffective) + '%');
+    var resultCards = $('#transition-result-cards');
+    if (resultCards) resultCards.innerHTML = '<div><small>Valor da operação</small><strong>' + money(data.value) + '</strong><span>Base informada para o cenário</span></div><div><small>Carga líquida atual</small><strong>' + money(result.currentNet) + '</strong><span>' + number(result.currentEffective) + '% da operação</span></div><div><small>Carga líquida em ' + data.year + '</small><strong>' + money(result.transitionNet) + '</strong><span>' + number(result.transitionEffective) + '% da operação</span></div><div class="' + (result.difference > 0 ? 'impact-up' : 'impact-down') + '"><small>Impacto financeiro</small><strong>' + (result.difference > .004 ? '+' : '') + money(result.difference) + '</strong><span>' + (result.difference >= 0 ? 'Aumento' : 'Redução') + ' de ' + number(Math.abs(result.differencePct)) + '%</span></div><div><small>Margem atual</small><strong>' + number(result.currentMargin) + '%</strong><span>Após custos e carga atual</span></div><div><small>Margem projetada</small><strong>' + number(result.transitionMargin) + '%</strong><span>Variação de ' + number(result.transitionMargin - result.currentMargin) + ' p.p.</span></div>';
+    var currentLines = [['ICMS', result.baseline.icms], ['IPI', result.baseline.ipi], ['II', result.baseline.ii], ['PIS', result.baseline.pis], ['Cofins', result.baseline.cofins], ['ISSQN', result.baseline.iss]].filter(function (line) { return line[1] > .004; });
+    var projectedLines = [['ICMS remanescente', result.legacy.icms], ['ISSQN remanescente', result.legacy.iss], ['IPI remanescente', result.legacy.ipi], ['II', result.legacy.ii], ['PIS remanescente', result.legacy.pis], ['Cofins remanescente', result.legacy.cofins], ['IBS (' + number(result.ibsRate) + '%)', result.newTaxes.ibs], ['CBS (' + number(result.cbsRate) + '%)', result.newTaxes.cbs], ['Imposto Seletivo (' + number(result.selectiveRate) + '%)', result.newTaxes.selective]].filter(function (line) { return line[1] > .004; });
+    var lineList = function (lines) { return lines.length ? lines.map(function (line) { return '<div><span>' + esc(line[0]) + '</span><b>' + money(line[1]) + '</b></div>'; }).join('') : '<p>Nenhum valor calculado.</p>'; };
+    var breakdown = $('#transition-breakdown');
+    if (breakdown) breakdown.innerHTML = '<article><header><div><small>Cenário-base</small><h3>Tributos atuais</h3></div><strong>' + money(result.currentNet) + '</strong></header>' + lineList(currentLines) + '<div class="transition-credit-line"><span>(−) Créditos atuais</span><b>− ' + money(Math.min(result.baselineGross, data.currentCredits)) + '</b></div><footer><span>Carga líquida</span><strong>' + money(result.currentNet) + '</strong></footer></article><article><header><div><small>' + result.schedule.label + '</small><h3>Projeção ' + data.year + '</h3></div><strong>' + money(result.transitionNet) + '</strong></header>' + lineList(projectedLines) + '<div class="transition-credit-line"><span>(−) Créditos legados proporcionais</span><b>− ' + money(result.legacyCredits) + '</b></div>' + (result.testCompensation ? '<div class="transition-credit-line"><span>(−) Compensação do ano-teste</span><b>− ' + money(result.testCompensation) + '</b></div>' : '') + '<div class="transition-credit-line"><span>(−) Créditos IBS/CBS</span><b>− ' + money(result.newCredits) + '</b></div><footer><span>Carga líquida</span><strong>' + money(result.transitionNet) + '</strong></footer></article>';
+    var warnings = [];
+    if (data.year === 2026) warnings.push('Em 2026, IBS de 0,1% e CBS de 0,9% integram o ano-teste. A ferramenta demonstra a compensação com PIS/Cofins; o recolhimento pode ser dispensado quando as obrigações acessórias forem cumpridas conforme a legislação.');
+    if (data.year >= 2027 && data.year <= 2028) warnings.push('Para 2027 e 2028, o PIS/Cofins foi retirado da projeção, a CBS foi reduzida em 0,1 ponto percentual e o IBS foi fixado em 0,1%; o IPI foi zerado, salvo a opção relacionada à Zona Franca de Manaus.');
+    if (data.year >= 2029 && data.year <= 2032) warnings.push('A redução de ICMS/ISS e a introdução do IBS seguem os percentuais nacionais do cronograma. Benefícios, reduções de base e regimes específicos não são presumidos automaticamente.');
+    if (data.regime === 'simples' || data.regime === 'mei') warnings.push('Simples Nacional e MEI possuem tratamento próprio. Esta comparação não substitui o DAS nem confirma opção pelo regime regular de IBS/CBS.');
+    if (data.destination === 'empresa-credito') warnings.push('O direito ao crédito do destinatário depende da operação, do documento fiscal, da extinção do débito e das vedações legais; o valor informado é uma premissa de planejamento.');
+    if (data.destination === 'exportacao') warnings.push('Exportações podem ter desoneração e manutenção de créditos. Confirme o enquadramento e não use esta projeção genérica como apuração final.');
+    if (data.selectiveEnabled) warnings.push('A incidência e a alíquota do Imposto Seletivo dependem do bem ou serviço definido em lei; a marcação apenas inclui o percentual informado.');
+    warnings.push('As referências de IBS e CBS são parâmetros editáveis de planejamento. Base de cálculo, reduções, cashback, regimes diferenciados, destino, cClassTrib e créditos podem alterar o resultado.');
+    var alerts = $('#transition-alerts'); if (alerts) alerts.innerHTML = '<h3>Conclusões e pontos de atenção</h3>' + warnings.map(function (warning) { return '<div><span>!</span><p>' + esc(warning) + '</p></div>'; }).join('');
+    var timeline = $('#transition-timeline');
+    if (timeline) timeline.innerHTML = [2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033].map(function (year) {
+      var item = calculateTaxTransition(data, year), legacyNet = Math.max(0, item.legacyGross - item.legacyCredits), newNet = Math.max(0, item.newGross - item.testCompensation - item.newCredits), delta = item.transitionNet - item.currentNet;
+      var rule = year === 2026 ? 'Teste: IBS 0,1% + CBS 0,9%' : year <= 2028 ? 'ICMS/ISS 100% · IBS 0,1%' : year === 2033 ? 'IBS integral · ICMS/ISS extintos' : Math.round(item.schedule.legacy * 100) + '% ICMS/ISS · ' + Math.round(item.schedule.ibsFactor * 100) + '% IBS';
+      return '<tr class="' + (year === data.year ? 'current' : '') + '"><td><button data-action="transition-select-year" data-year="' + year + '">' + year + '</button></td><td>' + rule + '</td><td>' + money(legacyNet) + '</td><td>' + money(newNet) + '</td><td><strong>' + money(item.transitionNet) + '</strong></td><td class="' + (delta > .004 ? 'negative-impact' : delta < -.004 ? 'positive-impact' : '') + '">' + (delta > .004 ? '+' : '') + money(delta) + '</td></tr>';
+    }).join('');
+    if (scheduleSave) {
+      window.clearTimeout(state.taxTransitionSaveTimer);
+      state.taxTransitionSaveTimer = window.setTimeout(function () { state.settings.taxTransitionDraft = data; storageSet(KEYS.settings, state.settings); }, 280);
+    }
+  }
+  function setTaxTransitionMode(mode) {
+    var root = $('#tax-transition'); if (!root) return;
+    mode = mode === 'xml' ? 'xml' : 'manual'; root.setAttribute('data-mode', mode);
+    $$('.transition-mode-card').forEach(function (button) { button.classList.toggle('active', button.getAttribute('data-mode') === mode); });
+    $$('.transition-mode-panel').forEach(function (panel) { panel.classList.toggle('active', panel.getAttribute('data-transition-mode-panel') === mode); });
+    updateTaxTransition(true);
+  }
+  function selectTaxTransitionYear(year) {
+    var select = $('#transition-year'); if (!select) return; select.value = String(year); updateTaxTransition(true);
+    var result = $('.transition-result'); if (result) result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function saveTaxTransition() {
+    var data = readTaxTransition(), result = calculateTaxTransition(data);
+    if (!data.value) { toast('Valor necessário', 'Informe o valor da operação antes de salvar.', 'error'); return; }
+    state.settings.taxTransitionSimulation = Object.assign({}, data, { savedAt: nowISO(), result: result }); state.settings.taxTransitionDraft = data; persist();
+    audit('Análise da transição salva', data.year + ' · carga projetada ' + money(result.transitionNet)); toast('Análise salva', 'Parâmetros, memória de cálculo e projeção de 2026 a 2033 foram armazenados.');
+  }
+  function resetTaxTransition() {
+    if (!window.confirm('Limpar esta análise e restaurar os valores de exemplo?')) return;
+    state.settings.taxTransitionSimulation = taxTransitionDefaults(); state.settings.taxTransitionDraft = null; transitionXmlState = { files: [], totals: null }; persist(); route(); toast('Análise limpa', 'Os parâmetros iniciais foram restaurados.');
+  }
+  function exportTaxTransition() {
+    var data = readTaxTransition(), result = calculateTaxTransition(data), timeline = [2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033].map(function (year) { return calculateTaxTransition(data, year); });
+    downloadFile('transicao-reforma-tributaria-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.transicao-reforma.v1', generatedAt: nowISO(), legalReview: '20/08/2026', client: currentClient() ? currentClient().name : '', data: data, selectedResult: result, timeline: timeline, xmlFiles: transitionXmlState.files, sources: ['EC 132/2023', 'LC 214/2025 compilada', 'LC 227/2026', 'Receita Federal — Entenda a Reforma Tributária do Consumo', 'Orientações da Reforma Tributária para 2026'] }, null, 2));
+    audit('Análise da transição exportada', data.year + ' · JSON'); toast('Relatório exportado', 'O espelho completo e a linha do tempo foram salvos em JSON.');
+  }
+  function taxTransitionXmlNumber(doc, names, containers) {
+    var all = Array.prototype.slice.call(doc.getElementsByTagName('*'));
+    var candidates = all.filter(function (node) { return (containers || []).indexOf(node.localName || node.nodeName.split(':').pop()) >= 0; });
+    var search = function (nodes) { for (var n = 0; n < names.length; n += 1) { for (var i = 0; i < nodes.length; i += 1) { var local = nodes[i].localName || nodes[i].nodeName.split(':').pop(); if (local === names[n]) { var parsed = parseLocaleNumber(nodes[i].textContent); if (isFinite(parsed)) return Math.max(0, parsed); } } } return 0; };
+    for (var c = 0; c < candidates.length; c += 1) { var found = search(Array.prototype.slice.call(candidates[c].getElementsByTagName('*'))); if (found) return found; }
+    return search(all);
+  }
+  function parseTaxTransitionXml(content, fileName) {
+    var doc = new DOMParser().parseFromString(content, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) throw new Error('XML inválido: ' + fileName);
+    var total = taxTransitionXmlNumber(doc, ['vNF', 'vLiq', 'vServ', 'vProd'], ['ICMSTot', 'ISSQNtot', 'infNFe', 'infNFSe']);
+    if (!total) throw new Error('Não foi encontrado valor total reconhecível em ' + fileName + '.');
+    return {
+      name: fileName, value: total,
+      icms: taxTransitionXmlNumber(doc, ['vICMS'], ['ICMSTot']), ipi: taxTransitionXmlNumber(doc, ['vIPI'], ['ICMSTot']), ii: taxTransitionXmlNumber(doc, ['vII'], ['ICMSTot']),
+      pis: taxTransitionXmlNumber(doc, ['vPIS'], ['ICMSTot']), cofins: taxTransitionXmlNumber(doc, ['vCOFINS'], ['ICMSTot']), iss: taxTransitionXmlNumber(doc, ['vISSQN', 'vISS'], ['ISSQNtot', 'infNFSe']),
+      ibs: taxTransitionXmlNumber(doc, ['vIBS'], ['IBSCBSTot', 'IBSCBSMono']), cbs: taxTransitionXmlNumber(doc, ['vCBS'], ['IBSCBSTot', 'IBSCBSMono']), selective: taxTransitionXmlNumber(doc, ['vIS'], ['ISTot'])
+    };
+  }
+  async function extractTaxTransitionZip(file) {
+    if (file.size > 25 * 1024 * 1024) throw new Error('O ZIP ' + file.name + ' excede o limite seguro de 25 MB.');
+    var buffer = await file.arrayBuffer(), view = new DataView(buffer), eocd = -1;
+    for (var position = Math.max(0, view.byteLength - 65557); position <= view.byteLength - 22; position += 1) { if (view.getUint32(position, true) === 0x06054b50) eocd = position; }
+    if (eocd < 0) throw new Error('Estrutura ZIP inválida em ' + file.name + '.');
+    var entryCount = view.getUint16(eocd + 10, true), centralOffset = view.getUint32(eocd + 16, true), cursor = centralOffset, entries = [], totalExpanded = 0;
+    if (entryCount > 200) throw new Error('O ZIP contém mais de 200 arquivos; divida a análise em lotes menores.');
+    for (var entryIndex = 0; entryIndex < entryCount; entryIndex += 1) {
+      if (cursor + 46 > view.byteLength || view.getUint32(cursor, true) !== 0x02014b50) throw new Error('Diretório do ZIP inválido em ' + file.name + '.');
+      var flags = view.getUint16(cursor + 8, true), method = view.getUint16(cursor + 10, true), compressedSize = view.getUint32(cursor + 20, true), expandedSize = view.getUint32(cursor + 24, true);
+      var nameLength = view.getUint16(cursor + 28, true), extraLength = view.getUint16(cursor + 30, true), commentLength = view.getUint16(cursor + 32, true), localOffset = view.getUint32(cursor + 42, true);
+      var nameBytes = new Uint8Array(buffer, cursor + 46, nameLength), name = new TextDecoder(flags & 0x800 ? 'utf-8' : 'utf-8').decode(nameBytes);
+      cursor += 46 + nameLength + extraLength + commentLength;
+      if (!/\.xml$/i.test(name) || /\/$/.test(name)) continue;
+      if (flags & 1) throw new Error('O ZIP possui arquivo criptografado e não pode ser processado: ' + name + '.');
+      if (method !== 0 && method !== 8) throw new Error('Método de compactação não suportado no arquivo ' + name + '.');
+      if (localOffset + 30 > view.byteLength || view.getUint32(localOffset, true) !== 0x04034b50) throw new Error('Entrada local inválida no ZIP: ' + name + '.');
+      var localNameLength = view.getUint16(localOffset + 26, true), localExtraLength = view.getUint16(localOffset + 28, true), dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+      if (dataOffset + compressedSize > view.byteLength) throw new Error('Conteúdo incompleto no ZIP: ' + name + '.');
+      totalExpanded += expandedSize; if (totalExpanded > 50 * 1024 * 1024) throw new Error('O conteúdo descompactado excede o limite seguro de 50 MB.');
+      var compressed = new Uint8Array(buffer.slice(dataOffset, dataOffset + compressedSize)), expanded;
+      if (method === 0) expanded = compressed;
+      else {
+        if (typeof DecompressionStream === 'undefined') throw new Error('Este navegador não permite abrir ZIP localmente. Extraia o pacote e selecione os XMLs.');
+        var stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        expanded = new Uint8Array(await new Response(stream).arrayBuffer());
+      }
+      entries.push({ name: file.name + '/' + name.replace(/^.*[\\/]/, ''), content: new TextDecoder('utf-8').decode(expanded) });
+    }
+    if (!entries.length) throw new Error('Nenhum XML foi encontrado dentro de ' + file.name + '.');
+    return entries;
+  }
+  async function handleTaxTransitionFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []); if (!files.length) return;
+    try {
+      var entries = [];
+      for (var fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+        var selectedFile = files[fileIndex];
+        if (/\.xml$/i.test(selectedFile.name)) entries.push({ name: selectedFile.name, content: await selectedFile.text() });
+        else if (/\.zip$/i.test(selectedFile.name)) entries = entries.concat(await extractTaxTransitionZip(selectedFile));
+      }
+      if (!entries.length) throw new Error('Selecione arquivos XML ou pacotes ZIP que contenham XMLs.');
+      var parsed = entries.map(function (entry) { return parseTaxTransitionXml(entry.content, entry.name); });
+      var totals = parsed.reduce(function (sum, item) { Object.keys(sum).forEach(function (key) { sum[key] += Number(item[key] || 0); }); return sum; }, { value: 0, icms: 0, ipi: 0, ii: 0, pis: 0, cofins: 0, iss: 0, ibs: 0, cbs: 0, selective: 0 });
+      transitionXmlState = { files: parsed.map(function (item) { return item.name; }), totals: totals };
+      var setRate = function (id, taxValue) { var element = $('#' + id); if (element) element.value = totals.value ? Number(taxValue / totals.value * 100).toFixed(4) : 0; };
+      if ($('#transition-value')) $('#transition-value').value = totals.value.toFixed(2);
+      setRate('transition-icms', totals.icms); setRate('transition-ipi', totals.ipi); setRate('transition-ii', totals.ii); setRate('transition-pis', totals.pis); setRate('transition-cofins', totals.cofins); setRate('transition-iss', totals.iss);
+      if ($('#transition-ibs') && totals.ibs) setRate('transition-ibs', totals.ibs); if ($('#transition-cbs') && totals.cbs) setRate('transition-cbs', totals.cbs); if ($('#transition-is') && totals.selective) setRate('transition-is', totals.selective);
+      if ($('#transition-is-enabled') && totals.selective) $('#transition-is-enabled').checked = true;
+      var summary = $('#transition-xml-summary'); if (summary) summary.innerHTML = '<div><strong>' + parsed.length + ' XML(s) processado(s)</strong><span>Valor total identificado: ' + money(totals.value) + '</span></div><div><span>ICMS ' + money(totals.icms) + ' · IPI ' + money(totals.ipi) + ' · II ' + money(totals.ii) + '</span><span>PIS ' + money(totals.pis) + ' · Cofins ' + money(totals.cofins) + ' · ISS ' + money(totals.iss) + '</span><span>IBS ' + money(totals.ibs) + ' · CBS ' + money(totals.cbs) + ' · IS ' + money(totals.selective) + '</span></div><small>' + parsed.map(function (item) { return esc(item.name); }).join(' · ') + '</small>';
+      updateTaxTransition(true); audit('XMLs analisados na transição', parsed.length + ' arquivo(s) · ' + money(totals.value)); toast('XMLs processados', 'Os totais reconhecidos preencheram a análise automaticamente.');
+    } catch (error) { toast('Não foi possível ler os XMLs', error.message || 'Confira a estrutura dos arquivos.', 'error'); }
+  }
+
+  function calculateProLabore2026(grossValue, dependentCount, otherDeductions) {
+    var gross = Math.max(0, Number(grossValue || 0));
+    var dependents = Math.max(0, Math.floor(Number(dependentCount || 0)));
+    var other = Math.max(0, Number(otherDeductions || 0));
+    var inssCeiling = 8475.55;
+    var inss = Math.min(gross, inssCeiling) * .11;
+    var dependentDeduction = dependents * 189.59;
+    var legalDeductions = inss + dependentDeduction + other;
+    var simplifiedDeduction = Math.min(gross, 607.20);
+    var useSimplified = simplifiedDeduction > legalDeductions;
+    var appliedDeduction = useSimplified ? simplifiedDeduction : legalDeductions;
+    var taxable = Math.max(0, gross - appliedDeduction);
+    var rate = 0, deduction = 0;
+    if (taxable > 4664.68) { rate = .275; deduction = 908.73; }
+    else if (taxable > 3751.05) { rate = .225; deduction = 675.49; }
+    else if (taxable > 2826.65) { rate = .15; deduction = 394.16; }
+    else if (taxable > 2428.80) { rate = .075; deduction = 182.16; }
+    var irBeforeReduction = Math.max(0, taxable * rate - deduction);
+    var irReduction = 0;
+    if (gross <= 5000) irReduction = irBeforeReduction;
+    else if (gross <= 7350) irReduction = Math.min(irBeforeReduction, Math.max(0, 978.62 - .133145 * gross));
+    var irrf = Math.max(0, irBeforeReduction - irReduction);
+    return {
+      gross: gross, dependents: dependents, otherDeductions: other, inss: inss,
+      taxable: taxable, rate: rate, tableDeduction: deduction,
+      irBeforeReduction: irBeforeReduction, irReduction: irReduction, irrf: irrf,
+      net: Math.max(0, gross - inss - irrf), dependentDeduction: dependentDeduction,
+      legalDeductions: legalDeductions, simplifiedDeduction: simplifiedDeduction,
+      appliedDeduction: appliedDeduction,
+      method: useSimplified ? 'Desconto simplificado mensal' : 'Deduções legais',
+      inssCeiling: inssCeiling
+    };
+  }
+
+  function updateProLaboreSimulation(scheduleSave) {
+    var baseInput = $('#prolabore-base'), dependentsInput = $('#prolabore-dependents'), deductionsInput = $('#prolabore-deductions');
+    if (!baseInput || !dependentsInput || !deductionsInput) return;
+    var result = calculateProLabore2026(parseLocaleNumber(baseInput.value), dependentsInput.value, parseLocaleNumber(deductionsInput.value));
+    state.settings.proLaboreBase = result.gross;
+    state.settings.proLaboreDependents = result.dependents;
+    state.settings.proLaboreDeductions = result.otherDeductions;
+    var values = {
+      'prolabore-net': money(result.net), 'prolabore-gross-result': money(result.gross),
+      'prolabore-inss-result': money(result.inss), 'prolabore-taxable-result': money(result.taxable),
+      'prolabore-irrf-result': money(result.irrf), 'prolabore-applied-deduction': money(result.appliedDeduction),
+      'prolabore-before-reduction': money(result.irBeforeReduction), 'prolabore-ir-reduction': money(result.irReduction),
+      'prolabore-effective-rate': result.gross ? number(result.irrf / result.gross * 100) + '%' : '0%',
+      'prolabore-method': result.method,
+      'prolabore-formula': money(result.taxable) + ' × ' + number(result.rate * 100) + '% − ' + money(result.tableDeduction) + ' − ' + money(result.irReduction) + ' = ' + money(result.irrf)
+    };
+    Object.keys(values).forEach(function (id) { var element = $('#' + id); if (element) element.textContent = values[id]; });
+    var reductionTag = $('#prolabore-reduction-tag');
+    if (reductionTag) { reductionTag.textContent = result.irReduction > 0 ? 'Redução legal aplicada' : 'Sem redução nesta faixa'; reductionTag.className = 'tag ' + (result.irReduction > 0 ? 'tag--success' : 'tag--info'); }
+    var alert = $('#prolabore-alert');
+    if (alert) {
+      if (result.gross > 0 && result.gross < 1621) {
+        alert.className = 'warning-banner';
+        alert.innerHTML = '<strong>Atenção ao mínimo previdenciário.</strong> O valor informado é inferior a R$ 1.621,00. Pode existir necessidade de complementação previdenciária conforme os demais vínculos e contribuições do segurado.';
+      } else {
+        alert.className = 'info-banner';
+        alert.innerHTML = '<span>✓</span><div><strong>Cálculo 2026 aplicado.</strong> INSS de 11% limitado ao teto de R$ 8.475,55 e redução mensal do IRPF prevista na Lei nº 15.270/2025.</div>';
+      }
+    }
+    if (scheduleSave) {
+      window.clearTimeout(state.proLaboreSaveTimer);
+      state.proLaboreSaveTimer = window.setTimeout(function () { persist(); }, 350);
+    }
+  }
+
+  function renderProLabore() {
+    var base = Number(state.settings.proLaboreBase == null ? 5000 : state.settings.proLaboreBase);
+    var dependents = Number(state.settings.proLaboreDependents || 0);
+    var deductions = Number(state.settings.proLaboreDeductions || 0);
+    var result = calculateProLabore2026(base, dependents, deductions);
+    return [
+      pageHeading('Pró-Labore', 'Simulação instantânea de INSS e IRPF com as regras mensais vigentes em 2026.', '<button class="secondary-button" data-action="print-page">↧ Demonstrativo</button><button class="primary-button" data-action="save-current">▣ Salvar</button>'),
+      '<div id="prolabore-alert" class="info-banner"><span>✓</span><div><strong>Cálculo 2026 aplicado.</strong> INSS de 11% limitado ao teto de R$ 8.475,55 e redução mensal do IRPF prevista na Lei nº 15.270/2025.</div></div>',
+      '<div class="calc-layout"><section class="card"><header class="card-header"><h2>♙ Dados da simulação</h2><span class="live-badge"><i></i> Instantâneo</span></header><div class="card-body form-grid" style="grid-template-columns:1fr"><label class="field"><span>Valor bruto mensal do pró-labore</span><input id="prolabore-base" type="number" min="0" step="0.01" inputmode="decimal" value="' + base + '"></label><label class="field"><span>Dependentes</span><input id="prolabore-dependents" type="number" min="0" step="1" value="' + dependents + '"></label><label class="field"><span>Outras deduções legais da base do IRRF</span><input id="prolabore-deductions" type="number" min="0" step="0.01" inputmode="decimal" value="' + deductions + '"></label><div class="instant-calc-status"><span>⚡</span><div><b>Atualização automática ativa</b><small>Digite qualquer valor e veja o total imediatamente.</small></div></div></div></section><div class="stack"><section class="das-total"><div class="das-total-main"><small>Pró-labore líquido estimado</small><strong id="prolabore-net">' + money(result.net) + '</strong></div><div class="das-metrics"><div><span>Bruto</span><b id="prolabore-gross-result">' + money(result.gross) + '</b></div><div><span>INSS 11%</span><b id="prolabore-inss-result">' + money(result.inss) + '</b></div><div><span>Base IRRF</span><b id="prolabore-taxable-result">' + money(result.taxable) + '</b></div><div><span>IRRF 2026</span><b id="prolabore-irrf-result">' + money(result.irrf) + '</b></div></div></section>' +
+      '<section class="card"><header class="card-header"><h2>Memória do cálculo</h2><span id="prolabore-reduction-tag" class="tag ' + (result.irReduction > 0 ? 'tag--success' : 'tag--info') + '">' + (result.irReduction > 0 ? 'Redução legal aplicada' : 'Sem redução nesta faixa') + '</span></header><div class="card-body"><div class="prolabore-breakdown"><div><small>Método mais vantajoso</small><b id="prolabore-method">' + result.method + '</b></div><div><small>Dedução aplicada</small><b id="prolabore-applied-deduction">' + money(result.appliedDeduction) + '</b></div><div><small>IR antes da redução</small><b id="prolabore-before-reduction">' + money(result.irBeforeReduction) + '</b></div><div><small>Redução Lei 15.270/2025</small><b id="prolabore-ir-reduction">' + money(result.irReduction) + '</b></div><div><small>Alíquota efetiva do IRRF</small><b id="prolabore-effective-rate">' + (result.gross ? number(result.irrf / result.gross * 100) : '0') + '%</b></div></div><div class="formula-box"><small>Fórmula aplicada</small><code id="prolabore-formula">' + money(result.taxable) + ' × ' + number(result.rate * 100) + '% − ' + money(result.tableDeduction) + ' − ' + money(result.irReduction) + ' = ' + money(result.irrf) + '</code></div></div></section>' +
+      '<section class="card"><header class="card-header"><h2>Fontes oficiais e vigência</h2><span class="tag tag--success">Conferido em 14/08/2026</span></header><div class="card-body source-list"><div class="source-row"><div><h3>IRPF mensal de 2026</h3><p>Leis nº 15.191/2025 e nº 15.270/2025 · tabela progressiva, deduções e redução mensal.</p><time>Receita Federal · atualizada em 27/04/2026</time></div><a class="official-link" target="_blank" rel="noopener" href="https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/tabelas/2026">Consultar ↗</a></div><div class="source-row"><div><h3>INSS de 2026</h3><p>Portaria Interministerial MPS/MF nº 13/2026 · mínimo de R$ 1.621,00 e teto de R$ 8.475,55.</p><time>INSS · atualizada em 13/01/2026</time></div><a class="official-link" target="_blank" rel="noopener" href="https://www.gov.br/inss/pt-br/direitos-e-deveres/inscricao-e-contribuicao/tabela-de-contribuicao-mensal">Consultar ↗</a></div><div class="source-row"><div><h3>Retenção previdenciária do sócio</h3><p>IN RFB nº 2.110/2022, art. 37 · contribuinte individual que presta serviço à empresa.</p><time>Receita Federal · texto vigente consultado em 14/08/2026</time></div><a class="official-link" target="_blank" rel="noopener" href="https://normas.receita.fazenda.gov.br/sijut2consulta/link.action?idAto=126687">Consultar ↗</a></div><p class="subtle" style="margin:4px 0 0">Estimativa orientativa. Outros vínculos previdenciários, pensão alimentícia, decisões judiciais e particularidades do beneficiário podem alterar o valor efetivamente retido.</p></div></section></div></div>'
+    ].join('');
+  }
+
+  function renderSubscriptionManager() {
+    var users = state.users || [];
+    var infos = users.map(function (user) { return subscriptionInfo(user); });
+    var activeCount = infos.filter(function (info) { return info.status === 'Ativo' || info.status === 'Vence em breve'; }).length;
+    var expiringCount = infos.filter(function (info) { return info.status === 'Vence em breve'; }).length;
+    var expiredCount = infos.filter(function (info) { return info.status === 'Encerrado' || info.status === 'Inativo'; }).length;
+    var monthlyEquivalent = users.reduce(function (total, user, index) {
+      if (infos[index].status === 'Encerrado' || infos[index].status === 'Inativo') return total;
+      return total + Number(user.subscriptionValue || 0) / billingMonths(user.billingCycle);
+    }, 0);
+    var cards = users.map(function (user) {
+      var info = subscriptionInfo(user);
+      var valueSuffix = user.billingCycle === 'Anual' ? '/ano' : user.billingCycle === 'Trimestral' ? '/trimestre' : '/mês';
+      var deleteDisabled = currentUser && String(currentUser.email).toLowerCase() === String(user.email).toLowerCase();
+      return '<article class="subscription-card"><div class="subscription-card-head"><span class="client-avatar">' + esc(initials(user.name)) + '</span><div><h3>' + esc(user.name) + '</h3><p>' + esc(user.email) + ' · ' + esc(user.role) + '</p></div><span class="tag tag--' + esc(info.className) + '">' + esc(info.status) + '</span></div>' +
+        '<div class="subscription-facts"><div><small>Plano de cobrança</small><b>' + esc(user.billingCycle) + '</b></div><div><small>Valor</small><b>' + money(user.subscriptionValue) + ' ' + valueSuffix + '</b></div><div><small>Início</small><b>' + dateBR(user.monitoringStart) + '</b></div><div><small>Finalização</small><b>' + dateBR(user.monitoringEnd) + '</b></div><div><small>Próximo vencimento</small><b>' + esc(info.nextDue) + '</b></div><div><small>Tempo restante</small><b>' + (info.status === 'Encerrado' ? 'Finalizado' : info.daysRemaining + ' dia(s)') + '</b></div></div>' +
+        '<div class="subscription-progress"><div><span>Acompanhamento da assinatura</span><b>' + Math.round(info.percent) + '%</b></div><div class="subscription-progress-track"><i style="width:' + info.percent.toFixed(1) + '%"></i></div><small>' + dateBR(user.monitoringStart) + ' → ' + dateBR(user.monitoringEnd) + '</small></div>' +
+        '<div class="subscription-actions"><button class="secondary-button" data-route="gestao-usuarios">⚿ Abrir gestão completa</button></div></article>';
+    }).join('') || '<div class="empty-state"><p>Nenhum usuário cadastrado.</p></div>';
+    return '<section class="card" id="settings-users"><header class="card-header"><div><h2>♟ Usuários, mensalidades e monitoramento</h2><p class="subtle" style="margin:3px 0 0">Acompanhe cada assinatura desde a ativação até a data de finalização.</p></div><button class="primary-button" data-route="gestao-usuarios">⚿ Gestão de Usuários e Acessos</button></header><div class="card-body"><div class="subscription-summary"><div><small>Usuários ativos</small><b>' + activeCount + '</b></div><div><small>Vencendo em 30 dias</small><b>' + expiringCount + '</b></div><div><small>Receita mensal equivalente</small><b>' + money(monthlyEquivalent) + '</b></div><div><small>Encerrados ou inativos</small><b>' + expiredCount + '</b></div></div><div class="subscription-list">' + cards + '</div></div></section>';
+  }
+
+  function openUserForm(id) {
+    if (!requireAdmin()) return;
+    var existing = id && state.users.find(function (user) { return user.id === id; });
+    var start = existing ? existing.monitoringStart : todayISO();
+    var cycle = existing ? existing.billingCycle : 'Mensal';
+    var end = existing ? existing.monitoringEnd : addMonthsISO(start, billingMonths(cycle), true);
+    var body = '<form id="user-form" data-user-id="' + esc(existing ? existing.id : '') + '" class="form-grid">' +
+      '<label class="field"><span>Nome completo *</span><input name="name" required value="' + esc(existing ? existing.name : '') + '"></label>' +
+      '<label class="field"><span>E-mail de acesso *</span><input name="email" type="email" required value="' + esc(existing ? existing.email : '') + '"></label>' +
+      '<label class="field"><span>Senha ' + (existing ? '(deixe em branco para manter)' : '*') + '</span><input name="password" type="password" minlength="8" ' + (existing ? '' : 'required') + ' autocomplete="new-password"></label>' +
+      '<label class="field"><span>Perfil *</span><select name="role"><option' + ((existing ? existing.role : 'Usuário') === 'Usuário' ? ' selected' : '') + '>Usuário</option><option' + ((existing ? existing.role : '') === 'Administrador' ? ' selected' : '') + '>Administrador</option></select></label>' +
+      '<label class="field"><span>Periodicidade da cobrança *</span><select id="user-cycle" name="billingCycle"><option' + (cycle === 'Mensal' ? ' selected' : '') + '>Mensal</option><option' + (cycle === 'Trimestral' ? ' selected' : '') + '>Trimestral</option><option' + (cycle === 'Anual' ? ' selected' : '') + '>Anual</option></select></label>' +
+      '<label class="field"><span>Valor da assinatura *</span><input name="subscriptionValue" type="number" min="0" step="0.01" required value="' + esc(existing ? existing.subscriptionValue : '99.00') + '"></label>' +
+      '<label class="field"><span>Início do monitoramento *</span><input id="user-start" name="monitoringStart" type="date" required value="' + esc(start) + '"></label>' +
+      '<label class="field"><span>Final do monitoramento *</span><input id="user-end" name="monitoringEnd" type="date" required value="' + esc(end) + '"></label>' +
+      '<label class="field field--full"><span>Situação do acesso</span><select name="active"><option value="true"' + (!existing || existing.active ? ' selected' : '') + '>Ativo</option><option value="false"' + (existing && !existing.active ? ' selected' : '') + '>Inativo</option></select></label>' +
+      '<div class="info-banner field--full" style="margin:0"><span>◷</span><div><strong>Monitoramento automático.</strong> A plataforma calculará o percentual transcorrido, os dias restantes e o próximo vencimento conforme a periodicidade escolhida.</div></div></form>';
+    openModal(existing ? 'Editar usuário e assinatura' : 'Cadastrar usuário e assinatura', body, '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="save-user">▣ Salvar usuário</button>');
+    bindUserFormDates();
+  }
+
+  function bindUserFormDates() {
+    var start = $('#user-start'), cycle = $('#user-cycle'), end = $('#user-end');
+    if (!start || !cycle || !end) return;
+    function refreshEnd() { if (start.value) end.value = addMonthsISO(start.value, billingMonths(cycle.value), true); }
+    start.addEventListener('change', refreshEnd);
+    cycle.addEventListener('change', refreshEnd);
+  }
+
+  function saveUserForm() {
+    if (!requireAdmin()) return;
+    var form = $('#user-form');
+    if (!form || !form.reportValidity()) return;
+    var data = Object.fromEntries(new FormData(form).entries());
+    var id = form.getAttribute('data-user-id');
+    var existing = id && state.users.find(function (user) { return user.id === id; });
+    var normalizedEmail = String(data.email || '').trim().toLowerCase();
+    var duplicate = state.users.find(function (user) { return user.id !== id && String(user.email || '').toLowerCase() === normalizedEmail; });
+    if (duplicate) { toast('E-mail já cadastrado', 'Já existe um usuário utilizando este e-mail.', 'error'); return; }
+    if (data.monitoringEnd < data.monitoringStart) { toast('Prazo inválido', 'A data final deve ser igual ou posterior à data inicial.', 'error'); return; }
+    if (existing && currentUser && existing.email === currentUser.email && data.active !== 'true') { toast('Ação não permitida', 'O usuário da sessão atual não pode ser desativado.', 'warning'); return; }
+    var user = Object.assign({}, existing || {}, {
+      id: existing ? existing.id : uid('usr'),
+      name: String(data.name || '').trim(), email: normalizedEmail,
+      password: data.password || (existing && existing.password) || '', role: data.role,
+      active: data.active === 'true', billingCycle: data.billingCycle,
+      subscriptionValue: Number(data.subscriptionValue || 0),
+      monitoringStart: data.monitoringStart, monitoringEnd: data.monitoringEnd,
+      createdAt: existing ? existing.createdAt : nowISO(), updatedAt: nowISO()
+    });
+    if (existing) state.users = state.users.map(function (item) { return item.id === existing.id ? user : item; });
+    else state.users.unshift(user);
+    persist();
+    audit(existing ? 'Usuário atualizado' : 'Usuário cadastrado', user.name + ' · ' + user.billingCycle + ' · ' + dateBR(user.monitoringStart) + ' a ' + dateBR(user.monitoringEnd));
+    closeModal();
+    toast(existing ? 'Usuário atualizado' : 'Usuário cadastrado', 'Assinatura e prazo de monitoramento foram salvos.');
+    route();
+  }
+
+  function deleteUser(id) {
+    if (!requireAdmin()) return;
+    var user = state.users.find(function (item) { return item.id === id; });
+    if (!user) return;
+    if (currentUser && String(currentUser.email).toLowerCase() === String(user.email).toLowerCase()) { toast('Ação não permitida', 'Não é possível excluir o usuário da sessão atual.', 'warning'); return; }
+    var admins = state.users.filter(function (item) { return item.role === 'Administrador' && item.active; });
+    if (user.role === 'Administrador' && admins.length <= 1) { toast('Administrador obrigatório', 'Mantenha pelo menos um administrador ativo.', 'warning'); return; }
+    if (!window.confirm('Excluir o usuário “' + user.name + '” e o acompanhamento da assinatura?')) return;
+    state.users = state.users.filter(function (item) { return item.id !== id; });
+    persist();
+    audit('Usuário excluído', user.name + ' · ' + user.email);
+    toast('Usuário excluído', 'O cadastro e o monitoramento foram removidos.');
+    route();
+  }
+
+  function renderSettings() {
+    return [
+      pageHeading('Configurações', 'Administre preferências, segurança, conteúdo legal e ciclo de vida dos dados.', '<button class="primary-button" data-action="save-settings">▣ Salvar configurações</button>'),
+      '<div class="settings-grid"><aside class="card setting-nav"><button class="active" data-action="scroll-settings" data-target="settings-general">⚙ Geral</button><button data-action="scroll-settings" data-target="settings-users">♟ Usuários e perfis</button><button data-action="scroll-settings" data-target="settings-legal">§ Conteúdo legal</button><button data-action="scroll-settings" data-target="settings-backup">▣ Backup e restauração</button><button data-action="scroll-settings" data-target="settings-privacy">🔒 Privacidade e LGPD</button></aside><div class="stack">',
+        '<section class="card" id="settings-general"><header class="card-header"><h2>⚙ Preferências gerais</h2></header><div class="card-body form-grid"><label class="field"><span>Nome da organização</span><input id="setting-company" value="' + esc(state.settings.company || '') + '"></label><label class="field"><span>Bloqueio por inatividade (minutos)</span><input id="setting-inactivity" type="number" min="5" value="' + esc(state.settings.inactivity || 30) + '"></label><label class="field"><span>Base legal conferida em</span><input id="setting-legal-date" value="' + esc(state.settings.legalBaseChecked || TODAY) + '"></label><label class="field"><span>Perfil atual</span><input value="' + esc(currentUser.role) + '" disabled></label></div></section>',
+        renderSubscriptionManager(),
+        '<section class="card" id="settings-legal"><header class="card-header"><h2>§ Atualização manual do conteúdo legal</h2><span class="tag tag--info">Painel administrativo</span></header><div class="card-body"><p class="subtle" style="margin-top:0">Cadastre uma norma ou orientação publicada após a última conferência. O item aparecerá na biblioteca e no histórico.</p><form id="legal-form" class="form-grid"><label class="field"><span>Título *</span><input name="title" required placeholder="Ex.: Resolução CGSN nº ..."></label><label class="field"><span>Número da norma *</span><input name="number" required></label><label class="field"><span>Área</span><select name="area"><option>Simples Nacional</option><option>MEI</option><option>IBS e CBS</option><option>Obrigações Acessórias</option></select></label><label class="field"><span>Órgão oficial</span><input name="issuer" placeholder="Receita Federal"></label><label class="field"><span>Data de publicação</span><input name="publication" placeholder="dd/mm/aaaa"></label><label class="field"><span>Última atualização</span><input name="updated" placeholder="dd/mm/aaaa"></label><label class="field field--full"><span>Link oficial *</span><input name="url" type="url" required placeholder="https://www.gov.br/..."></label><label class="field field--full"><span>Resumo *</span><textarea name="summary" required></textarea></label><div class="field field--full"><button class="primary-button" type="submit">＋ Adicionar atualização</button></div></form></div></section>',
+        '<section class="card" id="settings-backup"><header class="card-header"><h2>▣ Portabilidade e proteção</h2></header><div class="card-body"><div class="page-actions" style="justify-content:flex-start"><button class="secondary-button" data-action="backup">▣ Gerar backup completo</button><button class="secondary-button" data-action="restore-backup">↥ Restaurar backup</button><button class="secondary-button" data-action="export-all">↧ Exportar clientes</button></div><div class="info-banner info-banner--blue" id="settings-privacy" style="margin:14px 0 0"><span>🔒</span><div><strong>LGPD.</strong> Defina base legal, finalidade, controle de acesso, retenção, resposta a incidentes e direitos do titular antes da publicação. O protótipo não transmite dados e mantém tudo no armazenamento local.</div></div></div></section>',
+      '</div></div>'
+    ].join('');
+  }
+
+  function renderHistory() {
+    var custom = state.customLegal.map(function (s) { return { date: s.updated || s.publication, title: s.title, text: s.summary, source: s.issuer, url: s.url }; });
+    var legalRows = custom.concat(UPDATE_TIMELINE).map(function (u) {
+      return '<div class="timeline-item"><b>' + esc(u.title) + '</b><p>' + esc(u.text) + '</p><time>' + esc(u.date) + ' · ' + esc(u.source) + ' · <a class="official-link" target="_blank" rel="noopener" href="' + esc(u.url) + '">fonte oficial ↗</a></time></div>';
+    }).join('');
+    var auditRows = state.audit.slice(0, 100).map(function (a) {
+      return '<div class="audit-row"><time>' + new Date(a.date).toLocaleString('pt-BR') + '</time><span><b>' + esc(a.action) + '</b><small>' + esc(a.detail) + '</small></span><span class="tag tag--info">' + esc(a.user) + '</span></div>';
+    }).join('') || '<div class="empty-state"><p>Nenhuma ação registrada nesta instalação.</p></div>';
+    return [
+      pageHeading('Histórico de Atualizações', 'Alterações legislativas catalogadas e registro das ações realizadas pelos usuários.', '<button class="secondary-button" data-action="export-audit">↧ Exportar auditoria</button>'),
+      '<div class="two-column"><section class="card"><header class="card-header"><h2>§ Alterações legislativas</h2><span class="tag tag--success">Fontes oficiais</span></header><div class="card-body"><div class="timeline">' + legalRows + '</div></div></section><section class="card"><header class="card-header"><h2>◷ Trilha de auditoria</h2><span class="subtle">até 100 ações recentes</span></header><div class="audit-list">' + auditRows + '</div></section></div>'
+    ].join('');
+  }
+
+  function parseLocaleNumber(value) {
+    var text = String(value == null ? '' : value).trim().replace(/\s/g, '').replace(/^R\$/, '');
+    if (text.indexOf(',') >= 0) text = text.replace(/\./g, '').replace(',', '.');
+    return Number(text) || 0;
+  }
+
+  function saveClientForm() {
+    var form = $('#client-form');
+    if (!form || !form.reportValidity()) return;
+    var data = Object.fromEntries(new FormData(form).entries());
+    var id = form.getAttribute('data-client-id');
+    var documentKey = clientDocumentKey(data.document);
+    if (!validClientDocument(data.document)) {
+      toast('Documento inválido', 'Informe um CPF válido ou um CNPJ válido, inclusive no padrão alfanumérico.', 'error');
+      return;
+    }
+    var duplicate = state.clients.find(function (c) { return c.id !== id && clientDocumentKey(c.document) === documentKey; });
+    if (duplicate) {
+      toast('Cadastro duplicado impedido', 'Já existe um cliente com este CPF/CNPJ: ' + duplicate.name + '.', 'error');
+      return;
+    }
+    var existing = id && state.clients.find(function (c) { return c.id === id; });
+    var client = Object.assign({}, existing || {}, data, {
+      id: existing ? existing.id : uid('cli'),
+      document: documentKey.length === 14 ? formatCnpj(documentKey) : String(data.document || '').trim(),
+      revenueMonth: Number(data.revenueMonth || 0),
+      revenue12: Number(data.revenue12 || 0),
+      shareCapital: Number(data.shareCapital || 0),
+      employees: Number(data.employees || 0),
+      officialDirect: data.officialDirect === 'true',
+      obligations: String(data.obligations || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+      analyses: existing ? existing.analyses || [] : [],
+      updatedAt: nowISO()
+    });
+    if (existing) state.clients[state.clients.indexOf(existing)] = client;
+    else state.clients.unshift(client);
+    setSelectedClient(client.id);
+    persist();
+    audit(existing ? 'Cliente atualizado' : 'Cliente cadastrado', client.name + ' · ' + client.document);
+    closeModal();
+    refreshClientSelect();
+    toast(existing ? 'Cadastro atualizado' : 'Cliente cadastrado', 'As informações foram salvas de forma permanente.');
+    navigate('clientes/' + client.id);
+  }
+
+  function deleteClient(id) {
+    if (!requireAdmin()) return;
+    var client = state.clients.find(function (c) { return c.id === id; });
+    if (!client) return;
+    if (!window.confirm('Excluir permanentemente o cadastro de “' + client.name + '”? Esta ação não pode ser desfeita sem um backup.')) return;
+    state.clients = state.clients.filter(function (c) { return c.id !== id; });
+    if (state.selectedClientId === id) state.selectedClientId = state.clients[0] && state.clients[0].id;
+    persist();
+    audit('Cliente excluído', client.name + ' · ' + client.document);
+    refreshClientSelect();
+    toast('Cliente excluído', 'O registro foi removido da base.', 'warning');
+    navigate('clientes');
+  }
+
+  function exportAllClients() {
+    var payload = { schema: 'simplescalc.clients.v1', exportedAt: nowISO(), count: state.clients.length, clients: state.clients };
+    downloadFile('erp-gestao-fiscal-clientes-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(payload, null, 2));
+    audit('Base de clientes exportada', state.clients.length + ' registros');
+    toast('Exportação concluída', state.clients.length + ' clientes foram incluídos no arquivo JSON.');
+  }
+
+  function exportClient(id) {
+    var client = state.clients.find(function (c) { return c.id === id; });
+    if (!client) return;
+    downloadFile('cliente-' + clientDocumentKey(client.document) + '.json', JSON.stringify({ schema: 'simplescalc.client.v1', exportedAt: nowISO(), client: client }, null, 2));
+    audit('Cliente exportado', client.name);
+    toast('Cadastro exportado', client.name + ' foi salvo em JSON.');
+  }
+
+  function backup() {
+    var payload = {
+      schema: 'simplescalc.backup.v1',
+      createdAt: nowISO(),
+      application: APP_NAME,
+      data: { clients: state.clients, audit: state.audit, customLegal: state.customLegal, settings: state.settings, users: state.users }
+    };
+    downloadFile('erp-gestao-fiscal-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(payload, null, 2));
+    audit('Backup completo gerado', state.clients.length + ' clientes e ' + state.audit.length + ' ações');
+    toast('Backup gerado', 'Clientes, usuários, assinaturas, histórico, conteúdo legal e configurações foram incluídos.');
+  }
+
+  function triggerImport(mode) {
+    if (!requireAdmin()) return;
+    state.importMode = mode || 'clients';
+    var input = $('#json-file-input');
+    input.value = '';
+    input.click();
+  }
+
+  function validateImportedClient(client, index) {
+    if (!client || typeof client !== 'object') return 'Registro ' + (index + 1) + ': objeto inválido.';
+    if (!String(client.name || '').trim()) return 'Registro ' + (index + 1) + ': nome ausente.';
+    if (!validClientDocument(client.document)) return 'Registro ' + (index + 1) + ': CPF/CNPJ inválido.';
+    if (!String(client.regime || '').trim()) return 'Registro ' + (index + 1) + ': regime tributário ausente.';
+    return '';
+  }
+
+  function importClients(parsed) {
+    var incoming = Array.isArray(parsed) ? parsed : parsed.clients || (parsed.client ? [parsed.client] : null);
+    if (!Array.isArray(incoming)) throw new Error('O JSON deve conter um array ou a propriedade “clients”.');
+    if (!incoming.length) throw new Error('O arquivo não possui clientes.');
+    var errors = incoming.map(validateImportedClient).filter(Boolean);
+    if (errors.length) throw new Error('Estrutura inválida: ' + errors.slice(0, 3).join(' '));
+    var duplicates = incoming.filter(function (item) {
+      return state.clients.some(function (c) { return clientDocumentKey(c.document) === clientDocumentKey(item.document); });
+    });
+    var replace = false;
+    if (duplicates.length) {
+      replace = window.confirm(duplicates.length + ' cadastro(s) já existem pelo CPF/CNPJ. Deseja atualizar e substituir as informações existentes? “Cancelar” manterá os registros atuais e importará somente novos clientes.');
+    }
+    var added = 0, updated = 0, skipped = 0;
+    incoming.forEach(function (raw) {
+      var found = state.clients.find(function (c) { return clientDocumentKey(c.document) === clientDocumentKey(raw.document); });
+      if (found && !replace) { skipped++; return; }
+      var clean = Object.assign({}, found || {}, raw, {
+        id: found ? found.id : raw.id || uid('cli'),
+        revenueMonth: Number(raw.revenueMonth || 0),
+        revenue12: Number(raw.revenue12 || 0),
+        employees: Number(raw.employees || 0),
+        obligations: Array.isArray(raw.obligations) ? raw.obligations : [],
+        analyses: Array.isArray(raw.analyses) ? raw.analyses : (found ? found.analyses || [] : []),
+        updatedAt: nowISO()
+      });
+      if (found) { state.clients[state.clients.indexOf(found)] = clean; updated++; }
+      else { state.clients.push(clean); added++; }
+    });
+    persist();
+    refreshClientSelect();
+    audit('Clientes importados', added + ' novos, ' + updated + ' atualizados, ' + skipped + ' preservados');
+    toast('Importação concluída', added + ' novo(s), ' + updated + ' atualizado(s), ' + skipped + ' preservado(s).');
+    navigate('clientes');
+  }
+
+  function restoreBackup(parsed) {
+    if (!parsed || parsed.schema !== 'simplescalc.backup.v1' || !parsed.data || !Array.isArray(parsed.data.clients)) throw new Error('O arquivo não é um backup válido do ContTech ERP.');
+    var errors = parsed.data.clients.map(validateImportedClient).filter(Boolean);
+    if (errors.length) throw new Error('Backup contém registros inválidos: ' + errors.slice(0, 2).join(' '));
+    if (!window.confirm('Restaurar este backup substituirá clientes, usuários, assinaturas, conteúdo legal, configurações e histórico atuais. Deseja continuar?')) return;
+    state.clients = parsed.data.clients;
+    state.audit = Array.isArray(parsed.data.audit) ? parsed.data.audit : [];
+    state.customLegal = Array.isArray(parsed.data.customLegal) ? parsed.data.customLegal : [];
+    state.settings = parsed.data.settings || {};
+    if (['ERP Gestão Fiscal – Inteligência Tributária', 'ERP Gestão Fiscal', 'Gestão Fiscal Pro', 'SimplesCalc Pro', 'SimplesCalc Assessoria'].indexOf(state.settings.company) >= 0) state.settings.company = APP_NAME;
+    state.users = Array.isArray(parsed.data.users) && parsed.data.users.length ? parsed.data.users : state.users;
+    state.selectedClientId = state.clients[0] && state.clients[0].id;
+    persist();
+    audit('Backup restaurado', state.clients.length + ' clientes restaurados');
+    refreshClientSelect();
+    toast('Backup restaurado', 'A base anterior foi substituída após confirmação.');
+    route();
+  }
+
+  function processImportedFile(file) {
+    if (!file) return;
+    if (!/\.json$/i.test(file.name) && file.type !== 'application/json') {
+      toast('Arquivo não aceito', 'Selecione um arquivo JSON.', 'error');
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var parsed = JSON.parse(reader.result);
+        if (state.importMode === 'backup') restoreBackup(parsed);
+        else importClients(parsed);
+      } catch (error) {
+        toast('Falha na importação', error.message || 'O JSON não pôde ser validado.', 'error');
+      }
+    };
+    reader.onerror = function () { toast('Falha na leitura', 'Não foi possível abrir o arquivo.', 'error'); };
+    reader.readAsText(file);
+  }
+
+  function exportReport() {
+    var c = currentClient();
+    var diag = diagnosisFor(c);
+    var report = {
+      schema: 'simplescalc.diagnosis.v1',
+      generatedAt: nowISO(),
+      generatedBy: currentUser.name,
+      disclaimer: 'Relatório orientativo; valide as fontes oficiais e a documentação do contribuinte.',
+      client: c,
+      diagnosis: diag,
+      legalBaseChecked: TODAY,
+      sources: OFFICIAL_SOURCES.map(function (s) { return { number: s.number, title: s.title, url: s.url, updated: s.updated }; })
+    };
+    downloadFile('diagnostico-' + clientDocumentKey(c.document) + '.json', JSON.stringify(report, null, 2));
+    audit('Diagnóstico exportado', c.name + ' · risco ' + diag.level);
+    toast('Relatório exportado', 'O diagnóstico completo foi salvo em JSON.');
+  }
+
+  function runDiagnosis(id) {
+    var c = state.clients.find(function (client) { return client.id === id; });
+    if (!c) return;
+    setSelectedClient(c.id);
+    var diag = diagnosisFor(c);
+    c.analyses = c.analyses || [];
+    c.analyses.unshift({ date: new Date().toISOString().slice(0, 10), risk: diag.level, score: diag.score, summary: diag.items.filter(function (i) { return i.type !== 'success'; }).map(function (i) { return i.title; }).slice(0, 2).join('; ') || 'Sem inconsistências críticas.' });
+    c.updatedAt = nowISO();
+    persist();
+    audit('Diagnóstico executado', c.name + ' · risco ' + diag.level + ' (' + diag.score + '/100)');
+    toast('Diagnóstico concluído', 'Classificação de risco: ' + diag.level + '.');
+    navigate('diagnostico');
+  }
+
+  function accountRemainingLabel(info) {
+    if (info.status === 'Encerrado' || info.status === 'Inativo') return 'Assinatura encerrada';
+    if (info.status === 'Agendado') return 'Assinatura ainda não iniciada';
+    if (info.daysRemaining === 0) return 'Expira hoje';
+    return info.daysRemaining + (info.daysRemaining === 1 ? ' dia restante' : ' dias restantes');
+  }
+
+  function renderUserMenu() {
+    var profile = Object.assign({ active: true }, currentUser || {});
+    var info = subscriptionInfo(profile);
+    var storageLabel = apiEnabled() && apiToken ? 'Servidor seguro e cifrado' : 'Armazenamento local deste navegador';
+    var photo = profileAvatarContent(profile, 'Foto de ' + (profile.name || 'usuário'));
+    var photoActions = '<button class="secondary-button account-photo-button" data-action="select-profile-photo">Alterar foto</button>' +
+      (validProfilePhoto(profile.profilePhotoDataUrl) ? '<button class="account-photo-remove" data-action="remove-profile-photo">Remover</button>' : '');
+    var period = profile.monitoringStart && profile.monitoringEnd
+      ? dateBR(profile.monitoringStart) + ' até ' + dateBR(profile.monitoringEnd)
+      : 'Prazo não informado';
+    var body = '<div class="account-profile">' +
+      '<input id="profile-photo-input" type="file" accept="image/jpeg,image/png,image/webp" hidden>' +
+      '<section class="account-identity"><button class="account-photo' + (validProfilePhoto(profile.profilePhotoDataUrl) ? ' has-photo' : '') + '" data-action="select-profile-photo" aria-label="Alterar foto do perfil">' + photo + '<span>✎</span></button><div class="account-identity-copy"><span class="account-access-label">Perfil da conta</span><h3>' + esc(profile.name || 'Usuário') + '</h3><p>' + esc(profile.email || '') + '</p><span class="tag tag--info">' + esc(profile.role || 'Usuário') + '</span><div class="account-photo-actions">' + photoActions + '</div><small>JPG, PNG ou WebP. A imagem é reduzida e protegida antes de ser salva.</small></div></section>' +
+      '<section class="account-subscription account-subscription--' + esc(info.className) + '"><div class="account-subscription-top"><div><span>Assinatura ' + esc(profile.billingCycle || '') + '</span><strong>' + esc(accountRemainingLabel(info)) + '</strong></div><span class="tag tag--' + esc(info.className) + '">' + esc(info.status) + '</span></div><div class="account-progress"><i style="width:' + Number(info.percent || 0).toFixed(1) + '%"></i></div><div class="account-subscription-dates"><span><small>Início</small><b>' + esc(dateBR(profile.monitoringStart)) + '</b></span><span><small>Finalização</small><b>' + esc(dateBR(profile.monitoringEnd)) + '</b></span></div><p>' + esc(period) + '</p></section>' +
+      '<section class="account-access-grid"><div><span class="account-info-icon">◷</span><small>Último login</small><b>' + esc(accessDateTimeBR(profile.lastLoginAt)) + '</b></div><div><span class="account-info-icon">●</span><small>Acesso atual</small><b>' + esc(accessDateTimeBR(profile.currentLoginAt)) + '</b></div><div><span class="account-info-icon">▣</span><small>Proteção dos dados</small><b>' + esc(storageLabel) + '</b></div><div><span class="account-info-icon">§</span><small>Última conferência legal</small><b>' + esc(state.settings.legalBaseChecked || TODAY) + '</b></div></section>' +
+      '</div>';
+    openModal('Meu perfil e assinatura', body, '<button class="secondary-button" data-route="configuracoes">Configurações</button><button class="danger-button" data-action="logout">Sair da conta</button>', 'profile');
+  }
+
+  function openUserMenu() {
+    renderUserMenu();
+    refreshCurrentProfile().then(function () {
+      if ($('#profile-photo-input')) renderUserMenu();
+    });
+  }
+
+  function prepareProfilePhoto(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file || ['image/jpeg', 'image/png', 'image/webp'].indexOf(file.type) < 0) {
+        reject(new Error('Selecione uma imagem JPG, PNG ou WebP.'));
+        return;
+      }
+      if (file.size > 6_000_000) {
+        reject(new Error('A foto original deve ter no máximo 6 MB.'));
+        return;
+      }
+      var image = new Image();
+      var objectUrl = URL.createObjectURL(file);
+      image.onload = function () {
+        try {
+          var canvas = document.createElement('canvas');
+          canvas.width = 512;
+          canvas.height = 512;
+          var context = canvas.getContext('2d');
+          var side = Math.min(image.naturalWidth, image.naturalHeight);
+          var sourceX = Math.max(0, (image.naturalWidth - side) / 2);
+          var sourceY = Math.max(0, (image.naturalHeight - side) / 2);
+          context.fillStyle = '#eaf0f7';
+          context.fillRect(0, 0, 512, 512);
+          context.drawImage(image, sourceX, sourceY, side, side, 0, 0, 512, 512);
+          var dataUrl = canvas.toDataURL('image/jpeg', 0.86);
+          URL.revokeObjectURL(objectUrl);
+          resolve(dataUrl);
+        } catch (error) {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error('Não foi possível preparar esta imagem.'));
+        }
+      };
+      image.onerror = function () {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error('O arquivo selecionado não contém uma imagem válida.'));
+      };
+      image.src = objectUrl;
+    });
+  }
+
+  async function saveProfilePhoto(file) {
+    try {
+      toast('Preparando foto', 'A imagem está sendo ajustada para o seu perfil.');
+      var dataUrl = await prepareProfilePhoto(file);
+      var updatedAt = nowISO();
+      if (apiEnabled() && apiToken) {
+        var result = await apiRequest('/api/profile/photo', {
+          method: 'POST',
+          body: JSON.stringify({ dataBase64: dataUrl.split(',')[1], mimeType: 'image/jpeg' })
+        });
+        dataUrl = result.profilePhotoDataUrl || dataUrl;
+        updatedAt = result.profilePhotoUpdatedAt || updatedAt;
+      } else {
+        var localUser = state.users.find(function (item) { return String(item.email).toLowerCase() === String(currentUser.email).toLowerCase(); });
+        if (localUser) {
+          localUser.profilePhotoDataUrl = dataUrl;
+          localUser.profilePhotoUpdatedAt = updatedAt;
+          storageSet(KEYS.users, state.users);
+        }
+      }
+      applyCurrentProfile({ profilePhotoDataUrl: dataUrl, profilePhotoUpdatedAt: updatedAt });
+      audit('Foto do perfil atualizada', currentUser.email);
+      renderUserMenu();
+      toast('Foto atualizada', 'A nova imagem do perfil foi salva com sucesso.');
+    } catch (error) {
+      toast('Não foi possível salvar a foto', error.message || 'Tente usar outra imagem.', 'error');
+    }
+  }
+
+  async function removeProfilePhoto() {
+    if (!validProfilePhoto(currentUser && currentUser.profilePhotoDataUrl)) return;
+    if (!window.confirm('Remover a foto atual do seu perfil?')) return;
+    try {
+      if (apiEnabled() && apiToken) await apiRequest('/api/profile/photo', { method: 'DELETE' });
+      else {
+        var localUser = state.users.find(function (item) { return String(item.email).toLowerCase() === String(currentUser.email).toLowerCase(); });
+        if (localUser) {
+          localUser.profilePhotoDataUrl = '';
+          localUser.profilePhotoUpdatedAt = '';
+          storageSet(KEYS.users, state.users);
+        }
+      }
+      applyCurrentProfile({ profilePhotoDataUrl: '', profilePhotoUpdatedAt: '' });
+      audit('Foto do perfil removida', currentUser.email);
+      renderUserMenu();
+      toast('Foto removida', 'As iniciais do usuário voltaram a ser exibidas.');
+    } catch (error) {
+      toast('Não foi possível remover a foto', error.message || 'Tente novamente.', 'error');
+    }
+  }
+
+  function openSearch() {
+    $('#search-layer').classList.remove('is-hidden');
+    $('#global-search').value = '';
+    state.searchIndex = 0;
+    renderSearch('');
+    window.setTimeout(function () { $('#global-search').focus(); }, 20);
+  }
+  function closeSearch() { $('#search-layer').classList.add('is-hidden'); }
+  function searchItems(query) {
+    var q = String(query || '').toLowerCase().trim();
+    var pages = NAV_ITEMS.filter(function (item) { return !q || (item.label + ' ' + item.desc).toLowerCase().indexOf(q) >= 0; }).map(function (item) { return Object.assign({ type: 'Página' }, item); });
+    var clients = state.clients.filter(function (c) { return !q || [c.name, c.document, c.regime, c.activity, c.responsible].join(' ').toLowerCase().indexOf(q) >= 0; }).map(function (c) { return { type: 'Cliente', label: c.name, desc: c.document + ' · ' + c.regime, icon: '♟', route: 'clientes/' + c.id }; });
+    var laws = OFFICIAL_SOURCES.concat(state.customLegal).filter(function (s) { return q && [s.title, s.number, s.area, s.summary].join(' ').toLowerCase().indexOf(q) >= 0; }).map(function (s) { return { type: 'Fonte oficial', label: s.title, desc: s.issuer + ' · ' + s.updated, icon: '§', url: s.url }; });
+    return pages.slice(0, q ? 6 : 5).concat(clients.slice(0, q ? 8 : 4), laws.slice(0, 6));
+  }
+  function renderSearch(query) {
+    var items = searchItems(query);
+    state.searchIndex = Math.min(state.searchIndex, Math.max(0, items.length - 1));
+    $('#search-results').innerHTML = items.length ? items.map(function (item, index) {
+      return '<button class="search-result' + (index === state.searchIndex ? ' active' : '') + '" data-action="search-open" data-index="' + index + '" data-route-target="' + esc(item.route || '') + '" data-url="' + esc(item.url || '') + '"><i>' + item.icon + '</i><span><b>' + esc(item.label) + '</b><small>' + esc(item.type) + ' · ' + esc(item.desc) + '</small></span><span>→</span></button>';
+    }).join('') : '<div class="empty-state"><p>Nenhum resultado encontrado.</p></div>';
+  }
+
+  function saveSettings() {
+    if (!requireAdmin()) return;
+    state.settings.company = $('#setting-company') ? $('#setting-company').value.trim() : state.settings.company;
+    state.settings.inactivity = $('#setting-inactivity') ? Number($('#setting-inactivity').value || 30) : 30;
+    state.settings.legalBaseChecked = $('#setting-legal-date') ? $('#setting-legal-date').value.trim() : TODAY;
+    persist();
+    audit('Configurações atualizadas', 'Preferências gerais salvas');
+    toast('Configurações salvas', 'As preferências foram atualizadas.');
+  }
+
+  function submitLegalForm(form) {
+    if (!requireAdmin() || !form.reportValidity()) return;
+    var data = Object.fromEntries(new FormData(form).entries());
+    data.id = uid('legal');
+    data.updated = data.updated || data.publication || TODAY;
+    state.customLegal.unshift(data);
+    state.settings.legalBaseChecked = TODAY;
+    persist();
+    audit('Conteúdo legal atualizado', data.title + ' · ' + data.number);
+    form.reset();
+    toast('Atualização cadastrada', 'A nova fonte foi incluída na biblioteca e no histórico.');
+  }
+
+  function showObligationInfo(name) {
+    var source = name.indexOf('NF') >= 0 ? OFFICIAL_SOURCES.find(function (s) { return s.id === 'nt-2025-002'; }) : OFFICIAL_SOURCES.find(function (s) { return s.id === 'res-140-2018'; });
+    openModal(name, '<div class="info-banner"><span>▣</span><div><strong>Obrigação monitorada.</strong> Os prazos podem ser alterados por atos posteriores ou particularidades do contribuinte.</div></div>' + legalCard(source), '<button class="secondary-button" data-action="close-modal">Fechar</button>', true);
+  }
+
+  function changeAnnex(key, direction) {
+    var client = currentClient();
+    if (!client) return;
+    var currentKey = selectedAnnexKey(client);
+    var index = ANNEX_ORDER.indexOf(currentKey);
+    if (key && SIMPLES_ANNEXES[key]) index = ANNEX_ORDER.indexOf(key);
+    else if (direction) index = (index + direction + ANNEX_ORDER.length) % ANNEX_ORDER.length;
+    var next = SIMPLES_ANNEXES[ANNEX_ORDER[index]];
+    var started = window.performance && window.performance.now ? window.performance.now() : Date.now();
+    client.annex = next.name;
+    client.updatedAt = nowISO();
+    var annexField = $('#annex-select');
+    if (annexField) annexField.value = next.key;
+    updateDasSimulation(true);
+    audit('Anexo tributário alterado', client.name + ' · ' + next.name);
+    var finished = window.performance && window.performance.now ? window.performance.now() : Date.now();
+    toast('Anexo atualizado', next.name + ' recalculado em ' + Math.max(1, Math.round(finished - started)) + ' ms.');
+  }
+
+  function bindViewControls() {
+    if ($('#filter-regime')) {
+      $('#filter-regime').value = state.filters.regime || '';
+      $('#filter-activity').value = state.filters.activity || '';
+      $('#filter-status').value = state.filters.status || '';
+      $('#filter-responsible').value = state.filters.responsible || '';
+    }
+    if ($('#legal-form')) $('#legal-form').addEventListener('submit', function (event) { event.preventDefault(); submitLegalForm(event.currentTarget); });
+    if ($('#cest-search-form')) $('#cest-search-form').addEventListener('submit', function (event) { event.preventDefault(); renderCestResults(true); });
+    if ($('#payroll-employees')) updatePayrollSimulation(false);
+    if ($('#overtime-night-calculator')) updateOvertimeNightCalculator(false);
+    if ($('#termination-simulator')) updateTerminationSimulator(false);
+    if ($('#unemployment-calculator')) updateUnemploymentCalculator(false);
+    if ($('#gps-late-calculator')) updateGpsLateCalculator(false);
+    if ($('#irrf-effective-calculator')) updateIrrfEffectiveRate(false);
+    if ($('#alimony-calculator')) updateAlimonyCalculator(false);
+    if ($('#balance-analysis-calculator')) updateBalanceAnalysis(false);
+    if ($('#tax-transition')) updateTaxTransition(false);
+    if ($('#prolabore-base')) updateProLaboreSimulation(false);
+    if ($('#calc-month')) updateDasSimulation(false);
+    if ($('#icms-state-result')) updateTaxBenefitsPanel();
+    if ($('#iss-service-query')) { filterIssRates(); updateIssEstimate(); }
+    if ($('#cest-results-body')) renderCestResults(false);
+    if ($('#rental-simulator')) updateRentalSimulator();
+    if ($('#portfolio-query')) filterPortfolioDashboard();
+    if ($('#mei-control-page')) drawMeiControlCharts();
+    if ($('#calc-month')) $('#calc-month').addEventListener('blur', function () {
+      var c = currentClient(); audit('Cálculo DAS atualizado', c.name + ' · faturamento mensal ' + money(c.revenueMonth));
+    });
+    if ($('#calc-rbt12')) $('#calc-rbt12').addEventListener('blur', function () {
+      var c = currentClient(); audit('Cálculo DAS atualizado', c.name + ' · RBT12 ' + money(c.revenue12));
+    });
+    if ($('#regular-regime')) $('#regular-regime').addEventListener('change', function () {
+      state.settings.regularRegime = this.checked;
+      updateDasSimulation(true);
+      audit('Configuração do cálculo alterada', this.checked ? 'Destaque separado de IBS/CBS ativado' : 'Destaque separado de IBS/CBS desativado');
+      toast('Configuração atualizada', this.checked ? 'IBS e CBS foram destacados instantaneamente.' : 'O DAS total foi atualizado sem separação.');
+    });
+  }
+
+  document.addEventListener('click', function (event) {
+    var routeEl = event.target.closest('[data-route]');
+    if (routeEl) {
+      event.preventDefault();
+      closeModal();
+      navigate(routeEl.getAttribute('data-route'));
+      return;
+    }
+    var actionEl = event.target.closest('[data-action]');
+    if (!actionEl) return;
+    var action = actionEl.getAttribute('data-action');
+    if (action === 'toggle-password') {
+      var pwd = $('#login-password'); pwd.type = pwd.type === 'password' ? 'text' : 'password';
+    } else if (action === 'toggle-field-password') {
+      var passwordField = document.getElementById(actionEl.getAttribute('data-target'));
+      if (passwordField) { passwordField.type = passwordField.type === 'password' ? 'text' : 'password'; actionEl.setAttribute('aria-label', passwordField.type === 'password' ? 'Mostrar senha' : 'Ocultar senha'); }
+    } else if (action === 'open-signup') {
+      setLoginView('register');
+    } else if (action === 'back-to-login') {
+      setLoginView('login');
+    } else if (action === 'signup-document-type') {
+      setSignupDocumentType(actionEl.getAttribute('data-type'));
+    } else if (action === 'signup-terms') {
+      signupTermsModal();
+    } else if (action === 'forgot-password') {
+      openPasswordRecovery();
+    } else if (action === 'password-reset-verify') {
+      verifyPasswordReset();
+    } else if (action === 'password-reset-save') {
+      savePasswordReset();
+    } else if (action === 'demo-help') {
+      openModal('Acesso protegido', '<div class="info-banner"><span>🔒</span><div><strong>Credenciais não são exibidas na página.</strong> Solicite seu login ao administrador responsável. As senhas permanecem protegidas por hash no banco de dados.</div></div>', '<button class="primary-button" data-action="close-modal">Entendi</button>', true);
+    } else if (action === 'close-modal') closeModal();
+    else if (action === 'toggle-nav') $('#main-nav').classList.toggle('open');
+    else if (action === 'print-page') window.print();
+    else if (action === 'user-menu') openUserMenu();
+    else if (action === 'select-profile-photo') {
+      var profileInput = $('#profile-photo-input');
+      if (profileInput) profileInput.click();
+    }
+    else if (action === 'remove-profile-photo') removeProfilePhoto();
+    else if (action === 'logout') { closeModal(); logout(); }
+    else if (action === 'open-search') openSearch();
+    else if (action === 'close-search') closeSearch();
+    else if (action === 'new-user') openUserForm();
+    else if (action === 'edit-user') openUserForm(actionEl.getAttribute('data-id'));
+    else if (action === 'save-user') saveUserForm();
+    else if (action === 'delete-user') deleteUser(actionEl.getAttribute('data-id'));
+    else if (action === 'scroll-settings') {
+      var settingsTarget = document.getElementById(actionEl.getAttribute('data-target'));
+      $$('.setting-nav button').forEach(function (button) { button.classList.toggle('active', button === actionEl); });
+      if (settingsTarget) settingsTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    else if (action === 'portfolio-progress') openPortfolioProgress(actionEl.getAttribute('data-id'));
+    else if (action === 'portfolio-save-progress') savePortfolioProgress();
+    else if (action === 'portfolio-new-task') { setSelectedClient(actionEl.getAttribute('data-id')); openKanbanForm('', 'novas'); }
+    else if (action === 'portfolio-diagnosis') { setSelectedClient(actionEl.getAttribute('data-id')); navigate('diagnostico'); }
+    else if (action === 'portfolio-das') { setSelectedClient(actionEl.getAttribute('data-id')); navigate('dashboard'); }
+    else if (action === 'portfolio-clear-filters') { state.portfolioFilters = {}; route(); }
+    else if (action === 'mei-view') { meiControlUi().view = actionEl.getAttribute('data-view') || 'dashboard'; storageSet(KEYS.settings, state.settings); refreshMeiControl(true); }
+    else if (action === 'mei-new-entry') openMeiEntryForm(actionEl.getAttribute('data-type'));
+    else if (action === 'mei-edit-entry') openMeiEntryForm('', actionEl.getAttribute('data-id'));
+    else if (action === 'mei-save-entry') saveMeiEntry();
+    else if (action === 'mei-delete-entry') deleteMeiEntry(actionEl.getAttribute('data-id'));
+    else if (action === 'mei-export-json') exportMeiControl('json');
+    else if (action === 'mei-export-csv') exportMeiControl('csv');
+    else if (action === 'mei-clear-filters') {
+      Object.assign(meiControlUi(), { clientId: state.selectedClientId || 'all', year: '2026', month: '', query: '' });
+      storageSet(KEYS.settings, state.settings); refreshMeiControl(false); toast('Filtros limpos', 'A visão padrão do Controle de MEI foi restaurada.');
+    }
+    else if (action === 'kanban-new') openKanbanForm('', actionEl.getAttribute('data-column') || 'novas');
+    else if (action === 'kanban-edit') openKanbanForm(actionEl.getAttribute('data-id'));
+    else if (action === 'kanban-save') saveKanbanCard();
+    else if (action === 'kanban-delete') deleteKanbanCard(actionEl.getAttribute('data-id'));
+    else if (action === 'kanban-clear-completed') clearCompletedKanban();
+    else if (action === 'kanban-export') exportKanban();
+    else if (action === 'new-client') openClientForm();
+    else if (action === 'edit-client') openClientForm(actionEl.getAttribute('data-id'));
+    else if (action === 'view-client') navigate('clientes/' + actionEl.getAttribute('data-id'));
+    else if (action === 'delete-client') deleteClient(actionEl.getAttribute('data-id'));
+    else if (action === 'client-consult-cnpj') consultClientCnpj();
+    else if (action === 'submit-client-form') saveClientForm();
+    else if (action === 'export-all') exportAllClients();
+    else if (action === 'export-client') exportClient(actionEl.getAttribute('data-id'));
+    else if (action === 'backup') backup();
+    else if (action === 'import-json') triggerImport('clients');
+    else if (action === 'restore-backup') triggerImport('backup');
+    else if (action === 'save-current') { persist(); audit('Dados salvos', 'Página ' + state.route); toast('Tudo salvo', 'As alterações estão persistidas neste navegador.'); }
+    else if (action === 'run-diagnosis') runDiagnosis(actionEl.getAttribute('data-id'));
+    else if (action === 'export-report') exportReport();
+    else if (action === 'export-audit') { downloadFile('erp-gestao-fiscal-auditoria.json', JSON.stringify({ schema: 'simplescalc.audit.v1', exportedAt: nowISO(), audit: state.audit }, null, 2)); toast('Auditoria exportada', 'O histórico de ações foi salvo em JSON.'); }
+    else if (action === 'export-parameters') { downloadFile('erp-gestao-fiscal-parametros-2026.json', JSON.stringify({ schema: 'simplescalc.parameters.2026', checkedAt: TODAY, sources: OFFICIAL_SOURCES }, null, 2)); toast('Parâmetros exportados', 'Fontes e metadados foram incluídos no JSON.'); }
+    else if (action === 'save-settings') saveSettings();
+    else if (action === 'icms-consult-benefits') {
+      updateTaxBenefitsPanel();
+      storageSet(KEYS.settings, state.settings);
+      audit('Alíquota e benefícios consultados', ($('#icms-benefit-state') ? $('#icms-benefit-state').value : '') + ' · ' + ($('#icms-benefit-query') ? $('#icms-benefit-query').value : ''));
+      toast('Consulta atualizada', 'Alíquota e referências de benefícios foram organizadas para a UF selecionada.');
+      var icmsResult = $('#icms-state-result');
+      if (icmsResult) icmsResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    else if (action === 'icms-select-state') {
+      var selectedState = actionEl.getAttribute('data-uf');
+      if ($('#icms-benefit-state')) $('#icms-benefit-state').value = selectedState;
+      updateTaxBenefitsPanel();
+      storageSet(KEYS.settings, state.settings);
+    }
+    else if (action === 'icms-clear-table-filter') {
+      if ($('#icms-table-search')) $('#icms-table-search').value = '';
+      if ($('#icms-table-region')) $('#icms-table-region').value = '';
+      filterIcmsStateTable();
+    }
+    else if (action === 'export-icms-benefits') {
+      downloadFile('aliquotas-beneficios-fiscais-2026.json', JSON.stringify({ schema: 'gestao-fiscal.icms-benefits.v1', updatedAt: '2026-08-20', disclaimer: 'Base orientativa. Confirme a legislação estadual vigente e o enquadramento da operação.', states: ICMS_STATES, benefitReferences: ICMS_BENEFIT_CATEGORIES }, null, 2));
+      audit('Base de alíquotas exportada', '27 UFs · revisão 20/08/2026');
+      toast('Base exportada', 'As 27 UFs e as referências de benefícios foram salvas em JSON.');
+    }
+    else if (action === 'iss-select-capital') selectIssCapital(actionEl.getAttribute('data-uf'));
+    else if (action === 'iss-clear-filters') {
+      if ($('#iss-service-query')) $('#iss-service-query').value = '';
+      if ($('#iss-service-group')) $('#iss-service-group').value = '';
+      filterIssRates();
+    }
+    else if (action === 'iss-export-json') exportIssRates();
+    else if (action === 'iss-print') window.print();
+    else if (action === 'cest-clear') clearCestFilters();
+    else if (action === 'cest-page') { state.cestPage = Number(actionEl.getAttribute('data-page') || 1); renderCestResults(false); var cestResults = $('.cest-results-card'); if (cestResults) cestResults.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    else if (action === 'cest-detail') openCestDetail(actionEl.getAttribute('data-cest'));
+    else if (action === 'cest-copy') copyCestCode(actionEl.getAttribute('data-cest'));
+    else if (action === 'cest-export-json') exportCestResults('json');
+    else if (action === 'cest-export-csv') exportCestResults('csv');
+    else if (action === 'cest-print') window.print();
+    else if (action === 'rental-select-type') selectRentalType(actionEl.getAttribute('data-type'));
+    else if (action === 'rental-step') setRentalStep(actionEl.getAttribute('data-step'));
+    else if (action === 'rental-clear') resetRentalSimulation();
+    else if (action === 'rental-save') saveRentalSimulation();
+    else if (action === 'rental-export-json') exportRentalSimulation();
+    else if (action === 'rental-print') window.print();
+    else if (action === 'overtime-calculate') { updateOvertimeNightCalculator(true); audit('Horas extras e adicional noturno recalculados', money(calculateOvertimeNight(readOvertimeNightSimulation()).totalAdditions)); toast('Cálculo atualizado', 'Horas, adicionais, descanso semanal e total foram recalculados.'); }
+    else if (action === 'overtime-clear') resetOvertimeNightSimulation();
+    else if (action === 'overtime-save') saveOvertimeNightSimulation();
+    else if (action === 'overtime-export') exportOvertimeNightSimulation();
+    else if (action === 'overtime-print') window.print();
+    else if (action === 'termination-step') setTerminationStep(actionEl.getAttribute('data-step'));
+    else if (action === 'termination-clear') resetTerminationSimulation();
+    else if (action === 'termination-save') saveTerminationSimulation();
+    else if (action === 'termination-export-json') exportTerminationSimulation();
+    else if (action === 'termination-print') window.print();
+    else if (action === 'unemployment-calculate') { updateUnemploymentCalculator(true); audit('Seguro-desemprego recalculado', money(calculateUnemployment(readUnemploymentSimulation()).installment)); toast('Cálculo atualizado', 'Valor, parcelas e requisitos foram conferidos instantaneamente.'); }
+    else if (action === 'unemployment-clear') resetUnemploymentSimulation();
+    else if (action === 'unemployment-save') saveUnemploymentSimulation();
+    else if (action === 'unemployment-export-json') exportUnemploymentSimulation();
+    else if (action === 'unemployment-print') window.print();
+    else if (action === 'gps-calculate') { updateGpsLateCalculator(true); audit('GPS em atraso recalculada', money(calculateGpsLate(readGpsLateSimulation()).total)); toast('Cálculo atualizado', 'Principal, multa, juros Selic e total foram atualizados.'); }
+    else if (action === 'gps-suggest-due') suggestGpsDue(true);
+    else if (action === 'gps-clear') resetGpsLateSimulation();
+    else if (action === 'gps-save') saveGpsLateSimulation();
+    else if (action === 'gps-export-json') exportGpsLateSimulation();
+    else if (action === 'gps-print') window.print();
+    else if (action === 'irrf-effective-calculate') { updateIrrfEffectiveRate(true); audit('Alíquota efetiva do IRRF recalculada', money(calculateIrrfEffective(readIrrfEffectiveSimulation()).irrf)); toast('Cálculo atualizado', 'Base, redução, IRRF e alíquota efetiva foram atualizados.'); }
+    else if (action === 'irrf-effective-clear') resetIrrfEffectiveSimulation();
+    else if (action === 'irrf-effective-save') saveIrrfEffectiveSimulation();
+    else if (action === 'irrf-effective-export') exportIrrfEffectiveSimulation();
+    else if (action === 'irrf-effective-print') window.print();
+    else if (action === 'alimony-calculate') { updateAlimonyCalculator(true); var alimonyResult = calculateAlimony(readAlimonySimulation()); audit('Pensão alimentícia recalculada', money(alimonyResult.pension)); toast('Cálculo atualizado', 'INSS, IRRF, base judicial e pensão foram recalculados.'); }
+    else if (action === 'alimony-clear') resetAlimonySimulation();
+    else if (action === 'alimony-save') saveAlimonySimulation();
+    else if (action === 'alimony-export') exportAlimonySimulation();
+    else if (action === 'alimony-print') window.print();
+    else if (action === 'balance-calculate') { updateBalanceAnalysis(true); audit('Análise de balanço recalculada', readBalanceAnalysis().company || 'Empresa não informada'); toast('Análise atualizada', 'Totais, indicadores e diagnóstico foram recalculados.'); }
+    else if (action === 'balance-clear') resetBalanceAnalysis();
+    else if (action === 'balance-save') saveBalanceAnalysis();
+    else if (action === 'balance-export') exportBalanceAnalysis();
+    else if (action === 'balance-print') window.print();
+    else if (action === 'accounting-tab') {
+      var accountingTabUi = accountingUi();
+      accountingTabUi.view = actionEl.getAttribute('data-view') || 'presentation'; accountingTabUi.letter = '';
+      if (accountingTabUi.view === 'presentation') { accountingTabUi.query = ''; accountingTabUi.category = ''; accountingTabUi.applicability = ''; accountingTabUi.favoritesOnly = false; }
+      route();
+      if (accountingTabUi.view === 'search') window.setTimeout(function () { if ($('#accounting-query')) $('#accounting-query').focus(); }, 0);
+    }
+    else if (action === 'accounting-letter') { var accountingLetterUi = accountingUi(); accountingLetterUi.view = 'index'; accountingLetterUi.letter = actionEl.getAttribute('data-letter') || ''; accountingLetterUi.query = ''; accountingLetterUi.favoritesOnly = false; route(); }
+    else if (action === 'accounting-clear' || action === 'accounting-clear-query') { var accountingClearUi = accountingUi(); accountingClearUi.view = action === 'accounting-clear-query' ? 'search' : 'presentation'; accountingClearUi.letter = ''; accountingClearUi.query = ''; if (action === 'accounting-clear') { accountingClearUi.category = ''; accountingClearUi.applicability = ''; accountingClearUi.favoritesOnly = false; } route(); if (action === 'accounting-clear-query') window.setTimeout(function () { if ($('#accounting-query')) $('#accounting-query').focus(); }, 0); }
+    else if (action === 'accounting-favorites-only') { var accountingFavUi = accountingUi(); accountingFavUi.favoritesOnly = !accountingFavUi.favoritesOnly; accountingFavUi.view = 'index'; accountingFavUi.letter = ''; route(); }
+    else if (action === 'accounting-favorite') toggleAccountingFavorite(actionEl.getAttribute('data-id'));
+    else if (action === 'accounting-open') openAccountingEntry(actionEl.getAttribute('data-id'));
+    else if (action === 'accounting-copy') accountingCopy(actionEl.getAttribute('data-id'));
+    else if (action === 'accounting-export-entry') exportAccountingEntry(actionEl.getAttribute('data-id'));
+    else if (action === 'accounting-export') exportAccountingLibrary();
+    else if (action === 'accounting-new') openAccountingForm();
+    else if (action === 'accounting-edit') openAccountingForm(accountingFind(actionEl.getAttribute('data-id')));
+    else if (action === 'accounting-save-custom') saveAccountingCustom();
+    else if (action === 'accounting-delete') deleteAccountingCustom(actionEl.getAttribute('data-id'));
+    else if (action === 'accounting-text-up' || action === 'accounting-text-down') { var accountingTextUi = accountingUi(); accountingTextUi.textScale = Math.max(.9, Math.min(1.25, Number(accountingTextUi.textScale || 1) + (action === 'accounting-text-up' ? .05 : -.05))); state.settings.accountingTextScale = accountingTextUi.textScale; storageSet(KEYS.settings, state.settings); var accountingPage = $('.accounting-page'); if (accountingPage) accountingPage.style.setProperty('--accounting-scale', accountingTextUi.textScale); toast('Tamanho do texto atualizado', Math.round(accountingTextUi.textScale * 100) + '%'); }
+    else if (action === 'forms-category') { formsUi().category = actionEl.getAttribute('data-category') || ''; route(); }
+    else if (action === 'forms-clear' || action === 'forms-clear-query') { var formClearUi = formsUi(); formClearUi.query = ''; if (action === 'forms-clear') { formClearUi.category = ''; formClearUi.type = ''; formClearUi.favoritesOnly = false; } route(); if (action === 'forms-clear-query') window.setTimeout(function () { if ($('#forms-query')) $('#forms-query').focus(); }, 0); }
+    else if (action === 'forms-open') openFormDocument(actionEl.getAttribute('data-id'));
+    else if (action === 'forms-favorite') toggleFormFavorite(actionEl.getAttribute('data-id'));
+    else if (action === 'forms-save-draft') saveFormDraft(actionEl.getAttribute('data-id'), false);
+    else if (action === 'forms-clear-draft') clearFormDraft(actionEl.getAttribute('data-id'));
+    else if (action === 'forms-download-doc') downloadFormDoc(actionEl.getAttribute('data-id'));
+    else if (action === 'forms-print') printFormDocument(actionEl.getAttribute('data-id'));
+    else if (action === 'forms-export-index') exportFormsIndex();
+    else if (action === 'forms-download-pack') downloadFormsPack();
+    else if (action === 'contracts-category') { var contractCategoryUi = contractsUi(); contractCategoryUi.category = actionEl.getAttribute('data-category') || ''; contractCategoryUi.group = ''; contractCategoryUi.page = 1; route(); }
+    else if (action === 'contracts-clear' || action === 'contracts-clear-query') { var contractClearUi = contractsUi(); contractClearUi.query = ''; contractClearUi.page = 1; if (action === 'contracts-clear') { contractClearUi.category = ''; contractClearUi.group = ''; contractClearUi.favoritesOnly = false; } route(); if (action === 'contracts-clear-query') window.setTimeout(function () { if ($('#contracts-query')) $('#contracts-query').focus(); }, 0); }
+    else if (action === 'contracts-page') { contractsUi().page = Number(actionEl.getAttribute('data-page') || 1); refreshContractsResults(false); var contractResults = $('#contracts-results'); if (contractResults) contractResults.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    else if (action === 'contracts-open') openContractEditor(actionEl.getAttribute('data-id'));
+    else if (action === 'contracts-favorite') toggleContractFavorite(actionEl.getAttribute('data-id'));
+    else if (action === 'contracts-save-draft') saveContractDraft(actionEl.getAttribute('data-id'), false);
+    else if (action === 'contracts-clear-draft') clearContractDraft(actionEl.getAttribute('data-id'));
+    else if (action === 'contracts-download-doc') downloadContractDoc(actionEl.getAttribute('data-id'));
+    else if (action === 'contracts-print') printContract(actionEl.getAttribute('data-id'));
+    else if (action === 'contracts-export') exportContractsCatalog();
+    else if (action === 'contracts-download-pack') downloadContractsPack();
+    else if (action === 'contracts-new') openCustomContractForm();
+    else if (action === 'contracts-save-custom') saveCustomContract();
+    else if (action === 'transition-mode') setTaxTransitionMode(actionEl.getAttribute('data-mode'));
+    else if (action === 'transition-select-files') { var xmlInput = $('#transition-xml-files'); if (xmlInput) xmlInput.click(); }
+    else if (action === 'transition-select-year') selectTaxTransitionYear(actionEl.getAttribute('data-year'));
+    else if (action === 'transition-clear') resetTaxTransition();
+    else if (action === 'transition-save') saveTaxTransition();
+    else if (action === 'transition-export-json') exportTaxTransition();
+    else if (action === 'transition-print') window.print();
+    else if (action === 'sefaz-open-secure-mode') openSefazSecureMode();
+    else if (action === 'sefaz-add-certificate') openSefazCertificateForm();
+    else if (action === 'sefaz-save-certificate') saveSefazCertificate();
+    else if (action === 'sefaz-test-certificate') openSefazTestModal(actionEl.getAttribute('data-id'));
+    else if (action === 'sefaz-run-test') testSefazCertificate();
+    else if (action === 'sefaz-delete-certificate') deleteSefazCertificate(actionEl.getAttribute('data-id'));
+    else if (action === 'sefaz-sync-distribution') syncSefazDistribution();
+    else if (action === 'sefaz-select-nfse-monthly-package') $('#sefaz-nfse-monthly-file').click();
+    else if (action === 'sefaz-generate-xml-batch') generateSefazXmlBatch();
+    else if (action === 'sefaz-open-distributed') openSefazDistributedDocument(actionEl.getAttribute('data-id'));
+    else if (action === 'sefaz-query') consultSefazDocument();
+    else if (action === 'sefaz-open-nfse-public') openNfsePublicConsultation();
+    else if (action === 'sefaz-clear-query' || action === 'sefaz-new-query') {
+      if ($('#sefaz-access-key')) $('#sefaz-access-key').value = '';
+      if ($('#sefaz-document-file')) $('#sefaz-document-file').value = '';
+      if ($('#sefaz-session-password')) $('#sefaz-session-password').value = '';
+      updateSefazKeyFeedback(); renderSefazResult(null);
+      if ($('#sefaz-access-key')) $('#sefaz-access-key').focus();
+    }
+    else if (action === 'sefaz-copy-key') { var selectedKey = sefazState.selectedResult && sefazState.selectedResult.accessKey; if (selectedKey) navigator.clipboard.writeText(selectedKey).then(function () { toast('Chave copiada', 'A chave de acesso foi enviada para a área de transferência.'); }); }
+    else if (action === 'sefaz-result-tab') { $$('.sefaz-result-tabs button').forEach(function (button) { button.classList.toggle('active', button === actionEl); }); $$('.sefaz-result-panel').forEach(function (panel) { panel.classList.toggle('active', panel.getAttribute('data-result-panel') === actionEl.getAttribute('data-tab')); }); }
+    else if (action === 'sefaz-open-history') openSefazHistory(actionEl.getAttribute('data-id'));
+    else if (action === 'sefaz-refresh') loadSefazData();
+    else if (action === 'sefaz-export-json') exportSefazResult('json');
+    else if (action === 'sefaz-export-csv') exportSefazResult('csv');
+    else if (action === 'sefaz-print-mirror') printSefazMirror();
+    else if (action === 'sefaz-download-xml') downloadSefazXml(actionEl.getAttribute('data-id'));
+    else if (action === 'sefaz-download-distributed-xml') downloadSefazDistributedXml(actionEl.getAttribute('data-id'));
+    else if (action === 'sefaz-read-code') $('#sefaz-code-image').click();
+    else if (action === 'sefaz-batch') $('#sefaz-batch-file').click();
+    else if (action === 'sefaz-permissions') openSefazPermissions();
+    else if (action === 'sefaz-save-permissions') saveSefazPermissions();
+    else if (action === 'clear-filters') { state.filters = {}; route(); }
+    else if (action === 'obligation-info') showObligationInfo(actionEl.getAttribute('data-name'));
+    else if (action === 'history-calc') toast('Histórico utilizado', 'O RBT12 salvo no cadastro já está aplicado ao cálculo.');
+    else if (action === 'company-established' || action === 'first-year') { $$('.segment').forEach(function (el) { el.classList.toggle('active', el === actionEl); }); toast('Modalidade selecionada', action === 'first-year' ? 'O RBT12 proporcionalizado será considerado.' : 'O RBT12 real será considerado.'); }
+    else if (action === 'prev-annex') changeAnnex('', -1);
+    else if (action === 'next-annex') changeAnnex('', 1);
+    else if (action === 'calculate-payroll') {
+      state.settings.payrollEmployees = Number($('#payroll-employees').value || 0);
+      state.settings.payrollSalary = Number($('#payroll-salary').value || 0);
+      persist();
+      audit('Folha simulada', currentClient().name + ' · ' + state.settings.payrollEmployees + ' empregados');
+      toast('Folha recalculada', 'Os indicadores foram atualizados.');
+      route();
+    }
+    else if (action === 'calculate-prolabore') {
+      state.settings.proLaboreBase = Number($('#prolabore-base').value || 0);
+      state.settings.proLaboreDependents = Number($('#prolabore-dependents').value || 0);
+      state.settings.proLaboreDeductions = Number($('#prolabore-deductions').value || 0);
+      persist();
+      audit('Pró-labore simulado', money(state.settings.proLaboreBase));
+      toast('Simulação recalculada', 'As retenções foram atualizadas com os valores informados.');
+      route();
+    }
+    else if (action === 'law-filter') {
+      $$('.pill-tab').forEach(function (el) { el.classList.toggle('active', el === actionEl); });
+      var area = actionEl.getAttribute('data-area');
+      var filtered = OFFICIAL_SOURCES.concat(state.customLegal).filter(function (s) { return !area || s.area === area; });
+      $('#legal-grid').innerHTML = filtered.map(legalCard).join('');
+    } else if (action === 'search-open') {
+      var targetRoute = actionEl.getAttribute('data-route-target');
+      var targetUrl = actionEl.getAttribute('data-url');
+      closeSearch();
+      if (targetRoute) navigate(targetRoute);
+      else if (targetUrl) window.open(targetUrl, '_blank', 'noopener');
+    }
+  });
+
+  document.addEventListener('input', function (event) {
+    if (event.target.id === 'signup-document') {
+      event.target.value = formatSignupDocument(event.target.value);
+    } else if (event.target.id === 'signup-phone') {
+      event.target.value = formatSignupPhone(event.target.value);
+    } else if (event.target.id === 'client-document') {
+      var rawDocument = String(event.target.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 14);
+      event.target.value = rawDocument.length > 11 ? formatCnpj(rawDocument) : rawDocument;
+      var feedback = $('#client-cnpj-feedback');
+      if (feedback && feedback.classList.contains('error')) {
+        feedback.className = 'client-cnpj-feedback';
+        feedback.innerHTML = '<span>i</span><div><b>Pronto para consultar</b><small>Informe um CNPJ válido e use o botão “Consultar e preencher”.</small></div>';
+      }
+    } else if (event.target.id === 'calc-month' || event.target.id === 'calc-rbt12') {
+      updateDasSimulation(true);
+    } else if (event.target.id === 'payroll-employees' || event.target.id === 'payroll-salary') {
+      updatePayrollSimulation(true);
+    } else if (event.target.id === 'prolabore-base' || event.target.id === 'prolabore-dependents' || event.target.id === 'prolabore-deductions') {
+      updateProLaboreSimulation(true);
+    } else if (event.target.id === 'filter-query') {
+      state.filters.query = event.target.value;
+      window.clearTimeout(state.filterTimer);
+      state.filterTimer = window.setTimeout(route, 180);
+    } else if (event.target.id === 'global-search') {
+      state.searchIndex = 0;
+      renderSearch(event.target.value);
+    } else if (event.target.id === 'portfolio-query') {
+      filterPortfolioDashboard();
+    } else if (event.target.id === 'mei-query') {
+      meiControlUi().query = event.target.value;
+      window.clearTimeout(state.meiSearchTimer);
+      state.meiSearchTimer = window.setTimeout(function () { storageSet(KEYS.settings, state.settings); refreshMeiControl(true, true); }, 80);
+    } else if (event.target.matches('[data-mei-entry-input]')) {
+      updateMeiEntryPreview();
+    } else if (event.target.id === 'accounting-query') {
+      var accountingSearchUi = accountingUi(); accountingSearchUi.query = event.target.value; accountingSearchUi.view = 'search'; accountingSearchUi.letter = '';
+      window.clearTimeout(state.accountingSearchTimer); state.accountingSearchTimer = window.setTimeout(function () { refreshAccountingResults(true); }, 80);
+    } else if (event.target.id === 'accounting-example-value') {
+      updateAccountingExample();
+    } else if (event.target.id === 'forms-query') {
+      formsUi().query = event.target.value; window.clearTimeout(state.formsSearchTimer); state.formsSearchTimer = window.setTimeout(function () { refreshFormsResults(true); }, 80);
+    } else if (event.target.id === 'contracts-query') {
+      contractsUi().query = event.target.value; contractsUi().page = 1; window.clearTimeout(state.contractsSearchTimer); state.contractsSearchTimer = window.setTimeout(function () { refreshContractsResults(true); }, 80);
+    } else if (event.target.id === 'icms-benefit-query') {
+      window.clearTimeout(state.icmsBenefitTimer);
+      state.icmsBenefitTimer = window.setTimeout(updateTaxBenefitsPanel, 120);
+    } else if (event.target.id === 'icms-operation-value') {
+      updateInterstateSimulation();
+    } else if (event.target.id === 'icms-table-search') {
+      filterIcmsStateTable();
+    } else if (event.target.id === 'iss-service-query') {
+      filterIssRates();
+    } else if (event.target.id === 'iss-operation-value') {
+      updateIssEstimate();
+    } else if (['cest-filter-ncm', 'cest-filter-code', 'cest-filter-keyword'].indexOf(event.target.id) >= 0) {
+      window.clearTimeout(state.cestFilterTimer);
+      state.cestFilterTimer = window.setTimeout(function () { renderCestResults(true); }, 90);
+    } else if (event.target.matches('[data-rental-input]')) {
+      updateRentalSimulator();
+    } else if (event.target.matches('[data-overtime-input]')) {
+      updateOvertimeNightCalculator(true);
+    } else if (event.target.matches('[data-termination-input]')) {
+      updateTerminationSimulator(true);
+    } else if (event.target.matches('[data-unemployment-input]')) {
+      updateUnemploymentCalculator(true);
+    } else if (event.target.matches('[data-gps-input]')) {
+      updateGpsLateCalculator(true);
+    } else if (event.target.matches('[data-irrf-effective-input]')) {
+      updateIrrfEffectiveRate(true);
+    } else if (event.target.matches('[data-alimony-input]')) {
+      updateAlimonyCalculator(true);
+    } else if (event.target.matches('[data-balance-input]')) {
+      updateBalanceAnalysis(true);
+    } else if (event.target.matches('[data-transition-input]')) {
+      updateTaxTransition(true);
+    } else if (event.target.id === 'sefaz-access-key') {
+      updateSefazKeyFeedback();
+    } else if (event.target.id === 'sefaz-filter-company') {
+      window.clearTimeout(sefazState.filterTimer);
+      sefazState.filterTimer = window.setTimeout(loadSefazData, 260);
+    }
+  });
+
+  document.addEventListener('change', function (event) {
+    var map = { 'filter-regime': 'regime', 'filter-activity': 'activity', 'filter-status': 'status', 'filter-responsible': 'responsible' };
+    if (event.target.id === 'signup-segment') updateSignupActivities();
+    else if (event.target.id === 'signup-plan' || event.target.id === 'signup-billing-cycle') updateSignupPlanSummary();
+    else if (map[event.target.id]) { state.filters[map[event.target.id]] = event.target.value; route(); }
+    else if (event.target.id === 'header-client-select') { setSelectedClient(event.target.value); audit('Cliente selecionado', currentClient().name); route(); }
+    else if (event.target.id === 'diagnosis-client') { setSelectedClient(event.target.value); route(); }
+    else if (event.target.id === 'mei-client-filter' || event.target.id === 'mei-year-filter' || event.target.id === 'mei-month-filter') {
+      var meiFilterMap = { 'mei-client-filter': 'clientId', 'mei-year-filter': 'year', 'mei-month-filter': 'month' };
+      meiControlUi()[meiFilterMap[event.target.id]] = event.target.value;
+      storageSet(KEYS.settings, state.settings); refreshMeiControl(true);
+    }
+    else if (event.target.id === 'mei-entry-account') updateMeiEntryPreview();
+    else if (event.target.id === 'annex-select') changeAnnex(event.target.value, 0);
+    else if (event.target.id === 'calc-year') { state.settings.dasYear = event.target.value; updateDasSimulation(true); toast('Ano atualizado', 'O demonstrativo foi recalculado imediatamente para ' + event.target.value + '.'); }
+    else if (event.target.id === 'icms-benefit-state') { updateTaxBenefitsPanel(); storageSet(KEYS.settings, state.settings); }
+    else if (event.target.id === 'icms-origin' || event.target.id === 'icms-destination' || event.target.id === 'icms-imported-product') updateInterstateSimulation();
+    else if (event.target.id === 'icms-table-region') filterIcmsStateTable();
+    else if (event.target.id === 'iss-capital-select') selectIssCapital(event.target.value);
+    else if (event.target.id === 'iss-service-group') filterIssRates();
+    else if (event.target.id === 'accounting-category') { accountingUi().category = event.target.value; accountingUi().view = 'index'; refreshAccountingResults(false); }
+    else if (event.target.id === 'accounting-applicability') { accountingUi().applicability = event.target.value; accountingUi().view = 'index'; refreshAccountingResults(false); }
+    else if (event.target.id === 'accounting-favorites-filter') { accountingUi().favoritesOnly = event.target.checked; accountingUi().view = 'index'; refreshAccountingResults(false); }
+    else if (event.target.id === 'forms-type') { formsUi().type = event.target.value; refreshFormsResults(false); }
+    else if (event.target.id === 'forms-favorites-filter') { formsUi().favoritesOnly = event.target.checked; refreshFormsResults(false); }
+    else if (event.target.id === 'contracts-group') { contractsUi().group = event.target.value; contractsUi().page = 1; refreshContractsResults(false); }
+    else if (event.target.id === 'contracts-favorites-filter') { contractsUi().favoritesOnly = event.target.checked; contractsUi().page = 1; refreshContractsResults(false); }
+    else if (['portfolio-responsible', 'portfolio-regime', 'portfolio-stage', 'portfolio-status'].indexOf(event.target.id) >= 0) filterPortfolioDashboard();
+    else if (event.target.id === 'portfolio-progress-stage') { var selectedPortfolioStage = portfolioStage(event.target.value); if ($('#portfolio-progress-value')) $('#portfolio-progress-value').value = selectedPortfolioStage.progress; }
+    else if (event.target.matches('[data-kanban-move]')) moveKanbanCard(event.target.getAttribute('data-id'), event.target.value);
+    else if (['cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
+    else if (event.target.id === 'rental-year') {
+      var rates = rentalYearRates(event.target.value);
+      if (rates) { if ($('#rental-ibs-rate')) $('#rental-ibs-rate').value = rates.ibs; if ($('#rental-cbs-rate')) $('#rental-cbs-rate').value = rates.cbs; }
+      updateRentalSimulator();
+    }
+    else if (event.target.matches('[data-rental-input]')) updateRentalSimulator();
+    else if (event.target.id === 'overtime-employee-type') applyOvertimeEmployeeDefaults();
+    else if (event.target.matches('[data-overtime-input]')) updateOvertimeNightCalculator(true);
+    else if (event.target.id === 'termination-reason') applyTerminationReasonDefaults();
+    else if (event.target.matches('[data-termination-input]')) updateTerminationSimulator(true);
+    else if (event.target.matches('[data-unemployment-input]')) updateUnemploymentCalculator(true);
+    else if (event.target.id === 'gps-category') applyGpsCategoryDefaults();
+    else if (event.target.id === 'gps-competence') suggestGpsDue(false);
+    else if (event.target.matches('[data-gps-input]')) updateGpsLateCalculator(true);
+    else if (event.target.matches('[data-irrf-effective-input]')) updateIrrfEffectiveRate(true);
+    else if (event.target.matches('[data-alimony-input]')) updateAlimonyCalculator(true);
+    else if (event.target.matches('[data-balance-input]')) updateBalanceAnalysis(true);
+    else if (event.target.matches('[data-transition-input]')) updateTaxTransition(true);
+    else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
+    else if (event.target.id === 'json-file-input') processImportedFile(event.target.files && event.target.files[0]);
+    else if (event.target.id === 'profile-photo-input') saveProfilePhoto(event.target.files && event.target.files[0]);
+    else if (event.target.id === 'sefaz-code-image') handleSefazCodeImage(event.target.files && event.target.files[0]);
+    else if (event.target.id === 'sefaz-batch-file') runSefazBatch(event.target.files && event.target.files[0]);
+    else if (event.target.id === 'sefaz-nfse-monthly-file') importNfseMonthlyPackage(event.target.files);
+    else if (event.target.id === 'sefaz-document-kind') {
+      if ($('#sefaz-access-key')) $('#sefaz-access-key').value = '';
+      if ($('#sefaz-document-file')) $('#sefaz-document-file').value = '';
+      updateSefazKeyFeedback(); renderSefazResult(null);
+      if ($('#sefaz-access-key')) $('#sefaz-access-key').focus();
+    }
+    else if (event.target.id === 'sefaz-distribution-certificate') updateSefazDistributionContext();
+    else if (event.target.id === 'sefaz-xml-batch-certificate' || event.target.id === 'sefaz-xml-batch-month') updateSefazXmlBatchContext();
+    else if (event.target.id === 'sefaz-xml-batch-environment') { event.target.dataset.userSelected = '1'; updateSefazXmlBatchContext(); }
+    else if (event.target.id === 'sefaz-distribution-direction') renderSefazDistributedDocuments();
+    else if (['sefaz-filter-model', 'sefaz-filter-status', 'sefaz-filter-from', 'sefaz-filter-to'].indexOf(event.target.id) >= 0) loadSefazData();
+  });
+
+  document.addEventListener('dragstart', function (event) {
+    var card = event.target && event.target.closest ? event.target.closest('[data-kanban-card]') : null;
+    if (!card || !event.dataTransfer || event.target.closest('button,select,input,textarea,a,label')) return;
+    state.kanbanDraggingId = card.getAttribute('data-id');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', state.kanbanDraggingId);
+    card.classList.add('is-dragging');
+  });
+  document.addEventListener('dragover', function (event) {
+    var column = event.target && event.target.closest ? event.target.closest('[data-kanban-column]') : null;
+    if (!column || !state.kanbanDraggingId) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    $$('.kanban-column.is-drop-target').forEach(function (item) { if (item !== column) item.classList.remove('is-drop-target'); });
+    column.classList.add('is-drop-target');
+  });
+  document.addEventListener('dragleave', function (event) {
+    var column = event.target && event.target.closest ? event.target.closest('[data-kanban-column]') : null;
+    if (column && (!event.relatedTarget || !column.contains(event.relatedTarget))) column.classList.remove('is-drop-target');
+  });
+  document.addEventListener('drop', function (event) {
+    var column = event.target && event.target.closest ? event.target.closest('[data-kanban-column]') : null;
+    if (!column) return;
+    event.preventDefault();
+    var id = state.kanbanDraggingId || (event.dataTransfer && event.dataTransfer.getData('text/plain'));
+    var targetCard = event.target.closest('[data-kanban-card]');
+    var beforeId = targetCard && targetCard.getAttribute('data-id') !== id ? targetCard.getAttribute('data-id') : '';
+    state.kanbanDraggingId = '';
+    if (id) moveKanbanCard(id, column.getAttribute('data-kanban-column'), beforeId);
+  });
+  document.addEventListener('dragend', function () {
+    state.kanbanDraggingId = '';
+    $$('.kanban-card.is-dragging').forEach(function (card) { card.classList.remove('is-dragging'); });
+    $$('.kanban-column.is-drop-target').forEach(function (column) { column.classList.remove('is-drop-target'); });
+  });
+
+  document.addEventListener('keydown', function (event) {
+    var issCapitalTrigger = event.target && event.target.closest ? event.target.closest('[data-action="iss-select-capital"]') : null;
+    if (issCapitalTrigger && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); selectIssCapital(issCapitalTrigger.getAttribute('data-uf')); return; }
+    if (event.target && event.target.id === 'sefaz-access-key' && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); consultSefazDocument(); return; }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openSearch(); }
+    if (event.key === 'Escape') { closeSearch(); closeModal(); }
+    if (!$('#search-layer').classList.contains('is-hidden')) {
+      var items = searchItems($('#global-search').value);
+      if (event.key === 'ArrowDown') { event.preventDefault(); state.searchIndex = Math.min(items.length - 1, state.searchIndex + 1); renderSearch($('#global-search').value); }
+      else if (event.key === 'ArrowUp') { event.preventDefault(); state.searchIndex = Math.max(0, state.searchIndex - 1); renderSearch($('#global-search').value); }
+      else if (event.key === 'Enter') {
+        event.preventDefault();
+        var selected = $('.search-result.active');
+        if (selected) selected.click();
+      }
+    }
+  });
+
+  document.addEventListener('submit', function (event) {
+    if (event.target.id === 'password-reset-identify-form') { event.preventDefault(); verifyPasswordReset(); }
+    else if (event.target.id === 'password-reset-new-form') { event.preventDefault(); savePasswordReset(); }
+  });
+
+  $('#login-form').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    try {
+      var result = await loginUser($('#login-email').value, $('#login-password').value);
+      if (!result || !result.user) throw new Error('Confira o e-mail, a senha e a vigência da assinatura.');
+      apiToken = result.token || '';
+      if (apiToken) sessionStorage.setItem('simplescalc.apiToken', apiToken);
+      await showApp(result.user, true);
+      audit('Sessão iniciada', result.user.email + ' · ' + result.user.role);
+      toast('Acesso autorizado', 'Bem-vindo, ' + result.user.name + '.');
+    } catch (error) {
+      toast('Não foi possível entrar', error.message || 'Confira as credenciais.', 'error');
+    }
+  });
+  $('#register-form').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    if (!form.reportValidity()) return;
+    if (!apiEnabled()) {
+      toast('Abra o modo seguro', 'O cadastro permanente funciona pelo ABRIR-MODO-SEGURO.cmd.', 'warning');
+      return;
+    }
+    var data = Object.fromEntries(new FormData(form).entries());
+    data.acceptedTerms = $('#signup-terms').checked;
+    var submit = form.querySelector('[type="submit"]');
+    var originalLabel = submit.innerHTML;
+    submit.disabled = true;
+    submit.innerHTML = 'Criando conta... <span>◌</span>';
+    try {
+      var registration = await apiRequest('/api/register', { method: 'POST', body: JSON.stringify(data) });
+      var result = await loginUser(data.email, data.password);
+      apiToken = result.token || '';
+      if (apiToken) sessionStorage.setItem('simplescalc.apiToken', apiToken);
+      form.reset(); setSignupDocumentType('CNPJ'); updateSignupActivities(); renderSignupPlans();
+      await showApp(result.user, true);
+      audit('Conta criada', data.email + ' · ' + (registration.user && registration.user.planName || 'Plano contratado'));
+      toast('Conta criada com sucesso', 'Seu período de avaliação foi ativado e você já está dentro da plataforma.');
+    } catch (error) {
+      toast('Não foi possível criar a conta', error.message || 'Revise os dados informados.', 'error');
+    } finally {
+      submit.disabled = false;
+      submit.innerHTML = originalLabel;
+    }
+  });
+  $('#modal-layer').addEventListener('click', function (event) { if (event.target === event.currentTarget) closeModal(); });
+  $('#search-layer').addEventListener('click', function (event) { if (event.target === event.currentTarget) closeSearch(); });
+  window.addEventListener('hashchange', route);
+  window.addEventListener('resize', function () {
+    if (state.route !== 'controle-mei') return;
+    window.clearTimeout(state.meiResizeTimer);
+    state.meiResizeTimer = window.setTimeout(drawMeiControlCharts, 120);
+  });
+
+  seed();
+  updateSignupActivities();
+  renderSignupPlans();
+  updateBrazilClock();
+  window.setInterval(updateBrazilClock, 1000);
+  var savedSession = null;
+  try { savedSession = JSON.parse(sessionStorage.getItem(KEYS.auth) || 'null'); } catch (error) {}
+  if (savedSession && savedSession.name && savedSession.role) showApp(savedSession);
+})();

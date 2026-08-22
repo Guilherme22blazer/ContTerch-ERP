@@ -1,0 +1,27 @@
+{
+  "schema": "simplescalc.clients.v1",
+  "exportedAt": "2026-08-14T12:00:00-03:00",
+  "clients": [
+    {
+      "name": "EMPRESA DEMONSTRAÇÃO LTDA",
+      "document": "08.123.456/0001-95",
+      "tradeName": "Empresa Demo",
+      "email": "contato@empresa-demo.test",
+      "phone": "(11) 99999-0000",
+      "regime": "Simples Nacional",
+      "activity": "Serviços administrativos",
+      "cnae": "8211-3/00",
+      "status": "Ativo",
+      "responsible": "Ana Martins",
+      "startDate": "2024-02-01",
+      "city": "São Paulo / SP",
+      "revenueMonth": 18000,
+      "revenue12": 204000,
+      "annex": "Anexo III — Serviços",
+      "employees": 2,
+      "notes": "Registro de exemplo para validar a importação.",
+      "obligations": ["PGDAS-D", "DEFIS", "DCTFWeb", "eSocial", "NFS-e"],
+      "analyses": []
+    }
+  ]
+}

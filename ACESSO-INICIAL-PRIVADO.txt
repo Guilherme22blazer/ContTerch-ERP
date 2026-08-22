@@ -1,0 +1,15 @@
+CONTTECH ERP — ACESSO INICIAL DO PACOTE PRIVADO
+
+Administrador
+E-mail: admin@simplescalc.pro
+Senha temporária: PWC_7HEQPCOV2tRenY2w_HBK
+
+Usuário de consulta
+E-mail: usuario@simplescalc.pro
+Senha temporária: IpAykr191gnrn3KX4zT7xHh6
+
+IMPORTANTE
+- As senhas antigas de demonstração foram substituídas somente nesta cópia de hospedagem.
+- Entre no sistema e troque as duas senhas antes de divulgar o endereço.
+- Depois da troca, apague este arquivo do servidor e guarde-o somente em local seguro.
+- Nunca envie este arquivo, a pasta app/data ou o arquivo ZIP para uma pasta pública do site.
