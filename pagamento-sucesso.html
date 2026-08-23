@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pagamento — ContTech ERP</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }
+  .card { background: #1e293b; border-radius: 16px; padding: 40px; max-width: 460px; width: 100%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .icon { font-size: 48px; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { color: #94a3b8; line-height: 1.5; }
+  button, a.button { display: inline-block; margin-top: 20px; background: #16a34a; color: white; border: none; padding: 12px 28px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; text-decoration: none; }
+  button:disabled { opacity: .6; cursor: not-allowed; }
+  .muted { font-size: 13px; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon" id="icon">⏳</div>
+    <h1 id="title">Confirmando seu pagamento...</h1>
+    <p id="message">Aguarde um instante enquanto confirmamos com o Stripe.</p>
+    <div id="action"></div>
+  </div>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get("session_id");
+    const iconEl = document.getElementById("icon");
+    const titleEl = document.getElementById("title");
+    const messageEl = document.getElementById("message");
+    const actionEl = document.getElementById("action");
+
+    async function checkStatus(attempt) {
+      if (!sessionId) {
+        iconEl.textContent = "⚠️";
+        titleEl.textContent = "Sessão de pagamento não encontrada";
+        messageEl.textContent = "Volte à página de cadastro e tente novamente.";
+        return;
+      }
+      try {
+        const res = await fetch(`/api/billing/status?session_id=${encodeURIComponent(sessionId)}`);
+        const data = await res.json();
+        if (data.active) {
+          iconEl.textContent = "✅";
+          titleEl.textContent = "Pagamento realizado com sucesso!";
+          messageEl.textContent = "Sua assinatura foi ativada.";
+          actionEl.innerHTML = '<a class="button" href="/">Acessar meu sistema</a>';
+          return;
+        }
+        if (data.pending && attempt < 15) {
+          setTimeout(() => checkStatus(attempt + 1), 2000);
+          return;
+        }
+        iconEl.textContent = "⚠️";
+        titleEl.textContent = "Ainda processando";
+        messageEl.textContent = "O pagamento pode levar alguns instantes para ser confirmado. Você pode tentar fazer login em breve.";
+        actionEl.innerHTML = '<a class="button" href="/">Ir para o login</a>';
+      } catch (error) {
+        iconEl.textContent = "⚠️";
+        titleEl.textContent = "Não foi possível confirmar agora";
+        messageEl.textContent = "Tente novamente em instantes.";
+      }
+    }
+    checkStatus(0);
+  </script>
+</body>
+</html>

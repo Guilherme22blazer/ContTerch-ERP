@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 import bcrypt
+import stripe
 
 import db
 
@@ -77,6 +78,17 @@ PORT = int(os.environ.get("SIMPLESCALC_PORT") or os.environ.get("PORT") or "4173
 PRODUCTION_MODE = os.environ.get("CONTTECH_PRODUCTION", "0") == "1"
 SESSION_SECONDS = 8 * 60 * 60
 REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60
+
+# Stripe Billing (cadastro pago). STRIPE_SECRET_KEY/STRIPE_WEBHOOK_SECRET só
+# existem no backend; nunca são enviadas ao navegador.
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+APP_URL = os.environ.get("APP_URL", f"http://{os.environ.get('SIMPLESCALC_HOST', '127.0.0.1')}:{os.environ.get('SIMPLESCALC_PORT', '4173')}").rstrip("/")
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
+# Assinaturas com status nestes valores não têm acesso liberado ao ERP.
+BLOCKED_SUBSCRIPTION_STATUSES = {"CANCELADA", "BLOQUEADA", "VENCIDA"}
 MASTER_KEY_PATH = DATA_DIR / ".gestao-fiscal.key"
 SESSION_CERT_PASSWORDS: dict[tuple[str, str], str] = {}
 CNPJ_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
@@ -2027,15 +2039,19 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 """
                 SELECT u.id, u.email, u.name, u.role, u.status, u.plan_id,
                        u.monitoring_start, u.monitoring_end, u.company_id, u.perfil_id,
-                       r.nome AS perfil_nome, s.token
+                       r.nome AS perfil_nome, c.status AS company_status, s.token
                 FROM sessions s
                 JOIN users u ON u.email = s.email
                 LEFT JOIN roles r ON r.id = u.perfil_id
+                LEFT JOIN companies c ON c.id = u.company_id
                 WHERE s.token = ? AND s.expires_at >= ? AND u.active = 1
                   AND u.status NOT IN ('Inativo', 'Bloqueado', 'Aguardando ativação')
                 """,
                 (token, int(time.time())),
             ).fetchone()
+            if user is not None and (user["perfil_nome"] or "") != "SUPER_ADMIN" and user["company_status"] in BLOCKED_SUBSCRIPTION_STATUSES:
+                database.execute("DELETE FROM sessions WHERE token = ?", (token,))
+                user = None
         if user is None:
             for password_key in [item for item in SESSION_CERT_PASSWORDS if item[0] == token]:
                 SESSION_CERT_PASSWORDS.pop(password_key, None)
@@ -2266,6 +2282,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     "maxUsers": row["max_users"], "trialDays": row["trial_days"],
                     "status": row["status"], "modules": plan_modules.get(row["id"], []),
                     "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+                    "stripeProductId": row["stripe_product_id"] or "",
+                    "stripePriceIdMonthly": row["stripe_price_id_monthly"] or "",
+                    "stripePriceIdYearly": row["stripe_price_id_yearly"] or "",
                 }
                 for row in plan_rows
             ]
@@ -2374,7 +2393,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         with connect() as database:
             plan = database.execute(
                 """
-                SELECT id, name, monthly_value, annual_value, trial_days
+                SELECT id, name, monthly_value, annual_value, trial_days,
+                       stripe_price_id_monthly, stripe_price_id_yearly
                 FROM access_plans
                 WHERE id = ? AND status = 'Ativo'
                   AND id IN ('erp-start', 'erp-profissional', 'erp-business', 'erp-enterprise')
@@ -2406,13 +2426,17 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             user_id = uuid.uuid4().hex
             salt, hashed, algo = hash_password(password)
             company_id = uuid.uuid4().hex
+            subscription_id = uuid.uuid4().hex
             # role legado permanece 'Usuário' (comportamento já existente); o
             # perfil RBAC granular acompanha o mesmo nível de acesso.
             default_role = database.execute("SELECT id FROM roles WHERE nome = 'USER'").fetchone()["id"]
+            # A conta só é ativada (seção 32/1 da especificação de cobrança)
+            # quando o webhook do Stripe confirmar o pagamento; até lá,
+            # 'Aguardando ativação' já bloqueia o login (ver authenticated_user).
             database.execute(
                 """
                 INSERT INTO companies(id, razao_social, nome_fantasia, cnpj, email, telefone, status, plano_id, data_inicio, data_vencimento, criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, 'ATIVA', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'AGUARDANDO_PAGAMENTO', ?, ?, ?, ?, ?)
                 """,
                 (
                     company_id, company, company, document if document_type == "CNPJ" else None, email, phone,
@@ -2426,10 +2450,10 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             database.execute(
                 """
                 INSERT INTO subscriptions(id, empresa_id, plano_id, data_inicio, data_fim, status, periodicidade, criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, 'TESTE', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, 'AGUARDANDO_PAGAMENTO', ?, ?, ?)
                 """,
                 (
-                    uuid.uuid4().hex, company_id, plan["id"], start_date.isoformat(), end_date.isoformat(),
+                    subscription_id, company_id, plan["id"], start_date.isoformat(), end_date.isoformat(),
                     "ANUAL" if billing_cycle == "Anual" else "MENSAL", now, now,
                 ),
             )
@@ -2447,7 +2471,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                   company_document, job_title, department, login, status, plan_id, notes,
                   billing_cycle, subscription_value, monitoring_start, monitoring_end,
                   created_at, updated_at, created_by, updated_by, company_id, perfil_id, primeiro_acesso
-                ) VALUES (?, ?, ?, 'Usuário', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'Ativo', ?, ?, ?, ?, ?, ?, ?, ?, 'Cadastro público', 'Cadastro público', ?, ?, FALSE)
+                ) VALUES (?, ?, ?, 'Usuário', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'Aguardando ativação', ?, ?, ?, ?, ?, ?, ?, ?, 'Cadastro público', 'Cadastro público', ?, ?, FALSE)
                 """,
                 (
                     user_id, email, responsible, salt, hashed, algo, document, phone,
@@ -2474,12 +2498,235 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 {"planId": plan["id"], "billingCycle": billing_cycle, "trialEndsAt": end_date.isoformat()},
                 self.client_ip(),
             )
+            checkout_url = self.create_checkout_session(
+                database, company_id=company_id, subscription_id=subscription_id, user_id=user_id,
+                plan=plan, billing_cycle=billing_cycle, email=email,
+            )
         return {
             "id": user_id, "email": email, "name": responsible, "planId": plan["id"],
             "planName": plan["name"], "billingCycle": billing_cycle,
             "subscriptionValue": subscription_value, "monitoringStart": start_date.isoformat(),
             "monitoringEnd": end_date.isoformat(), "trialDays": trial_days,
+            "checkoutUrl": checkout_url,
         }
+
+    def create_checkout_session(
+        self, database, *, company_id: str, subscription_id: str, user_id: str,
+        plan: sqlite3.Row, billing_cycle: str, email: str,
+    ) -> str:
+        """Cria a Stripe Checkout Session (mode=subscription) para o plano
+        escolhido e devolve a URL para onde o frontend deve redirecionar."""
+        if not STRIPE_SECRET_KEY:
+            raise ValueError(
+                "Pagamentos ainda não configurados. Defina STRIPE_SECRET_KEY, "
+                "STRIPE_PUBLISHABLE_KEY e STRIPE_WEBHOOK_SECRET no servidor."
+            )
+        price_column = "stripe_price_id_yearly" if billing_cycle == "Anual" else "stripe_price_id_monthly"
+        price_id = plan[price_column]
+        if not price_id:
+            raise ValueError(
+                f"O plano '{plan['name']}' ainda não possui um Price ID do Stripe cadastrado "
+                f"({price_column}). Configure-o em /api/admin/plans."
+            )
+        trial_days = max(1, int(plan["trial_days"] or 0))
+        checkout_metadata = {
+            "userId": user_id, "companyId": company_id, "subscriptionId": subscription_id,
+            "planId": plan["id"], "email": email,
+        }
+        subscription_data = {"metadata": checkout_metadata}
+        if trial_days:
+            subscription_data["trial_period_days"] = trial_days
+        try:
+            session = stripe.checkout.Session.create(
+                mode="subscription",
+                customer_email=email,
+                client_reference_id=subscription_id,
+                line_items=[{"price": price_id, "quantity": 1}],
+                subscription_data=subscription_data,
+                success_url=f"{APP_URL}/pagamento/sucesso?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url=f"{APP_URL}/pagamento/cancelado",
+                metadata=checkout_metadata,
+            )
+        except stripe.error.StripeError as error:
+            raise ValueError(f"Não foi possível iniciar o pagamento: {error.user_message or str(error)}") from error
+        database.execute(
+            "UPDATE subscriptions SET stripe_customer_id = ?, stripe_checkout_session_id = ? WHERE id = ?",
+            (session.get("customer") or None, session.id, subscription_id),
+        )
+        return session.url
+
+    @staticmethod
+    def _stripe_timestamp_to_iso(value) -> str | None:
+        if not value:
+            return None
+        return dt.datetime.fromtimestamp(int(value), tz=dt.timezone.utc).isoformat()
+
+    @staticmethod
+    def _stripe_status_to_subscription_status(stripe_status: str) -> str:
+        return {
+            "active": "ATIVA", "trialing": "ATIVA",
+            "past_due": "INADIMPLENTE", "unpaid": "INADIMPLENTE",
+            "canceled": "CANCELADA", "incomplete_expired": "CANCELADA",
+            "incomplete": "PENDENTE", "paused": "BLOQUEADA",
+        }.get(stripe_status, "PENDENTE")
+
+    def handle_stripe_webhook(self) -> None:
+        """POST /api/stripe/webhook — recebe eventos oficiais do Stripe.
+        A assinatura (Stripe-Signature) é sempre validada com
+        STRIPE_WEBHOOK_SECRET antes de qualquer processamento."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 2_000_000:
+                raise ValueError("Corpo da requisição inválido.")
+            raw_body = self.rfile.read(length)
+        except ValueError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        if not STRIPE_WEBHOOK_SECRET:
+            self.send_json({"error": "STRIPE_WEBHOOK_SECRET não configurado."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        signature = self.headers.get("Stripe-Signature", "")
+        try:
+            event = stripe.Webhook.construct_event(raw_body, signature, STRIPE_WEBHOOK_SECRET)
+        except (stripe.error.SignatureVerificationError, ValueError):
+            self.send_json({"error": "Assinatura do webhook inválida."}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            with connect() as database:
+                inserted = database.execute(
+                    "INSERT INTO webhook_events(id, provider, event_type, processed_at) VALUES (?, 'stripe', ?, ?) ON CONFLICT (id) DO NOTHING",
+                    (event["id"], event["type"], local_now()),
+                ).rowcount
+                if not inserted:
+                    self.send_json({"ok": True, "duplicate": True})
+                    return
+                obj = event["data"]["object"]
+                if event["type"] == "checkout.session.completed":
+                    self._stripe_checkout_completed(database, obj)
+                elif event["type"] == "invoice.paid":
+                    self._stripe_invoice_paid(database, obj)
+                elif event["type"] == "invoice.payment_failed":
+                    self._stripe_invoice_payment_failed(database, obj)
+                elif event["type"] == "customer.subscription.updated":
+                    self._stripe_subscription_updated(database, obj)
+                elif event["type"] == "customer.subscription.deleted":
+                    self._stripe_subscription_deleted(database, obj)
+            self.audit("stripe", f"webhook_{event['type']}", event["id"])
+            self.send_json({"ok": True})
+        except Exception as error:  # nunca deixar o Stripe reenviar por bug interno silencioso
+            self.send_json({"error": f"Erro ao processar webhook: {error}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _stripe_checkout_completed(self, database, session: dict) -> None:
+        metadata = session.get("metadata") or {}
+        subscription_id = metadata.get("subscriptionId") or session.get("client_reference_id")
+        company_id = metadata.get("companyId")
+        if not subscription_id or not company_id:
+            return
+        stripe_subscription_id = session.get("subscription")
+        stripe_customer_id = session.get("customer")
+        current_period_start = current_period_end = None
+        stripe_price_id = None
+        if stripe_subscription_id:
+            stripe_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
+            current_period_start = self._stripe_timestamp_to_iso(stripe_subscription.get("current_period_start"))
+            current_period_end = self._stripe_timestamp_to_iso(stripe_subscription.get("current_period_end"))
+            items = stripe_subscription.get("items", {}).get("data", [])
+            stripe_price_id = items[0]["price"]["id"] if items else None
+        now = local_now()
+        database.execute(
+            """
+            UPDATE subscriptions SET status = 'ATIVA', stripe_customer_id = ?, stripe_subscription_id = ?,
+              stripe_price_id = ?, current_period_start = ?, current_period_end = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            (stripe_customer_id, stripe_subscription_id, stripe_price_id, current_period_start, current_period_end, now, subscription_id),
+        )
+        database.execute("UPDATE companies SET status = 'ATIVA', atualizado_em = ? WHERE id = ?", (now, company_id))
+        database.execute(
+            "UPDATE users SET status = 'Ativo', updated_at = ? WHERE company_id = ? AND status = 'Aguardando ativação'",
+            (now, company_id),
+        )
+        write_access_audit(database, "stripe", metadata.get("email", ""), "Pagamento confirmado — assinatura ativada", "", {"subscriptionId": subscription_id}, "")
+
+    def _subscription_row_for_stripe_id(self, database, stripe_subscription_id: str) -> sqlite3.Row | None:
+        return database.execute(
+            "SELECT * FROM subscriptions WHERE stripe_subscription_id = ?", (stripe_subscription_id,)
+        ).fetchone()
+
+    def _stripe_invoice_paid(self, database, invoice: dict) -> None:
+        stripe_subscription_id = invoice.get("subscription")
+        if not stripe_subscription_id:
+            return
+        row = self._subscription_row_for_stripe_id(database, stripe_subscription_id)
+        if row is None:
+            return
+        now = local_now()
+        database.execute(
+            "UPDATE subscriptions SET status = 'ATIVA', atualizado_em = ? WHERE id = ?",
+            (now, row["id"]),
+        )
+        database.execute("UPDATE companies SET status = 'ATIVA', atualizado_em = ? WHERE id = ?", (now, row["empresa_id"]))
+        database.execute(
+            """
+            INSERT INTO payments(id, empresa_id, subscription_id, stripe_payment_intent_id, stripe_invoice_id, amount, currency, status, payment_date, criado_em)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'paid', ?, ?)
+            """,
+            (
+                uuid.uuid4().hex, row["empresa_id"], row["id"], invoice.get("payment_intent"), invoice.get("id"),
+                (invoice.get("amount_paid") or 0) / 100.0, invoice.get("currency", "brl"), now, now,
+            ),
+        )
+
+    def _stripe_invoice_payment_failed(self, database, invoice: dict) -> None:
+        stripe_subscription_id = invoice.get("subscription")
+        if not stripe_subscription_id:
+            return
+        row = self._subscription_row_for_stripe_id(database, stripe_subscription_id)
+        if row is None:
+            return
+        now = local_now()
+        database.execute("UPDATE subscriptions SET status = 'INADIMPLENTE', atualizado_em = ? WHERE id = ?", (now, row["id"]))
+        database.execute(
+            """
+            INSERT INTO payments(id, empresa_id, subscription_id, stripe_payment_intent_id, stripe_invoice_id, amount, currency, status, payment_date, criado_em)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?)
+            """,
+            (
+                uuid.uuid4().hex, row["empresa_id"], row["id"], invoice.get("payment_intent"), invoice.get("id"),
+                (invoice.get("amount_due") or 0) / 100.0, invoice.get("currency", "brl"), now, now,
+            ),
+        )
+        write_access_audit(database, "stripe", "", "Pagamento recusado — assinatura inadimplente", "", {"subscriptionId": row["id"]}, "")
+
+    def _stripe_subscription_updated(self, database, subscription: dict) -> None:
+        row = self._subscription_row_for_stripe_id(database, subscription.get("id", ""))
+        if row is None:
+            return
+        items = subscription.get("items", {}).get("data", [])
+        now = local_now()
+        database.execute(
+            """
+            UPDATE subscriptions SET status = ?, stripe_price_id = ?, current_period_start = ?, current_period_end = ?,
+              cancel_at_period_end = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            (
+                self._stripe_status_to_subscription_status(subscription.get("status", "")),
+                items[0]["price"]["id"] if items else row["stripe_price_id"],
+                self._stripe_timestamp_to_iso(subscription.get("current_period_start")),
+                self._stripe_timestamp_to_iso(subscription.get("current_period_end")),
+                bool(subscription.get("cancel_at_period_end")), now, row["id"],
+            ),
+        )
+
+    def _stripe_subscription_deleted(self, database, subscription: dict) -> None:
+        row = self._subscription_row_for_stripe_id(database, subscription.get("id", ""))
+        if row is None:
+            return
+        now = local_now()
+        database.execute("UPDATE subscriptions SET status = 'CANCELADA', atualizado_em = ? WHERE id = ?", (now, row["id"]))
+        database.execute("UPDATE companies SET status = 'CANCELADA', atualizado_em = ? WHERE id = ?", (now, row["empresa_id"]))
+        write_access_audit(database, "stripe", "", "Assinatura cancelada no Stripe", "", {"subscriptionId": row["id"]}, "")
 
     def request_password_reset(self, payload: dict) -> dict:
         email = str(payload.get("email", "")).strip().lower()
@@ -2728,6 +2975,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 plan_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or uuid.uuid4().hex
                 if database.execute("SELECT 1 FROM access_plans WHERE id = ? OR lower(name) = lower(?)", (plan_id, name)).fetchone():
                     plan_id = uuid.uuid4().hex
+            stripe_fields = (
+                str(payload.get("stripeProductId", "")).strip() or None,
+                str(payload.get("stripePriceIdMonthly", "")).strip() or None,
+                str(payload.get("stripePriceIdYearly", "")).strip() or None,
+            )
             values = (
                 name, str(payload.get("description", "")).strip(), float(payload.get("monthlyValue", 0) or 0),
                 float(payload.get("annualValue", 0) or 0), max(1, int(payload.get("maxUsers", 1) or 1)),
@@ -2736,14 +2988,16 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             )
             if existing:
                 database.execute(
-                    "UPDATE access_plans SET name = ?, description = ?, monthly_value = ?, annual_value = ?, max_users = ?, trial_days = ?, status = ?, updated_at = ? WHERE id = ?",
-                    (*values, plan_id),
+                    "UPDATE access_plans SET name = ?, description = ?, monthly_value = ?, annual_value = ?, max_users = ?, trial_days = ?, status = ?, updated_at = ?, "
+                    "stripe_product_id = ?, stripe_price_id_monthly = ?, stripe_price_id_yearly = ? WHERE id = ?",
+                    (*values, *stripe_fields, plan_id),
                 )
                 action = "Administrador alterou plano"
             else:
                 database.execute(
-                    "INSERT INTO access_plans(id, name, description, monthly_value, annual_value, max_users, trial_days, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (plan_id, *values[:-1], now, now),
+                    "INSERT INTO access_plans(id, name, description, monthly_value, annual_value, max_users, trial_days, status, created_at, updated_at, "
+                    "stripe_product_id, stripe_price_id_monthly, stripe_price_id_yearly) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (plan_id, *values[:-1], now, now, *stripe_fields),
                 )
                 action = "Administrador criou plano"
             database.execute("DELETE FROM plan_modules WHERE plan_id = ?", (plan_id,))
@@ -3585,6 +3839,14 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             self.path = "/index.html"
             super().do_GET()
             return
+        if path == "/pagamento/sucesso":
+            self.path = "/pagamento-sucesso.html"
+            super().do_GET()
+            return
+        if path == "/pagamento/cancelado":
+            self.path = "/pagamento-cancelado.html"
+            super().do_GET()
+            return
         if path == "/api/health":
             self.send_json({"ok": True, "database": "postgresql", "version": "1.5", "dfeDistribution": True, "nfseNational": True, "nfseMonthlyPackage": True, "cnpjOfficialApi": bool(os.environ.get("SERPRO_CNPJ_CONSUMER_KEY") and os.environ.get("SERPRO_CNPJ_CONSUMER_SECRET"))})
             return
@@ -3614,6 +3876,29 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 ]
             })
             return
+        if path == "/api/billing/status":
+            # Consultado pela página /pagamento/sucesso. Nunca confia em
+            # parâmetros de URL: o status vem sempre do nosso banco,
+            # atualizado exclusivamente pelo webhook do Stripe.
+            session_id = parse_qs(parsed_url.query).get("session_id", [""])[0].strip()
+            if not session_id:
+                self.send_json({"error": "session_id é obrigatório."}, HTTPStatus.BAD_REQUEST)
+                return
+            with connect() as database:
+                row = database.execute(
+                    "SELECT status, empresa_id FROM subscriptions WHERE stripe_checkout_session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            if row is None:
+                self.send_json({"error": "Sessão de pagamento não encontrada."}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({
+                "status": row["status"],
+                "active": row["status"] == "ATIVA",
+                "pending": row["status"] == "AGUARDANDO_PAGAMENTO",
+            })
+            return
+
         if path == "/api/access":
             user = self.require_user()
             if user is None:
@@ -3731,7 +4016,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             with connect() as database:
                 rows = database.execute(
                     """
-                    SELECT s.*, c.razao_social, p.name AS plan_name FROM subscriptions s
+                    SELECT s.*, c.razao_social, c.email AS company_email, p.name AS plan_name,
+                           p.monthly_value, p.annual_value
+                    FROM subscriptions s
                     JOIN companies c ON c.id = s.empresa_id
                     JOIN access_plans p ON p.id = s.plano_id
                     WHERE (? = TRUE) OR s.empresa_id = ?
@@ -3739,7 +4026,35 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     """,
                     (super_admin, user["company_id"]),
                 ).fetchall()
-            self.send_json({"subscriptions": [dict(row) for row in rows]})
+            response = {"subscriptions": [dict(row) for row in rows]}
+            if super_admin:
+                counts: dict[str, int] = {}
+                mrr = 0.0
+                for row in rows:
+                    counts[row["status"]] = counts.get(row["status"], 0) + 1
+                    if row["status"] == "ATIVA":
+                        mrr += row["annual_value"] / 12 if row["periodicidade"] == "ANUAL" else row["monthly_value"]
+                response["summary"] = {
+                    "total": len(rows), "byStatus": counts,
+                    "mrr": round(mrr, 2), "arr": round(mrr * 12, 2),
+                }
+            self.send_json(response)
+            return
+
+        if path == "/api/billing/subscription":
+            user = self.require_user()
+            if user is None:
+                return
+            with connect() as database:
+                row = database.execute(
+                    """
+                    SELECT s.*, p.name AS plan_name, p.monthly_value, p.annual_value
+                    FROM subscriptions s JOIN access_plans p ON p.id = s.plano_id
+                    WHERE s.empresa_id = ? ORDER BY s.criado_em DESC LIMIT 1
+                    """,
+                    (user["company_id"],),
+                ).fetchone()
+            self.send_json({"subscription": dict(row) if row else None})
             return
 
         if path == "/api/users":
@@ -4183,6 +4498,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed_url = urlparse(self.path)
         path = self._alias_users_path(self.AUTH_PATH_ALIASES.get(parsed_url.path, parsed_url.path))
+
+        if path == "/api/stripe/webhook":
+            self.handle_stripe_webhook()
+            return
+
         try:
             payload = self.read_json() if path != "/api/logout" else {}
         except ValueError as error:
@@ -4225,6 +4545,64 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     HTTPStatus.CREATED,
                 )
             except (ValueError, db.IntegrityError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/checkout/resume":
+            # Seção 20/21: usuário criou conta mas fechou o Checkout sem
+            # pagar, ou quer tentar de novo após um pagamento recusado.
+            # Reautentica por e-mail/senha (sem emitir sessão) e gera uma
+            # nova Checkout Session apenas se ainda não houver assinatura ativa.
+            try:
+                email = str(payload.get("email", "")).strip().lower()
+                password = str(payload.get("password", ""))
+                with connect() as database:
+                    user = database.execute(
+                        "SELECT id, email, salt, password_hash, password_algo, company_id FROM users WHERE lower(email) = ?",
+                        (email,),
+                    ).fetchone()
+                    if user is None or not verify_password(password, user["salt"], user["password_hash"], user["password_algo"] or "pbkdf2"):
+                        raise ValueError("E-mail ou senha inválidos.")
+                    subscription = database.execute(
+                        "SELECT * FROM subscriptions WHERE empresa_id = ? ORDER BY criado_em DESC LIMIT 1",
+                        (user["company_id"],),
+                    ).fetchone()
+                    if subscription is None:
+                        raise ValueError("Nenhuma assinatura encontrada para esta conta.")
+                    if subscription["status"] == "ATIVA":
+                        raise ValueError("Esta conta já possui uma assinatura ativa.")
+                    plan = database.execute("SELECT * FROM access_plans WHERE id = ?", (subscription["plano_id"],)).fetchone()
+                    checkout_url = self.create_checkout_session(
+                        database, company_id=user["company_id"], subscription_id=subscription["id"],
+                        user_id=user["id"], plan=plan,
+                        billing_cycle="Anual" if subscription["periodicidade"] == "ANUAL" else "Mensal",
+                        email=user["email"],
+                    )
+                self.send_json({"ok": True, "checkoutUrl": checkout_url})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/billing/portal":
+            user = self.require_user()
+            if user is None:
+                return
+            try:
+                if not STRIPE_SECRET_KEY:
+                    raise ValueError("Pagamentos ainda não configurados.")
+                with connect() as database:
+                    subscription = database.execute(
+                        "SELECT stripe_customer_id FROM subscriptions WHERE empresa_id = ? AND stripe_customer_id IS NOT NULL "
+                        "ORDER BY criado_em DESC LIMIT 1",
+                        (user["company_id"],),
+                    ).fetchone()
+                if subscription is None:
+                    raise ValueError("Nenhum cliente Stripe encontrado para esta conta.")
+                portal_session = stripe.billing_portal.Session.create(
+                    customer=subscription["stripe_customer_id"], return_url=f"{APP_URL}/#minha-assinatura",
+                )
+                self.send_json({"ok": True, "portalUrl": portal_session.url})
+            except (ValueError, stripe.error.StripeError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
@@ -4409,7 +4787,16 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         database, user["email"], False, user_id=user["id"],
                         company_id=user["company_id"], motivo_falha=f"Status: {user['status']}",
                     )
-                    self.send_json({"error": "Acesso indisponível. Consulte o administrador responsável."}, HTTPStatus.FORBIDDEN)
+                    if user["status"] == "Aguardando ativação":
+                        self.send_json(
+                            {
+                                "error": "Sua conta ainda não possui uma assinatura ativa.",
+                                "reason": "aguardando_pagamento",
+                            },
+                            HTTPStatus.PAYMENT_REQUIRED,
+                        )
+                    else:
+                        self.send_json({"error": "Acesso indisponível. Consulte o administrador responsável."}, HTTPStatus.FORBIDDEN)
                     return
                 if (user["password_algo"] or "pbkdf2") != "bcrypt":
                     new_salt, new_hash, new_algo = hash_password(password)

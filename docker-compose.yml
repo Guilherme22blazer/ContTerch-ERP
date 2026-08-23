@@ -44,6 +44,10 @@ services:
       CONTTECH_ADMIN_EMAIL: ${CONTTECH_ADMIN_EMAIL:-}
       CONTTECH_ADMIN_NAME: ${CONTTECH_ADMIN_NAME:-Administrador}
       CONTTECH_ADMIN_PASSWORD: ${CONTTECH_ADMIN_PASSWORD:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      APP_URL: ${APP_URL:-}
     volumes:
       # Mantido apenas para persistir .gestao-fiscal.key entre reinícios
       # quando GESTAOFISCAL_MASTER_KEY não é definida — os dados do sistema

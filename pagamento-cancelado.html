@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pagamento cancelado — ContTech ERP</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }
+  .card { background: #1e293b; border-radius: 16px; padding: 40px; max-width: 460px; width: 100%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .icon { font-size: 48px; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { color: #94a3b8; line-height: 1.5; }
+  input { width: 100%; box-sizing: border-box; margin: 8px 0; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 14px; }
+  button { display: block; width: 100%; margin-top: 16px; background: #2563eb; color: white; border: none; padding: 12px 28px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: not-allowed; }
+  .error { color: #f87171; font-size: 13px; margin-top: 10px; min-height: 16px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">⚠️</div>
+    <h1>Pagamento não concluído</h1>
+    <p>Sua conta foi criada, mas ainda não está ativa. Informe seu e-mail e senha para gerar um novo link de pagamento.</p>
+    <input id="email" type="email" placeholder="E-mail" autocomplete="email">
+    <input id="password" type="password" placeholder="Senha" autocomplete="current-password">
+    <button id="retry">Tentar pagamento novamente</button>
+    <div class="error" id="error"></div>
+  </div>
+  <script>
+    document.getElementById("retry").addEventListener("click", async () => {
+      const button = document.getElementById("retry");
+      const errorEl = document.getElementById("error");
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+      errorEl.textContent = "";
+      if (!email || !password) {
+        errorEl.textContent = "Informe e-mail e senha.";
+        return;
+      }
+      button.disabled = true;
+      button.textContent = "Gerando novo pagamento...";
+      try {
+        const res = await fetch("/api/checkout/resume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (data.checkoutUrl) {
+          window.location.href = data.checkoutUrl;
+          return;
+        }
+        errorEl.textContent = data.error || "Não foi possível gerar um novo pagamento.";
+      } catch (error) {
+        errorEl.textContent = "Erro de comunicação com o servidor.";
+      }
+      button.disabled = false;
+      button.textContent = "Tentar pagamento novamente";
+    });
+  </script>
+</body>
+</html>
