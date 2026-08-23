@@ -4558,11 +4558,34 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 password = str(payload.get("password", ""))
                 with connect() as database:
                     user = database.execute(
-                        "SELECT id, email, salt, password_hash, password_algo, company_id FROM users WHERE lower(email) = ?",
+                        "SELECT id, email, salt, password_hash, password_algo, company_id, login_attempts, status "
+                        "FROM users WHERE lower(email) = ?",
                         (email,),
                     ).fetchone()
-                    if user is None or not verify_password(password, user["salt"], user["password_hash"], user["password_algo"] or "pbkdf2"):
+                    if user is not None and user["status"] == "Bloqueado":
+                        raise ValueError("Conta bloqueada. Consulte o administrador responsável.")
+                    valid = user is not None and verify_password(
+                        password, user["salt"], user["password_hash"], user["password_algo"] or "pbkdf2"
+                    )
+                    if not valid:
+                        if user is not None:
+                            attempts = int(user["login_attempts"] or 0) + 1
+                            if attempts >= 5:
+                                database.execute(
+                                    "UPDATE users SET login_attempts = ?, status = 'Bloqueado', blocked_at = ?, updated_at = ? WHERE email = ?",
+                                    (attempts, local_now(), local_now(), user["email"]),
+                                )
+                                write_access_audit(database, "Sistema", user["email"], "Usuário bloqueado após tentativas de login", attempts - 1, attempts, self.client_ip())
+                            else:
+                                database.execute("UPDATE users SET login_attempts = ? WHERE email = ?", (attempts, user["email"]))
+                        self.write_login_log(
+                            database, email, False, user_id=user["id"] if user else None,
+                            company_id=user["company_id"] if user else None,
+                            motivo_falha="Senha incorreta (resume-checkout)" if user else "Usuário não encontrado",
+                        )
+                        database.commit()  # persiste o bloqueio/registro mesmo lançando o erro abaixo
                         raise ValueError("E-mail ou senha inválidos.")
+                    database.execute("UPDATE users SET login_attempts = 0 WHERE email = ?", (user["email"],))
                     subscription = database.execute(
                         "SELECT * FROM subscriptions WHERE empresa_id = ? ORDER BY criado_em DESC LIMIT 1",
                         (user["company_id"],),

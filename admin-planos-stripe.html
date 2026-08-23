@@ -40,6 +40,10 @@
       topError.style.display = 'block';
     }
 
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
     async function loadPlans() {
       if (!token) {
         showTopError('Você precisa estar logado. Abra o sistema em outra aba, faça login como administrador e recarregue esta página.');
@@ -59,14 +63,14 @@
         const card = document.createElement('div');
         card.className = 'card';
         card.innerHTML = `
-          <h2>${plan.nome}</h2>
+          <h2>${escapeHtml(plan.nome)}</h2>
           <div class="price">Mensal: R$ ${Number(plan.valorMensal).toFixed(2)} · Anual: R$ ${Number(plan.valorAnual).toFixed(2)}</div>
           <label>Price ID mensal (Stripe)</label>
-          <input type="text" class="monthly" placeholder="price_..." value="${plan.stripePriceIdMonthly || ''}">
+          <input type="text" class="monthly" placeholder="price_..." value="${escapeHtml(plan.stripePriceIdMonthly)}">
           <label>Price ID anual (Stripe)</label>
-          <input type="text" class="yearly" placeholder="price_..." value="${plan.stripePriceIdYearly || ''}">
+          <input type="text" class="yearly" placeholder="price_..." value="${escapeHtml(plan.stripePriceIdYearly)}">
           <label>Product ID (Stripe, opcional)</label>
-          <input type="text" class="product" placeholder="prod_..." value="${plan.stripeProductId || ''}">
+          <input type="text" class="product" placeholder="prod_..." value="${escapeHtml(plan.stripeProductId)}">
           <br><button class="save">Salvar</button>
           <div class="status"></div>
         `;
