@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Configurar Stripe — ContTech ERP</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 32px 16px; }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #94a3b8; margin-top: 0; margin-bottom: 28px; }
+  .card { background: #1e293b; border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; }
+  .card h2 { font-size: 16px; margin: 0 0 4px; }
+  .card .price { color: #94a3b8; font-size: 13px; margin-bottom: 14px; }
+  label { display: block; font-size: 13px; color: #cbd5e1; margin-bottom: 4px; margin-top: 10px; }
+  input { width: 100%; box-sizing: border-box; padding: 9px 12px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 14px; font-family: monospace; }
+  button { margin-top: 16px; background: #2563eb; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: not-allowed; }
+  .status { font-size: 13px; margin-top: 8px; min-height: 16px; }
+  .status.ok { color: #4ade80; }
+  .status.err { color: #f87171; }
+  .top-error { background: #7f1d1d; color: #fecaca; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: none; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Configurar Price IDs do Stripe</h1>
+    <p class="sub">Cole aqui os Price IDs (ex.: <code>price_1AbC...</code>) criados no painel do Stripe para cada plano. Você precisa estar logado como administrador.</p>
+    <div class="top-error" id="topError"></div>
+    <div id="plans"></div>
+  </div>
+
+  <script>
+    const token = sessionStorage.getItem('simplescalc.apiToken') || '';
+    const plansEl = document.getElementById('plans');
+    const topError = document.getElementById('topError');
+
+    function showTopError(message) {
+      topError.textContent = message;
+      topError.style.display = 'block';
+    }
+
+    async function loadPlans() {
+      if (!token) {
+        showTopError('Você precisa estar logado. Abra o sistema em outra aba, faça login como administrador e recarregue esta página.');
+        return;
+      }
+      let data;
+      try {
+        const res = await fetch('/api/plans', { headers: { 'Authorization': 'Bearer ' + token } });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Falha ao carregar planos.');
+      } catch (error) {
+        showTopError(error.message);
+        return;
+      }
+      plansEl.innerHTML = '';
+      for (const plan of data.plans || []) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <h2>${plan.nome}</h2>
+          <div class="price">Mensal: R$ ${Number(plan.valorMensal).toFixed(2)} · Anual: R$ ${Number(plan.valorAnual).toFixed(2)}</div>
+          <label>Price ID mensal (Stripe)</label>
+          <input type="text" class="monthly" placeholder="price_..." value="${plan.stripePriceIdMonthly || ''}">
+          <label>Price ID anual (Stripe)</label>
+          <input type="text" class="yearly" placeholder="price_..." value="${plan.stripePriceIdYearly || ''}">
+          <label>Product ID (Stripe, opcional)</label>
+          <input type="text" class="product" placeholder="prod_..." value="${plan.stripeProductId || ''}">
+          <br><button class="save">Salvar</button>
+          <div class="status"></div>
+        `;
+        const monthlyInput = card.querySelector('.monthly');
+        const yearlyInput = card.querySelector('.yearly');
+        const productInput = card.querySelector('.product');
+        const statusEl = card.querySelector('.status');
+        const button = card.querySelector('.save');
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          statusEl.className = 'status';
+          statusEl.textContent = 'Salvando...';
+          try {
+            const res = await fetch(`/api/admin/plans/${plan.id}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+              body: JSON.stringify({
+                name: plan.nome, monthlyValue: plan.valorMensal, annualValue: plan.valorAnual,
+                maxUsers: plan.maxUsuarios, trialDays: plan.trialDays, status: plan.status,
+                stripePriceIdMonthly: monthlyInput.value.trim(),
+                stripePriceIdYearly: yearlyInput.value.trim(),
+                stripeProductId: productInput.value.trim(),
+              }),
+            });
+            const result = await res.json();
+            if (!res.ok) throw new Error(result.error || 'Erro ao salvar.');
+            statusEl.className = 'status ok';
+            statusEl.textContent = 'Salvo com sucesso.';
+          } catch (error) {
+            statusEl.className = 'status err';
+            statusEl.textContent = error.message;
+          }
+          button.disabled = false;
+        });
+        plansEl.appendChild(card);
+      }
+    }
+    loadPlans();
+  </script>
+</body>
+</html>
