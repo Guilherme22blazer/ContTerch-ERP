@@ -87,6 +87,23 @@ select:focus,input:focus{border-color:var(--accent3)}
 .pill.s{background:rgba(255,107,107,.12);color:var(--saida)}
 .pill.y{background:rgba(255,209,102,.12);color:var(--accent3)}
 .pill.n{background:rgba(100,116,139,.1);color:var(--muted)}
+.pill.g{background:rgba(0,212,170,.12);color:var(--entrada)}
+.pill.r{background:rgba(255,107,107,.12);color:var(--accent2)}
+
+/* ── CERTIDÕES E REGULARIDADE FISCAL ── */
+.cert-info-banner{background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:.75rem 1rem;color:var(--dim);font-size:.7rem;line-height:1.5;margin-bottom:.9rem}
+.cert-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:.8rem;margin-bottom:1rem}
+.cert-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem}
+.cert-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:.6rem}
+.cert-card-title{font-family:'Syne',sans-serif;font-size:.78rem;font-weight:700;color:var(--text)}
+.cert-card-org{font-size:.63rem;color:var(--muted);margin-top:.15rem}
+.cert-card-note{font-size:.63rem;color:var(--muted);margin-top:.5rem;font-style:italic}
+.cert-card-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.6rem;margin-top:.8rem}
+.cert-card-grid select,.cert-card-grid input{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Mono',monospace;font-size:.68rem;padding:.4rem .5rem;border-radius:3px}
+.cert-card-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.8rem}
+.cert-file-row{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem}
+.cert-card-updated{font-size:.6rem;color:var(--muted);margin-top:.6rem;text-align:right}
+@media(max-width:640px){.cert-card-grid{grid-template-columns:1fr}}
 
 /* ── MODAL ── */
 .ov{position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(5px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:2rem;opacity:0;pointer-events:none;transition:opacity .2s}
@@ -1952,8 +1969,158 @@ function renderCNPJFull(d,inputCnpj){
     buildCNAE({codigo:d.cnae_fiscal,descricao:d.cnae_fiscal_descricao},d.cnaes_secundarios)+
     buildInscricoes(d.inscricoes_estaduais)+
     buildSocios(d.qsa)+
+    buildCertidoes(Object.assign({},d,{cnpj:d.cnpj||inputCnpj}))+
     buildRawToggle(d)+
     `<div style="margin-top:.8rem;font-size:.62rem;color:var(--muted);text-align:right">Fonte: ${srcLabel(d._source)} · Consulta em ${new Date().toLocaleString('pt-BR')}</div>`;
+}
+
+// ══ CERTIDÕES E REGULARIDADE FISCAL ══
+// Não existe API pública única para emissão automática de certidões (Federal,
+// Estadual, Municipal, FGTS, CNDT) — cada órgão exige autenticação própria
+// (gov.br ou certificado digital) diretamente no site oficial. Este módulo
+// organiza os links oficiais corretos para o CNPJ consultado, guarda o status
+// verificado manualmente e o PDF baixado pelo usuário (anexado aqui), e avisa
+// sobre vencimento — sem nunca simular ou inventar o resultado da certidão.
+// Constantes definidas como função (em vez de `const` no topo do script) de
+// propósito: este arquivo carrega bibliotecas externas via <script src> antes
+// deste ponto, e se alguma delas falhar (bloqueador de anúncios, firewall,
+// CDN fora do ar) uma exceção anterior no mesmo bloco de script impediria um
+// `const` aqui embaixo de ser inicializado. Como declaração de função, fica
+// disponível (hoisted) independentemente do que aconteceu antes.
+function CERT_STATUS_LIST(){return['A verificar','Regular','Negativa','Positiva','Positiva com efeitos de negativa','Irregular','Pendente','Não localizada'];}
+function CERT_FEDERAL_URL(){return'https://servicos.receitafederal.gov.br/servico/certidoes/#/home';}
+function CERT_FGTS_URL(){return'https://consulta-crf.caixa.gov.br/consultacrf/pages/consultaEmpregador.jsf';}
+function CERT_CNDT_URL(){return'https://cndt-certidao.tst.jus.br/inicio.faces';}
+function CERT_STORAGE_KEY(){return'gfCertidoes_v1';}
+
+function esc2(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function certStatusClass(status){
+  if(['Regular','Negativa'].indexOf(status)>=0)return'status-ativa';
+  if(['Irregular','Positiva','Não localizada'].indexOf(status)>=0)return'status-inativa';
+  return'status-outra';
+}
+function certLoadAll(){try{return JSON.parse(localStorage.getItem(CERT_STORAGE_KEY())||'{}');}catch(e){return{};}}
+function certSaveAll(o){try{localStorage.setItem(CERT_STORAGE_KEY(),JSON.stringify(o));}catch(e){console.warn('Certidões: armazenamento local cheio.');}}
+function certEntry(docDigits,sourceKey){
+  const all=certLoadAll();
+  const doc=all[docDigits]||{};
+  return Object.assign({status:'A verificar',emissao:'',validade:'',fileDataUrl:'',fileName:'',updatedAt:''},doc[sourceKey]||{});
+}
+function certSaveEntry(docDigits,sourceKey,patch){
+  const all=certLoadAll();
+  if(!all[docDigits])all[docDigits]={};
+  const merged=Object.assign(certEntry(docDigits,sourceKey),patch,{updatedAt:new Date().toISOString()});
+  all[docDigits][sourceKey]=merged;
+  certSaveAll(all);
+  return merged;
+}
+function certDaysToExpiry(validade){
+  if(!validade)return null;
+  const end=new Date(validade+'T12:00:00');
+  if(isNaN(end.getTime()))return null;
+  const now=new Date();now.setHours(12,0,0,0);
+  return Math.ceil((end-now)/86400000);
+}
+function certExpiryBadge(validade){
+  const days=certDaysToExpiry(validade);
+  if(days===null)return'';
+  if(days<0)return'<span class="pill r" style="margin-left:.4rem">Vencida há '+Math.abs(days)+' dia(s)</span>';
+  if(days<=30)return'<span class="pill y" style="margin-left:.4rem">Vence em '+days+' dia(s)</span>';
+  return'';
+}
+function certidaoSourcesFor(d){
+  const sources=[{key:'federal',label:'Certidão Federal / PGFN',org:'Receita Federal e Procuradoria-Geral da Fazenda Nacional',url:CERT_FEDERAL_URL()}];
+  if(d.uf&&IE_URLS[d.uf]){
+    sources.push({key:'estadual',label:'Certidão Estadual — '+IE_URLS[d.uf].name,org:'Sefaz '+d.uf,url:IE_URLS[d.uf].url});
+  }else{
+    sources.push({key:'estadual',label:'Certidão Estadual',org:'Secretaria da Fazenda do estado',url:'https://www.confaz.fazenda.gov.br/'});
+  }
+  const municipioQuery=encodeURIComponent('certidão negativa de débitos prefeitura '+(d.municipio||'')+' '+(d.uf||''));
+  sources.push({key:'municipal',label:'Certidão Municipal'+(d.municipio?' — '+d.municipio:''),org:'Prefeitura Municipal',url:'https://www.google.com/search?q='+municipioQuery,note:'Não existe portal único nacional para tributos municipais — este link pesquisa o site oficial da prefeitura correspondente.'});
+  sources.push({key:'fgts',label:'Certidão de Regularidade do FGTS (CRF)',org:'Caixa Econômica Federal',url:CERT_FGTS_URL()});
+  sources.push({key:'cndt',label:'Certidão Negativa de Débitos Trabalhistas (CNDT)',org:'Tribunal Superior do Trabalho',url:CERT_CNDT_URL()});
+  return sources;
+}
+function certCardHtml(docDigits,source){
+  const e=certEntry(docDigits,source.key);
+  const sc=certStatusClass(e.status);
+  const fileBlock=e.fileDataUrl
+    ?'<div class="cert-file-row"><span class="pill g">📎 '+esc2(e.fileName||'certidao.pdf')+'</span>'
+      +'<button type="button" class="btn btn-sm btn-primary" onclick="certViewFile(\''+docDigits+'\',\''+source.key+'\')">👁 Visualizar</button>'
+      +'<button type="button" class="btn btn-sm btn-primary" onclick="certDownloadFile(\''+docDigits+'\',\''+source.key+'\')">⇩ Baixar PDF</button>'
+      +'<button type="button" class="btn btn-sm btn-ghost" onclick="certRemoveFile(\''+docDigits+'\',\''+source.key+'\')">✕ Remover anexo</button></div>'
+    :'<label class="btn btn-sm btn-ghost" style="display:inline-block;cursor:pointer">📎 Anexar PDF baixado do site oficial<input type="file" accept="application/pdf" style="display:none" onchange="certAttachFile(this,\''+docDigits+'\',\''+source.key+'\')"></label>';
+  return '<div class="cert-card">'
+    +'<div class="cert-card-head"><div><div class="cert-card-title">'+esc2(source.label)+'</div><div class="cert-card-org">'+esc2(source.org)+'</div></div><span class="status-badge '+sc+'">'+esc2(e.status)+'</span></div>'
+    +(source.note?'<div class="cert-card-note">'+esc2(source.note)+'</div>':'')
+    +'<div class="cert-card-grid">'
+      +'<div class="fg"><label>Situação apurada</label><select onchange="certUpdateField(\''+docDigits+'\',\''+source.key+'\',\'status\',this.value)">'+CERT_STATUS_LIST().map(s=>'<option value="'+s+'"'+(s===e.status?' selected':'')+'>'+s+'</option>').join('')+'</select></div>'
+      +'<div class="fg"><label>Emissão</label><input type="date" value="'+esc2(e.emissao)+'" onchange="certUpdateField(\''+docDigits+'\',\''+source.key+'\',\'emissao\',this.value)"></div>'
+      +'<div class="fg"><label>Validade</label><input type="date" value="'+esc2(e.validade)+'" onchange="certUpdateField(\''+docDigits+'\',\''+source.key+'\',\'validade\',this.value)">'+certExpiryBadge(e.validade)+'</div>'
+    +'</div>'
+    +'<div class="cert-card-actions"><a class="btn btn-primary btn-sm" target="_blank" rel="noopener" href="'+source.url+'">↗ Abrir site oficial</a>'+fileBlock+'</div>'
+    +(e.updatedAt?'<div class="cert-card-updated">Atualizado em '+new Date(e.updatedAt).toLocaleString('pt-BR')+'</div>':'')
+    +'</div>';
+}
+function buildCertidoes(d){
+  const docDigits=cleanCNPJ(d.cnpj||'');
+  const sources=certidaoSourcesFor(d);
+  if(!window._certSourcesByDoc)window._certSourcesByDoc={};
+  window._certSourcesByDoc[docDigits]=sources;
+  return '<div class="section-title">📜 Certidões e Regularidade Fiscal</div>'
+    +'<div class="cert-info-banner"><strong>Consulta orientativa.</strong> A emissão e a validação oficial de cada certidão são feitas no site do respectivo órgão, mediante login gov.br ou certificado digital — este sistema não emite nem valida a certidão por conta própria. Aqui você abre o portal correto já filtrado para este CNPJ, registra o status verificado, anexa o PDF baixado e recebe alerta de vencimento.</div>'
+    +'<div class="cert-grid" id="certGrid-'+docDigits+'">'+sources.map(s=>certCardHtml(docDigits,s)).join('')+'</div>';
+}
+function certRerender(docDigits){
+  const grid=document.getElementById('certGrid-'+docDigits);
+  const sources=window._certSourcesByDoc&&window._certSourcesByDoc[docDigits];
+  if(!grid||!sources)return;
+  grid.innerHTML=sources.map(s=>certCardHtml(docDigits,s)).join('');
+}
+function certUpdateField(docDigits,sourceKey,field,value){
+  certSaveEntry(docDigits,sourceKey,{[field]:value});
+  certRerender(docDigits);
+}
+function certDataUrlToBlob(dataUrl){
+  const parts=dataUrl.split(',');
+  const mimeMatch=parts[0].match(/:(.*?);/);
+  const mime=mimeMatch?mimeMatch[1]:'application/pdf';
+  const binary=atob(parts[1]);
+  const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return new Blob([bytes],{type:mime});
+}
+function certAttachFile(input,docDigits,sourceKey){
+  const file=input.files&&input.files[0];
+  if(!file)return;
+  if(file.type!=='application/pdf'){alert('Selecione um arquivo PDF.');input.value='';return;}
+  if(file.size>4*1024*1024){alert('Arquivo muito grande (máximo 4 MB).');input.value='';return;}
+  const reader=new FileReader();
+  reader.onload=function(){
+    certSaveEntry(docDigits,sourceKey,{fileDataUrl:reader.result,fileName:file.name});
+    certRerender(docDigits);
+  };
+  reader.readAsDataURL(file);
+}
+function certViewFile(docDigits,sourceKey){
+  const e=certEntry(docDigits,sourceKey);
+  if(!e.fileDataUrl)return;
+  const url=URL.createObjectURL(certDataUrlToBlob(e.fileDataUrl));
+  window.open(url,'_blank');
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
+function certDownloadFile(docDigits,sourceKey){
+  const e=certEntry(docDigits,sourceKey);
+  if(!e.fileDataUrl)return;
+  const url=URL.createObjectURL(certDataUrlToBlob(e.fileDataUrl));
+  const a=document.createElement('a');
+  a.href=url;a.download=e.fileName||'certidao.pdf';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
+function certRemoveFile(docDigits,sourceKey){
+  certSaveEntry(docDigits,sourceKey,{fileDataUrl:'',fileName:''});
+  certRerender(docDigits);
 }
 
 // ══ INSCRIÇÃO ESTADUAL ══
