@@ -927,6 +927,39 @@ def certificate_pem_files(pfx_data: bytes, password: str, directory: Path) -> tu
     return cert_path, key_path
 
 
+def classify_official_connection_error(error: Exception, service_label: str) -> str:
+    """Traduz falhas de rede/TLS na comunicação com um webservice oficial em uma
+    mensagem específica (timeout, certificado rejeitado, DNS, conexão recusada),
+    em vez de um único rótulo genérico para causas bem diferentes entre si."""
+    def describe(exc: BaseException) -> str:
+        if isinstance(exc, (socket.timeout, TimeoutError)):
+            return "timeout"
+        if isinstance(exc, ssl.SSLError):
+            text = f"{getattr(exc, 'reason', '')} {exc}".lower()
+            if any(token in text for token in ("certificate", "handshake", "unknown ca", "cert")):
+                return "cert"
+            return "tls"
+        if isinstance(exc, socket.gaierror) or "not known" in str(exc).lower() or "nodename" in str(exc).lower():
+            return "dns"
+        if isinstance(exc, ConnectionRefusedError) or "connection refused" in str(exc).lower():
+            return "refused"
+        return "unknown"
+
+    kind = describe(error)
+    if isinstance(error, URLError) and kind == "unknown":
+        kind = describe(error.reason)
+    detail = str(getattr(error, "reason", error))[:180]
+    messages = {
+        "timeout": f"{service_label} não respondeu dentro do tempo limite. O serviço pode estar sobrecarregado ou lento — tente novamente em alguns instantes.",
+        "cert": f"{service_label} recusou o certificado digital na conexão segura (mTLS). Confira se o certificado está válido, corresponde ao CNPJ consultado e ainda não expirou.",
+        "tls": f"{service_label} recusou a conexão segura (TLS). Detalhe técnico: {detail}",
+        "dns": f"Não foi possível resolver o endereço do serviço {service_label} (falha de DNS). O serviço pode estar temporariamente fora do ar.",
+        "refused": f"{service_label} recusou a conexão (porta fechada ou serviço fora do ar).",
+        "unknown": f"{service_label} está indisponível ou a comunicação foi interrompida. Detalhe técnico: {detail}",
+    }
+    return messages[kind]
+
+
 def soap_query(access_key: str, environment: str, pfx_data: bytes, password: str) -> dict:
     config = service_configuration(access_key, environment)
     tp_amb = "1" if environment == "production" else "2"
@@ -957,13 +990,13 @@ def soap_query(access_key: str, environment: str, pfx_data: bytes, password: str
             },
         )
         try:
-            with urlopen(request, context=context, timeout=25) as response:
+            with urlopen(request, context=context, timeout=30) as response:
                 raw = response.read(3_000_000)
         except HTTPError as error:
             detail = error.read(1200).decode("utf-8", errors="replace")
             raise RuntimeError(f"SEFAZ rejeitou a comunicação HTTP ({error.code}). {re.sub('<[^>]+>', ' ', detail)[:220]}") from error
-        except (URLError, TimeoutError, socket.timeout, ssl.SSLError) as error:
-            raise RuntimeError("Serviço oficial indisponível, certificado rejeitado ou tempo de resposta excedido.") from error
+        except (URLError, TimeoutError, socket.timeout, ssl.SSLError, OSError) as error:
+            raise RuntimeError(classify_official_connection_error(error, config["source"])) from error
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as error:
@@ -1051,10 +1084,8 @@ def soap_distribution(
                 f"Ambiente Nacional rejeitou a comunicação HTTP ({error.code}). "
                 f"{re.sub('<[^>]+>', ' ', detail)[:240]}"
             ) from error
-        except (URLError, TimeoutError, socket.timeout, ssl.SSLError) as error:
-            raise RuntimeError(
-                "O Ambiente Nacional da NF-e não respondeu, recusou o certificado ou excedeu o tempo limite."
-            ) from error
+        except (URLError, TimeoutError, socket.timeout, ssl.SSLError, OSError) as error:
+            raise RuntimeError(classify_official_connection_error(error, "O Ambiente Nacional da NF-e")) from error
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as error:
@@ -1411,7 +1442,7 @@ def nfse_api_query(
                 raise ValueError("O certificado não possui autorização para consultar esta NFS-e.") from error
             raise RuntimeError(f"A SEFIN Nacional recusou a consulta HTTP {error.code}. {detail[:260]}") from error
         except (URLError, TimeoutError, ssl.SSLError, OSError) as error:
-            raise RuntimeError("A SEFIN Nacional está indisponível ou recusou a conexão com o certificado A1.") from error
+            raise RuntimeError(classify_official_connection_error(error, "A SEFIN Nacional")) from error
 
 
 def parse_nfse_xml(xml_data: bytes, access_key: str) -> dict:
