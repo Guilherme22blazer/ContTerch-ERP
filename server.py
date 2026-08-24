@@ -128,6 +128,7 @@ SUPER_ADMIN_ONLY_ACTIONS = {"administrar"}
 ERP_MODULES = {
     "tab_inicio": "Visão Geral da Carteira",
     "tab_sefaz_portal": "Consulta SEFAZ e Portal do Contribuinte",
+    "tab_captador_notas_fiscais": "Captador de Notas Fiscais",
     "tab_dashboard": "Cálculo DAS",
     "tab_conttech_simples_nacional": "Conttech Simples Nacional",
     "tab_diagnostico": "Diagnóstico Tributário",
@@ -174,7 +175,7 @@ ERP_MODULES = {
     "tab_historico": "Histórico de Atualizações",
 }
 FISCAL_TAB_MODULES = {
-    "tab_sefaz_portal", "tab_dashboard", "tab_conttech_simples_nacional", "tab_diagnostico", "tab_mei", "tab_controle_mei",
+    "tab_sefaz_portal", "tab_captador_notas_fiscais", "tab_dashboard", "tab_conttech_simples_nacional", "tab_diagnostico", "tab_mei", "tab_controle_mei",
     "tab_obrigacoes", "tab_certidao_regularidade_fiscal", "tab_ibs_cbs", "tab_transicao_reforma", "tab_recuperador_pis_cofins",
     "tab_planejamento_tributario", "tab_lei_complementar",
     "tab_mei_ibs_cbs", "tab_parametros_2026", "tab_consulta_cnpj", "tab_inscricao_estadual",
@@ -232,12 +233,12 @@ PROTECTED_ROUTE_MODULES = {
     "/relatorios": "tab_historico",
 }
 PERMISSION_MODULES = {
-    "consult_documents": "tab_sefaz_portal",
-    "manage_certificates": "tab_sefaz_portal",
-    "view_sensitive": "tab_sefaz_portal",
-    "download_xml": "tab_sefaz_portal",
-    "export_reports": "tab_sefaz_portal",
-    "view_history": "tab_sefaz_portal",
+    "consult_documents": {"tab_sefaz_portal", "tab_captador_notas_fiscais"},
+    "manage_certificates": {"tab_sefaz_portal", "tab_captador_notas_fiscais"},
+    "view_sensitive": {"tab_sefaz_portal", "tab_captador_notas_fiscais"},
+    "download_xml": {"tab_sefaz_portal", "tab_captador_notas_fiscais"},
+    "export_reports": {"tab_sefaz_portal", "tab_captador_notas_fiscais"},
+    "view_history": {"tab_sefaz_portal", "tab_captador_notas_fiscais"},
     "manage_companies": "tab_clientes",
 }
 OFFICIAL_PORTALS = {
@@ -2091,13 +2092,15 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         return {row["permission"] for row in rows if row["permission"] in SEFAZ_PERMISSIONS}
 
     def require_permission(self, user: sqlite3.Row, permission: str) -> bool:
-        required_module = PERMISSION_MODULES.get(permission)
-        if required_module and required_module not in self.modules_for_user(user):
-            self.send_json(
-                {"error": "Acesso não autorizado. Seu usuário não possui permissão para acessar este módulo."},
-                HTTPStatus.FORBIDDEN,
-            )
-            return False
+        required_modules = PERMISSION_MODULES.get(permission)
+        if required_modules:
+            allowed_modules = required_modules if isinstance(required_modules, (set, frozenset)) else {required_modules}
+            if not (allowed_modules & self.modules_for_user(user)):
+                self.send_json(
+                    {"error": "Acesso não autorizado. Seu usuário não possui permissão para acessar este módulo."},
+                    HTTPStatus.FORBIDDEN,
+                )
+                return False
         if permission in self.permissions_for(user):
             return True
         self.send_json({"error": "Seu usuário não possui permissão para esta operação."}, HTTPStatus.FORBIDDEN)
@@ -4390,6 +4393,86 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 "nfseMonthlyImports": nfse_monthly_imports,
                 "cryptoAvailable": CRYPTO_AVAILABLE, "users": users, "permissionMatrix": permission_matrix,
             })
+            return
+        if path == "/api/sefaz/companies-overview":
+            user = self.require_user()
+            if user is None:
+                return
+            if not self.require_permission(user, "view_history"):
+                return
+            is_admin = user["role"] == "Administrador"
+            month_start = dt.datetime.now().astimezone().replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
+            model_key_map = {"NF-e": "nfe", "NFC-e": "nfce", "CT-e": "cte", "CT-e OS": "cte", "MDF-e": "mdfe", "NFS-e": "nfse"}
+            with connect() as database:
+                certificates = database.execute(
+                    "SELECT * FROM fiscal_certificates WHERE active = 1 ORDER BY company, branch"
+                ).fetchall()
+                dd_filter = "" if is_admin else " AND synced_by = ?"
+                dd_values = [] if is_admin else [user["email"]]
+                distributed_counts = database.execute(
+                    f"SELECT certificate_id, document_type, COUNT(*) AS amount FROM distributed_documents WHERE 1 = 1{dd_filter} GROUP BY certificate_id, document_type",
+                    dd_values,
+                ).fetchall()
+                month_distributed_counts = database.execute(
+                    f"SELECT certificate_id, COUNT(*) AS amount FROM distributed_documents WHERE received_at >= ?{dd_filter} GROUP BY certificate_id",
+                    [month_start] + dd_values,
+                ).fetchall()
+                fq_filter = "" if is_admin else " AND consulted_by = ?"
+                fq_values = [] if is_admin else [user["email"]]
+                query_counts = database.execute(
+                    f"SELECT certificate_id, model, COUNT(*) AS amount FROM fiscal_queries WHERE certificate_id IS NOT NULL{fq_filter} GROUP BY certificate_id, model",
+                    fq_values,
+                ).fetchall()
+                month_query_counts = database.execute(
+                    f"SELECT certificate_id, COUNT(*) AS amount FROM fiscal_queries WHERE certificate_id IS NOT NULL AND consulted_at >= ?{fq_filter} GROUP BY certificate_id",
+                    [month_start] + fq_values,
+                ).fetchall()
+                imp_filter = "" if is_admin else " AND imported_by = ?"
+                imp_values = [] if is_admin else [user["email"]]
+                nfse_import_counts = database.execute(
+                    f"SELECT certificate_id, COALESCE(SUM(imported_documents), 0) AS amount FROM nfse_monthly_imports WHERE 1 = 1{imp_filter} GROUP BY certificate_id",
+                    imp_values,
+                ).fetchall()
+                month_nfse_import_counts = database.execute(
+                    f"SELECT certificate_id, COALESCE(SUM(imported_documents), 0) AS amount FROM nfse_monthly_imports WHERE imported_at >= ?{imp_filter} GROUP BY certificate_id",
+                    [month_start] + imp_values,
+                ).fetchall()
+            aggregated: dict[str, dict[str, int]] = {}
+
+            def bump(certificate_id: str, key: str, amount: int) -> None:
+                entry = aggregated.setdefault(certificate_id, {"nfe": 0, "nfce": 0, "cte": 0, "mdfe": 0, "nfse": 0, "month": 0})
+                entry[key] += amount
+
+            for row in distributed_counts:
+                key = model_key_map.get(row["document_type"])
+                if key:
+                    bump(row["certificate_id"], key, row["amount"])
+            for row in query_counts:
+                key = model_key_map.get(row["model"])
+                if key:
+                    bump(row["certificate_id"], key, row["amount"])
+            for row in nfse_import_counts:
+                bump(row["certificate_id"], "nfse", row["amount"])
+            for row in month_distributed_counts:
+                bump(row["certificate_id"], "month", row["amount"])
+            for row in month_query_counts:
+                bump(row["certificate_id"], "month", row["amount"])
+            for row in month_nfse_import_counts:
+                bump(row["certificate_id"], "month", row["amount"])
+            can_sensitive = "view_sensitive" in self.permissions_for(user)
+            companies = []
+            for row in certificates:
+                summary = self.certificate_summary(row)
+                counts = aggregated.get(row["id"], {"nfe": 0, "nfce": 0, "cte": 0, "mdfe": 0, "nfse": 0, "month": 0})
+                summary["counts"] = {"nfe": counts["nfe"], "nfce": counts["nfce"], "cte": counts["cte"], "mdfe": counts["mdfe"], "nfse": counts["nfse"]}
+                summary["monthDocuments"] = counts["month"]
+                if not can_sensitive:
+                    document = digits(summary.get("document", ""))
+                    if document:
+                        summary["document"] = "*" * max(0, len(document) - 4) + document[-4:]
+                    summary["holder"] = "Titular protegido"
+                companies.append(summary)
+            self.send_json({"companies": companies, "monthStart": month_start[:10]})
             return
         history_match = re.fullmatch(r"/api/sefaz/history/([a-f0-9]{32})(/xml)?", path)
         if history_match:

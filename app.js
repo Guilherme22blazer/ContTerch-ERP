@@ -35,7 +35,7 @@
     'Terceiro setor': ['Associação', 'Fundação', 'Organização religiosa', 'Projeto social'],
     'Outro segmento': ['Atividade empresarial em geral', 'Profissional autônomo', 'Microempreendedor individual', 'Outra atividade']
   };
-  var sefazState = { certificates: [], history: [], distributedDocuments: [], distributionStates: [], nfseMonthlyImports: [], stats: {}, permissions: [], portals: {}, selectedResult: null, loading: false };
+  var sefazState = { certificates: [], history: [], distributedDocuments: [], distributionStates: [], nfseMonthlyImports: [], companiesOverview: [], companiesOverviewMonthStart: '', stats: {}, permissions: [], portals: {}, selectedResult: null, loading: false };
   var transitionXmlState = { files: [], totals: null };
   var SEFAZ_UFS = [
     ['11','RO'],['12','AC'],['13','AM'],['14','RR'],['15','PA'],['16','AP'],['17','TO'],
@@ -200,6 +200,7 @@
   var NAV_ITEMS = [
     { route: 'inicio', label: 'Visão Geral da Carteira', icon: '⌂', desc: 'Dashboard profissional com indicadores e andamento de todos os clientes' },
     { route: 'sefaz-portal', label: 'Consulta SEFAZ e Portal do Contribuinte', icon: '▣', desc: 'Consulta oficial de documentos fiscais e gestão segura de certificados' },
+    { route: 'captador-notas-fiscais', label: 'Captador de Notas Fiscais', icon: '⇓', desc: 'Painel por empresa da captação automática de NF-e, NFC-e, CT-e e NFS-e via certificado digital' },
     { route: 'dashboard', label: 'Cálculo DAS', icon: '▥', desc: 'Apuração interativa do Simples Nacional' },
     { route: 'conttech-simples-nacional', label: 'Conttech Simples Nacional', icon: '§', desc: 'Simulador de apuração do Simples Nacional em 3 etapas' },
     { route: 'diagnostico', label: 'Diagnóstico Tributário', icon: '◉', desc: 'Riscos, inconsistências e recomendações' },
@@ -1470,6 +1471,189 @@
     $$('[data-sefaz-permission]').forEach(function (input) { var email = input.getAttribute('data-email'); if (!grouped[email]) grouped[email] = []; if (input.checked) grouped[email].push(input.getAttribute('data-sefaz-permission')); });
     try { await apiRequest('/api/sefaz/permissions', { method: 'PUT', body: JSON.stringify({ users: Object.keys(grouped).map(function (email) { return { email: email, permissions: grouped[email] }; }) }) }); closeModal(); toast('Permissões atualizadas', 'Os acessos fiscais foram gravados no backend.'); await loadSefazData(); }
     catch (error) { toast('Permissões não salvas', error.message, 'error'); }
+  }
+  function sefazCompanyFavorites() {
+    if (!Array.isArray(state.settings.sefazCompanyFavorites)) state.settings.sefazCompanyFavorites = [];
+    return state.settings.sefazCompanyFavorites;
+  }
+  function toggleSefazCompanyFavorite(id) {
+    var favorites = sefazCompanyFavorites(), index = favorites.indexOf(id), added = index < 0;
+    if (added) favorites.push(id); else favorites.splice(index, 1);
+    persist(); refreshCaptadorCompanies();
+  }
+  function captadorUi() {
+    if (!state.captadorUi) state.captadorUi = { query: '', statusFilter: '', tab: 'ativas', page: 1, pageSize: 10 };
+    return state.captadorUi;
+  }
+  function captadorCertificateStatusOptions(selected) {
+    return ['', 'Válido', 'Próximo do vencimento', 'Vencido'].map(function (value) {
+      return '<option value="' + esc(value) + '"' + (value === selected ? ' selected' : '') + '>' + (value || 'Status do certificado') + '</option>';
+    }).join('');
+  }
+  function captadorFilteredCompanies() {
+    var ui = captadorUi(), companies = sefazState.companiesOverview || [], favorites = sefazCompanyFavorites();
+    var query = String(ui.query || '').toLowerCase();
+    return companies.filter(function (company) {
+      if (ui.tab === 'favoritas' && favorites.indexOf(company.id) < 0) return false;
+      if (ui.tab === 'inativas' && company.status !== 'Vencido') return false;
+      if (ui.tab === 'ativas' && company.status === 'Vencido') return false;
+      if (ui.statusFilter && company.status !== ui.statusFilter) return false;
+      if (query) {
+        var haystack = [company.company, company.branch, company.document].join(' ').toLowerCase();
+        if (haystack.indexOf(query) < 0) return false;
+      }
+      return true;
+    });
+  }
+  function captadorCompanyRowHtml(company) {
+    var favorites = sefazCompanyFavorites(), isFavorite = favorites.indexOf(company.id) >= 0;
+    var counts = company.counts || { nfe: 0, nfce: 0, cte: 0, mdfe: 0, nfse: 0 };
+    return '<tr>' +
+      '<td><button type="button" class="row-button captador-favorite' + (isFavorite ? ' is-active' : '') + '" data-action="captador-favorite" data-id="' + esc(company.id) + '" aria-label="Favoritar empresa">' + (isFavorite ? '★' : '☆') + '</button></td>' +
+      '<td><b>' + esc(company.company) + '</b>' + (company.branch && company.branch !== 'Matriz' ? '<br><small class="subtle">' + esc(company.branch) + '</small>' : '') + '</td>' +
+      '<td>' + esc(formatCnpjDisplay(company.document)) + '</td>' +
+      '<td>' + sefazStatusTag(company.status) + '<br><small class="subtle">até ' + esc(company.validUntil) + '</small></td>' +
+      '<td>' + number(counts.nfe) + '</td><td>' + number(counts.nfce) + '</td><td>' + number(counts.cte + counts.mdfe) + '</td><td>' + number(counts.nfse) + '</td>' +
+      '<td><div class="row-actions"><button class="row-button" title="Sincronizar agora" data-action="captador-sync-one" data-id="' + esc(company.id) + '">↻</button><button class="row-button" title="Abrir na Consulta SEFAZ" data-action="captador-open-sefaz" data-id="' + esc(company.id) + '">⌕</button></div></td>' +
+    '</tr>';
+  }
+  function formatCnpjDisplay(document) {
+    var raw = String(document || '');
+    var digitsOnly = raw.replace(/\D/g, '');
+    if (digitsOnly.length === 14 && digitsOnly === raw.replace(/\*/g, '')) {
+      return digitsOnly.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
+    }
+    return raw || 'Não informado';
+  }
+  function renderCaptadorCompaniesTable() {
+    var ui = captadorUi(), filtered = captadorFilteredCompanies();
+    var totalPages = Math.max(1, Math.ceil(filtered.length / ui.pageSize));
+    ui.page = Math.max(1, Math.min(ui.page, totalPages));
+    var start = (ui.page - 1) * ui.pageSize;
+    var pageItems = filtered.slice(start, start + ui.pageSize);
+    var body = pageItems.length ? pageItems.map(captadorCompanyRowHtml).join('') : '<tr><td colspan="8"><div class="empty-state"><i>⌕</i><h3>Nenhuma empresa encontrada</h3><p>Ajuste os filtros ou cadastre uma nova empresa.</p></div></td></tr>';
+    return '<div class="table-wrap"><table class="data-table"><thead><tr><th>Favorito</th><th>Empresa</th><th>CNPJ</th><th>Certificado</th><th>NF-e</th><th>NFC-e</th><th>CT-e/MDF-e</th><th>NFS-e</th><th>Ações</th></tr></thead><tbody id="captador-table-body">' + body + '</tbody></table></div>' +
+      '<div class="table-summary captador-pager"><span>' + filtered.length + (filtered.length === 1 ? ' empresa encontrada' : ' empresas encontradas') + '</span><div class="captador-pager-controls"><label>Itens por página <select id="captador-page-size" data-captador-input><option value="10"' + (ui.pageSize === 10 ? ' selected' : '') + '>10</option><option value="25"' + (ui.pageSize === 25 ? ' selected' : '') + '>25</option><option value="50"' + (ui.pageSize === 50 ? ' selected' : '') + '>50</option></select></label><span>' + (filtered.length ? (start + 1) : 0) + ' até ' + Math.min(start + ui.pageSize, filtered.length) + ' de ' + filtered.length + ' itens</span><button class="row-button" data-action="captador-page" data-page="1"' + (ui.page <= 1 ? ' disabled' : '') + '>|«</button><button class="row-button" data-action="captador-page" data-page="' + (ui.page - 1) + '"' + (ui.page <= 1 ? ' disabled' : '') + '>‹</button><button class="row-button" data-action="captador-page" data-page="' + (ui.page + 1) + '"' + (ui.page >= totalPages ? ' disabled' : '') + '>›</button><button class="row-button" data-action="captador-page" data-page="' + totalPages + '"' + (ui.page >= totalPages ? ' disabled' : '') + '>»|</button></div></div>';
+  }
+  function refreshCaptadorCompanies() {
+    var body = $('#captador-table-body');
+    var wrap = $('#captador-companies-wrap');
+    if (wrap) wrap.innerHTML = renderCaptadorCompaniesTable();
+    var tabs = $('#captador-tabs');
+    if (tabs) tabs.innerHTML = captadorTabsHtml();
+    var summary = $('#captador-summary');
+    if (summary) summary.innerHTML = captadorSummaryHtml();
+  }
+  function captadorTabsHtml() {
+    var ui = captadorUi(), companies = sefazState.companiesOverview || [], favorites = sefazCompanyFavorites();
+    var activeCount = companies.filter(function (c) { return c.status !== 'Vencido'; }).length;
+    var favoriteCount = companies.filter(function (c) { return favorites.indexOf(c.id) >= 0; }).length;
+    var inactiveCount = companies.filter(function (c) { return c.status === 'Vencido'; }).length;
+    return [
+      ['ativas', activeCount + ' Ativas'], ['favoritas', favoriteCount + ' Favoritas'], ['inativas', inactiveCount + ' Inativas']
+    ].map(function (item) {
+      return '<button type="button" class="segment' + (ui.tab === item[0] ? ' active' : '') + '" data-action="captador-tab" data-tab="' + item[0] + '">' + item[1] + '</button>';
+    }).join('');
+  }
+  function captadorSummaryHtml() {
+    var companies = sefazState.companiesOverview || [];
+    var monthTotal = companies.reduce(function (sum, c) { return sum + Number(c.monthDocuments || 0); }, 0);
+    var expiring = companies.filter(function (c) { return c.status === 'Próximo do vencimento'; });
+    var expired = companies.filter(function (c) { return c.status === 'Vencido'; });
+    var notices = [];
+    expired.forEach(function (c) { notices.push({ icon: '⚠', text: 'Certificado de ' + c.company + ' está vencido — recadastre para retomar a captação.' }); });
+    expiring.forEach(function (c) { notices.push({ icon: 'i', text: 'Certificado de ' + c.company + ' vence em ' + esc(c.validUntil) + '.' }); });
+    if (!notices.length) notices.push({ icon: '✓', text: 'Nenhum certificado vencendo nos próximos 30 dias.' });
+    return '<div class="card"><header class="card-header"><h2>Resumo do mês</h2><small>Documentos efetivamente captados via webservice oficial</small></header><div class="card-body"><div class="das-total"><div class="das-total-main"><small>Documentos captados no mês</small><strong>' + number(monthTotal) + '</strong></div><div class="das-metrics"><div><span>Empresas cadastradas</span><b>' + companies.length + '</b></div><div><span>Certificados a vencer</span><b>' + expiring.length + '</b></div><div><span>Certificados vencidos</span><b>' + expired.length + '</b></div></div></div></div></div>' +
+      '<div class="card" style="margin-top:14px"><header class="card-header"><h2>Notificações</h2><small>Geradas a partir dos certificados cadastrados</small></header><div class="card-body"><ul class="captador-notices">' + notices.slice(0, 6).map(function (n) { return '<li><span>' + n.icon + '</span>' + esc(n.text) + '</li>'; }).join('') + '</ul></div></div>';
+  }
+  function renderCaptadorNotasFiscais() {
+    var actions = '<button class="secondary-button" data-action="captador-sync-all">↻ Sincronizar Todas</button><button class="secondary-button" data-action="captador-monthly-closing">▣ Fechamento Mensal</button>' + (sefazCan('manage_certificates') ? '<button class="primary-button" data-action="sefaz-add-certificate">＋ Adicionar Empresa</button>' : '');
+    if (!apiEnabled()) {
+      return [
+        pageHeading('Captador de Notas Fiscais', 'Captação automática de NF-e, NFC-e, CT-e e NFS-e a partir do certificado digital A1 de cada empresa, via webservice oficial da SEFAZ.', ''),
+        '<div class="info-banner info-banner--warning"><span>!</span><div><strong>Ative o modo seguro para ler o certificado.</strong> Execute <code>ABRIR-MODO-SEGURO.cmd</code>, mantenha a janela aberta e use o botão ao lado.</div><button class="primary-button" data-action="sefaz-open-secure-mode">Verificar e abrir</button></div>'
+      ].join('');
+    }
+    return [
+      pageHeading('Captador de Notas Fiscais', 'Captação automática de NF-e, NFC-e, CT-e e NFS-e a partir do certificado digital A1 de cada empresa, via webservice oficial da SEFAZ — os mesmos dados protegidos e o mesmo motor de sincronização da Consulta SEFAZ.', actions),
+      '<div class="info-banner"><span>i</span><div><strong>Captação real, sem dados fictícios.</strong> Esta tela reorganiza por empresa os documentos já sincronizados pelo webservice oficial NFeDistribuicaoDFe e pelas consultas realizadas na aba Consulta SEFAZ. Cadastre o certificado A1 de cada empresa para começar a captar.</div></div>',
+      '<div class="captador-layout"><div class="captador-main">',
+      '<section class="card"><header class="card-header"><div class="captador-tab-group" id="captador-tabs">' + captadorTabsHtml() + '</div><div class="page-actions"><select id="captador-status-filter" data-captador-input>' + captadorCertificateStatusOptions(captadorUi().statusFilter) + '</select><input id="captador-search" data-captador-input placeholder="Pesquisar pelo nome ou CNPJ da empresa" value="' + esc(captadorUi().query || '') + '"></div></header><div class="card-body" id="captador-companies-wrap">' + renderCaptadorCompaniesTable() + '</div></section>',
+      '</div><aside class="captador-aside" id="captador-summary">' + captadorSummaryHtml() + '</aside></div>'
+    ].join('');
+  }
+  function loadCaptadorCompanies() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    return apiRequest('/api/sefaz/companies-overview').then(function (payload) {
+      sefazState.companiesOverview = payload.companies || [];
+      sefazState.companiesOverviewMonthStart = payload.monthStart || '';
+      refreshCaptadorCompanies();
+    }).catch(function (error) { toast('Não foi possível carregar as empresas', error.message, 'error'); });
+  }
+  function updateCaptadorFilters() {
+    var ui = captadorUi();
+    var search = $('#captador-search'); if (search) ui.query = search.value;
+    var statusFilter = $('#captador-status-filter'); if (statusFilter) ui.statusFilter = statusFilter.value;
+    var pageSize = $('#captador-page-size'); if (pageSize) ui.pageSize = Number(pageSize.value) || 10;
+    ui.page = 1;
+    refreshCaptadorCompanies();
+  }
+  function setCaptadorTab(tab) {
+    captadorUi().tab = tab; captadorUi().page = 1; refreshCaptadorCompanies();
+  }
+  function setCaptadorPage(page) {
+    captadorUi().page = Math.max(1, Number(page) || 1); refreshCaptadorCompanies();
+  }
+  function openCaptadorInSefaz(id) {
+    var company = (sefazState.companiesOverview || []).find(function (c) { return c.id === id; });
+    location.hash = 'sefaz-portal';
+    window.setTimeout(function () {
+      var filterField = $('#sefaz-filter-company');
+      if (filterField && company) { filterField.value = company.company; loadSefazData(); }
+    }, 250);
+  }
+  async function syncOneCaptadorCompany(id) {
+    var company = (sefazState.companiesOverview || []).find(function (c) { return c.id === id; });
+    if (!company) return;
+    if (!company.passwordStored) { toast('Senha necessária', 'Este certificado não tem a senha salva. Sincronize pela aba Consulta SEFAZ informando a senha para esta sessão.', 'warning'); return; }
+    if (company.status === 'Vencido') { toast('Certificado vencido', 'Recadastre o certificado de ' + company.company + ' antes de sincronizar.', 'warning'); return; }
+    try {
+      var payload = await apiRequest('/api/sefaz/distribution', { method: 'POST', body: JSON.stringify({ certificateId: id, environment: company.environment, stateCode: company.stateCode, sessionPassword: '' }) });
+      toast('Sincronização concluída', company.company + ': ' + payload.added + ' documento(s) novo(s).');
+      await loadCaptadorCompanies();
+    } catch (error) { toast('Sincronização não concluída', company.company + ': ' + error.message, 'error'); }
+  }
+  async function syncAllCaptadorCompanies() {
+    var eligible = (sefazState.companiesOverview || []).filter(function (c) { return c.passwordStored && c.status !== 'Vencido'; });
+    if (!eligible.length) { toast('Nada para sincronizar', 'Nenhum certificado ativo com senha salva foi encontrado. Cadastre a senha ao salvar o certificado ou sincronize individualmente pela Consulta SEFAZ.', 'warning'); return; }
+    var button = $('[data-action="captador-sync-all"]');
+    if (button) { button.disabled = true; button.textContent = 'Sincronizando ' + eligible.length + ' empresa(s)...'; }
+    var okCount = 0, added = 0, failed = 0;
+    for (var i = 0; i < eligible.length; i += 1) {
+      var company = eligible[i];
+      try {
+        var payload = await apiRequest('/api/sefaz/distribution', { method: 'POST', body: JSON.stringify({ certificateId: company.id, environment: company.environment, stateCode: company.stateCode, sessionPassword: '' }) });
+        okCount += 1; added += Number(payload.added || 0);
+      } catch (error) { failed += 1; }
+    }
+    if (button) { button.disabled = false; button.textContent = '↻ Sincronizar Todas'; }
+    toast('Sincronização em lote concluída', okCount + ' empresa(s) sincronizada(s), ' + added + ' documento(s) novo(s)' + (failed ? ', ' + failed + ' falha(s)' : '') + '.', failed ? 'warning' : '');
+    await loadCaptadorCompanies();
+  }
+  function exportCaptadorMonthlyClosing() {
+    var companies = sefazState.companiesOverview || [];
+    if (!companies.length) { toast('Nada para exportar', 'Nenhuma empresa cadastrada ainda.', 'warning'); return; }
+    var rows = companies.map(function (c) {
+      var counts = c.counts || { nfe: 0, nfce: 0, cte: 0, mdfe: 0, nfse: 0 };
+      return { empresa: c.company, filial: c.branch, cnpj: c.document, certificado: c.status, validoAte: c.validUntil, nfe: counts.nfe, nfce: counts.nfce, cte: counts.cte, mdfe: counts.mdfe, nfse: counts.nfse, documentosNoMes: c.monthDocuments || 0 };
+    });
+    var header = ['Empresa', 'Filial', 'CNPJ', 'Certificado', 'Válido até', 'NF-e', 'NFC-e', 'CT-e', 'MDF-e', 'NFS-e', 'Documentos no mês'];
+    var csv = [header.join(';')].concat(rows.map(function (r) { return [r.empresa, r.filial, r.cnpj, r.certificado, r.validoAte, r.nfe, r.nfce, r.cte, r.mdfe, r.nfse, r.documentosNoMes].map(function (v) { return String(v == null ? '' : v).replace(/;/g, ','); }).join(';'); })).join('\n');
+    downloadFile('fechamento-mensal-' + todayISO() + '.csv', '﻿' + csv, 'text/csv;charset=utf-8');
+    downloadFile('fechamento-mensal-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.captador-fechamento-mensal.v1', generatedAt: nowISO(), monthStart: sefazState.companiesOverviewMonthStart || '', companies: rows }, null, 2));
+    audit('Fechamento mensal exportado', rows.length + ' empresa(s) · CSV + JSON');
+    toast('Fechamento gerado', 'O resumo do mês foi exportado em CSV e JSON.');
   }
   function icmsState(uf) {
     return ICMS_STATES.find(function (item) { return item.uf === uf; }) || ICMS_STATES.find(function (item) { return item.uf === 'SP'; });
@@ -3079,6 +3263,7 @@
     }
     if (state.route === 'inicio') main.innerHTML = renderPortfolioDashboard();
     else if (state.route === 'sefaz-portal') main.innerHTML = renderSefazPortal();
+    else if (state.route === 'captador-notas-fiscais') main.innerHTML = renderCaptadorNotasFiscais();
     else if (state.route === 'dashboard') main.innerHTML = renderDashboard();
     else if (state.route === 'clientes' && parts[1]) main.innerHTML = renderClientDetail(parts[1]);
     else if (state.route === 'clientes') main.innerHTML = renderClients();
@@ -3124,6 +3309,7 @@
     window.scrollTo(0, 0);
     bindViewControls();
     if (state.route === 'sefaz-portal') loadSefazData();
+    if (state.route === 'captador-notas-fiscais') loadCaptadorCompanies();
     if (state.route === 'gestao-usuarios' && window.UserAccessManager) window.UserAccessManager.mount(main, { user: currentUser, syncUsers: function (users) { state.users = (users || []).map(function (user) { return Object.assign({}, user, { active: user.status !== 'Inativo' }); }); storageSet(KEYS.users, state.users); } });
   }
 
@@ -7076,6 +7262,13 @@
     else if (action === 'sefaz-batch') $('#sefaz-batch-file').click();
     else if (action === 'sefaz-permissions') openSefazPermissions();
     else if (action === 'sefaz-save-permissions') saveSefazPermissions();
+    else if (action === 'captador-favorite') toggleSefazCompanyFavorite(actionEl.getAttribute('data-id'));
+    else if (action === 'captador-sync-one') syncOneCaptadorCompany(actionEl.getAttribute('data-id'));
+    else if (action === 'captador-open-sefaz') openCaptadorInSefaz(actionEl.getAttribute('data-id'));
+    else if (action === 'captador-tab') setCaptadorTab(actionEl.getAttribute('data-tab'));
+    else if (action === 'captador-page') setCaptadorPage(actionEl.getAttribute('data-page'));
+    else if (action === 'captador-sync-all') syncAllCaptadorCompanies();
+    else if (action === 'captador-monthly-closing') exportCaptadorMonthlyClosing();
     else if (action === 'clear-filters') { state.filters = {}; route(); }
     else if (action === 'obligation-info') showObligationInfo(actionEl.getAttribute('data-name'));
     else if (action === 'history-calc') toast('Histórico utilizado', 'O RBT12 salvo no cadastro já está aplicado ao cálculo.');
@@ -7197,6 +7390,11 @@
     } else if (event.target.id === 'sefaz-filter-company') {
       window.clearTimeout(sefazState.filterTimer);
       sefazState.filterTimer = window.setTimeout(loadSefazData, 260);
+    } else if (event.target.id === 'captador-search') {
+      window.clearTimeout(state.captadorFilterTimer);
+      state.captadorFilterTimer = window.setTimeout(updateCaptadorFilters, 200);
+    } else if (event.target.matches('[data-captador-input]')) {
+      updateCaptadorFilters();
     }
   });
 
@@ -7252,6 +7450,7 @@
     else if (event.target.matches('[data-balance-input]')) updateBalanceAnalysis(true);
     else if (event.target.matches('[data-transition-input]')) updateTaxTransition(true);
     else if (event.target.matches('[data-tp-input]')) updateTaxPlanningSimulator();
+    else if (event.target.matches('[data-captador-input]')) updateCaptadorFilters();
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
     else if (event.target.id === 'piscofins-xml-files') handlePisCofinsFiles(event.target.files);
     else if (event.target.id === 'json-file-input') processImportedFile(event.target.files && event.target.files[0]);
