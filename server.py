@@ -927,6 +927,31 @@ def certificate_pem_files(pfx_data: bytes, password: str, directory: Path) -> tu
     return cert_path, key_path
 
 
+ICP_BRASIL_BUNDLE_PATH = Path(__file__).resolve().parent / "icp-brasil-roots.pem"
+
+
+def build_official_ssl_context() -> ssl.SSLContext:
+    """Contexto TLS usado em toda comunicação com webservices oficiais (SEFAZ, Ambiente
+    Nacional da NF-e, SEFIN Nacional). Além da cadeia padrão do sistema (Mozilla/OS),
+    carrega adicionalmente as raízes ICP-Brasil de ICP_BRASIL_BUNDLE_PATH quando esse
+    arquivo existir. Muitos servidores TLS de órgãos do governo brasileiro apresentam
+    certificado encadeado na hierarquia ICP-Brasil, que não faz parte do programa de
+    raízes confiáveis da Mozilla incluído por padrão na maioria dos ambientes
+    Linux/containers — o que produz "certificate verify failed: unable to get local
+    issuer certificate" mesmo com o certificado do cliente/empresa perfeitamente
+    correto. Sem o arquivo, o comportamento permanece idêntico ao anterior (somente a
+    cadeia padrão do sistema); ele nunca substitui ou desativa a verificação, apenas
+    soma uma raiz oficial adicional à lista já confiável."""
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if ICP_BRASIL_BUNDLE_PATH.exists():
+        try:
+            context.load_verify_locations(cafile=str(ICP_BRASIL_BUNDLE_PATH))
+        except ssl.SSLError:
+            pass
+    return context
+
+
 def classify_official_connection_error(error: Exception, service_label: str) -> str:
     """Traduz falhas de rede/TLS na comunicação com um webservice oficial em uma
     mensagem específica (timeout, DNS, conexão recusada, ou uma de duas causas de TLS
@@ -992,8 +1017,7 @@ def soap_query(access_key: str, environment: str, pfx_data: bytes, password: str
     with tempfile.TemporaryDirectory(prefix="gestao-fiscal-sefaz-") as temporary:
         directory = Path(temporary)
         cert_path, key_path = certificate_pem_files(pfx_data, password, directory)
-        context = ssl.create_default_context()
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context = build_official_ssl_context()
         context.load_cert_chain(str(cert_path), str(key_path))
         request = Request(
             config["endpoint"], data=envelope, method="POST",
@@ -1076,8 +1100,7 @@ def soap_distribution(
 </soap12:Envelope>'''.encode("utf-8")
     with tempfile.TemporaryDirectory(prefix="gestao-fiscal-dist-") as temporary:
         cert_path, key_path = certificate_pem_files(pfx_data, password, Path(temporary))
-        context = ssl.create_default_context()
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context = build_official_ssl_context()
         context.load_cert_chain(str(cert_path), str(key_path))
         request = Request(
             endpoint,
@@ -1419,8 +1442,7 @@ def nfse_api_query(
     endpoint = NFSE_ENDPOINTS[environment].format(access_key=quote(access_key, safe=""))
     with tempfile.TemporaryDirectory(prefix="gestao-fiscal-nfse-") as temporary:
         cert_path, key_path = certificate_pem_files(pfx_data, password, Path(temporary))
-        context = ssl.create_default_context()
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context = build_official_ssl_context()
         context.load_cert_chain(str(cert_path), str(key_path))
         request = Request(
             endpoint,
@@ -5402,8 +5424,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 hostname = urlparse(endpoint).hostname
                 with tempfile.TemporaryDirectory(prefix="gestao-fiscal-test-") as temporary:
                     cert_path, key_path = certificate_pem_files(pfx_data, password, Path(temporary))
-                    context = ssl.create_default_context()
-                    context.minimum_version = ssl.TLSVersion.TLSv1_2
+                    context = build_official_ssl_context()
                     context.load_cert_chain(str(cert_path), str(key_path))
                     with socket.create_connection((hostname, 443), timeout=15) as connection:
                         with context.wrap_socket(connection, server_hostname=hostname) as tls:
