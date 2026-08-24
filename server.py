@@ -1991,6 +1991,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             elif path.endswith((".css", ".js")):
                 self.send_header("Cache-Control", "public, max-age=3600, must-revalidate")
         if path == "/gestao-fiscal-consultas.html":
+            self.send_header("Cache-Control", "public, max-age=3600, must-revalidate")
             self.send_header("X-Frame-Options", "SAMEORIGIN")
             self.send_header(
                 "Content-Security-Policy",
