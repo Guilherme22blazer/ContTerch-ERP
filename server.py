@@ -929,29 +929,43 @@ def certificate_pem_files(pfx_data: bytes, password: str, directory: Path) -> tu
 
 def classify_official_connection_error(error: Exception, service_label: str) -> str:
     """Traduz falhas de rede/TLS na comunicação com um webservice oficial em uma
-    mensagem específica (timeout, certificado rejeitado, DNS, conexão recusada),
-    em vez de um único rótulo genérico para causas bem diferentes entre si."""
-    def describe(exc: BaseException) -> str:
+    mensagem específica (timeout, DNS, conexão recusada, ou uma de duas causas de TLS
+    bem diferentes que costumavam cair na mesma mensagem genérica de "certificado
+    rejeitado": (a) o SERVIDOR recusou o certificado do CLIENTE apresentado no mTLS —
+    problema real no certificado da empresa — versus (b) este servidor não conseguiu
+    validar o certificado do PRÓPRIO SERVIDOR oficial (SSLCertVerificationError /
+    "unable to get local issuer certificate") — o que normalmente indica que a cadeia
+    raiz ICP-Brasil não está instalada no ambiente, e não é um problema do certificado
+    da empresa. Sempre inclui o detalhe técnico truncado, mesmo quando classificado."""
+    def describe(exc: BaseException) -> tuple[str, str]:
+        detail = str(exc)
         if isinstance(exc, (socket.timeout, TimeoutError)):
-            return "timeout"
+            return "timeout", detail
+        if isinstance(exc, ssl.SSLCertVerificationError):
+            return "server_cert_untrusted", str(getattr(exc, "verify_message", "") or detail)
         if isinstance(exc, ssl.SSLError):
             text = f"{getattr(exc, 'reason', '')} {exc}".lower()
-            if any(token in text for token in ("certificate", "handshake", "unknown ca", "cert")):
-                return "cert"
-            return "tls"
+            if "certificate_verify_failed" in text or "unable to get local issuer certificate" in text or "unable to get issuer certificate" in text or "self signed certificate" in text or "certificate has expired" in text:
+                return "server_cert_untrusted", detail
+            if "alert" in text and any(token in text for token in ("certificate", "unknown_ca", "unknown ca", "bad_certificate", "access_denied", "handshake_failure")):
+                return "cert_rejected_by_server", detail
+            if any(token in text for token in ("certificate", "handshake", "cert")):
+                return "cert_rejected_by_server", detail
+            return "tls", detail
         if isinstance(exc, socket.gaierror) or "not known" in str(exc).lower() or "nodename" in str(exc).lower():
-            return "dns"
+            return "dns", detail
         if isinstance(exc, ConnectionRefusedError) or "connection refused" in str(exc).lower():
-            return "refused"
-        return "unknown"
+            return "refused", detail
+        return "unknown", detail
 
-    kind = describe(error)
+    kind, tech_detail = describe(error)
     if isinstance(error, URLError) and kind == "unknown":
-        kind = describe(error.reason)
-    detail = str(getattr(error, "reason", error))[:180]
+        kind, tech_detail = describe(error.reason)
+    detail = tech_detail[:200]
     messages = {
         "timeout": f"{service_label} não respondeu dentro do tempo limite. O serviço pode estar sobrecarregado ou lento — tente novamente em alguns instantes.",
-        "cert": f"{service_label} recusou o certificado digital na conexão segura (mTLS). Confira se o certificado está válido, corresponde ao CNPJ consultado e ainda não expirou.",
+        "cert_rejected_by_server": f"{service_label} recusou o certificado digital apresentado na conexão segura (mTLS). Confira se o certificado está válido, corresponde ao CNPJ consultado e ainda não expirou. Detalhe técnico: {detail}",
+        "server_cert_untrusted": f"Não foi possível validar o certificado do próprio serviço oficial de {service_label} a partir deste servidor. Isso costuma indicar que a cadeia de certificação (raiz ICP-Brasil) não está confiável neste ambiente — não é necessariamente um problema com o certificado da empresa. Detalhe técnico: {detail}",
         "tls": f"{service_label} recusou a conexão segura (TLS). Detalhe técnico: {detail}",
         "dns": f"Não foi possível resolver o endereço do serviço {service_label} (falha de DNS). O serviço pode estar temporariamente fora do ar.",
         "refused": f"{service_label} recusou a conexão (porta fechada ou serviço fora do ar).",
