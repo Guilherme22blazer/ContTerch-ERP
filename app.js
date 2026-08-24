@@ -222,6 +222,7 @@
     { route: 'certidao-regularidade-fiscal', label: 'Certidão de Regularidade Fiscal', icon: '▤', desc: 'Consulta e acompanhamento de certidões — Pessoa Física, Pessoa Jurídica, Imóvel Rural e Obra de Construção Civil' },
     { route: 'ibs-cbs', label: 'IBS e CBS', icon: '◈', desc: 'Reforma tributária do consumo' },
     { route: 'transicao-reforma', label: 'Transição da Reforma Tributária', icon: '⇄', desc: 'Comparação dos tributos atuais com IBS, CBS e Imposto Seletivo de 2026 a 2033' },
+    { route: 'recuperador-pis-cofins', label: 'Recuperador de Créditos de PIS e Cofins', icon: '⟲', desc: 'Identificação de pagamentos indevidos de PIS/Cofins em produtos monofásicos a partir das NF-e/NFC-e enviadas' },
     { route: 'lei-complementar', label: 'Lei Complementar Completa', icon: '§', desc: 'Normas oficiais consolidadas' },
     { route: 'mei-ibs-cbs', label: 'MEI, IBS e CBS', icon: '◎', desc: 'Impactos da transição no SIMEI' },
     { route: 'parametros-2026', label: 'Parâmetros 2026', icon: '⚙', desc: 'Alíquotas, limites e prazos' },
@@ -3087,6 +3088,7 @@
     else if (state.route === 'certidao-regularidade-fiscal') main.innerHTML = renderCertidaoRegularidade();
     else if (state.route === 'ibs-cbs') main.innerHTML = renderTopic('ibs-cbs');
     else if (state.route === 'transicao-reforma') main.innerHTML = renderTaxTransition();
+    else if (state.route === 'recuperador-pis-cofins') main.innerHTML = renderPisCofinsRecovery();
     else if (state.route === 'lei-complementar') main.innerHTML = renderLawLibrary();
     else if (state.route === 'mei-ibs-cbs') main.innerHTML = renderTopic('mei-ibs-cbs');
     else if (state.route === 'parametros-2026') main.innerHTML = renderParameters();
@@ -5648,6 +5650,233 @@
     } catch (error) { toast('Não foi possível ler os XMLs', error.message || 'Confira a estrutura dos arquivos.', 'error'); }
   }
 
+  var pisCofinsXmlState = { docs: [] };
+  function pisCofinsNcmSeed() {
+    return [
+      { ncm: '2710', desc: 'Gasolina, diesel, querosene e demais combustíveis derivados de petróleo', base: 'Lei 9.718/1998, art. 4º' },
+      { ncm: '2711', desc: 'GLP e demais combustíveis gasosos', base: 'Lei 9.718/1998, art. 4º' },
+      { ncm: '2201', desc: 'Águas minerais e gaseificadas (bebida fria)', base: 'Lei 13.097/2015, art. 14' },
+      { ncm: '2202', desc: 'Refrigerantes, refrescos e outras bebidas não alcoólicas', base: 'Lei 13.097/2015, art. 14' },
+      { ncm: '2203', desc: 'Cervejas de malte', base: 'Lei 13.097/2015, art. 14' },
+      { ncm: '3003', desc: 'Medicamentos', base: 'Lei 10.147/2000, art. 1º, I' },
+      { ncm: '3004', desc: 'Medicamentos', base: 'Lei 10.147/2000, art. 1º, I' },
+      { ncm: '3303', desc: 'Perfumes e águas-de-colônia', base: 'Lei 10.147/2000, art. 1º, II' },
+      { ncm: '3304', desc: 'Produtos de beleza e maquiagem', base: 'Lei 10.147/2000, art. 1º, II' },
+      { ncm: '3305', desc: 'Produtos capilares', base: 'Lei 10.147/2000, art. 1º, II' },
+      { ncm: '3307', desc: 'Produtos de barbear, desodorantes e demais itens de higiene pessoal', base: 'Lei 10.147/2000, art. 1º, II' },
+      { ncm: '4011', desc: 'Pneus novos de borracha', base: 'Lei 10.485/2002, art. 5º' },
+      { ncm: '4013', desc: 'Câmaras de ar de borracha', base: 'Lei 10.485/2002, art. 5º' },
+      { ncm: '8703', desc: 'Automóveis de passageiros', base: 'Lei 10.485/2002, art. 1º' }
+    ];
+  }
+  function pisCofinsNcmTable() {
+    if (!Array.isArray(state.settings.pisCofinsNcmTable)) state.settings.pisCofinsNcmTable = pisCofinsNcmSeed();
+    return state.settings.pisCofinsNcmTable;
+  }
+  function pisCofinsLocalName(node) { return node.localName || node.nodeName.split(':').pop(); }
+  function pisCofinsFindText(scope, names) {
+    if (!scope) return '';
+    var all = Array.prototype.slice.call(scope.getElementsByTagName('*'));
+    for (var i = 0; i < all.length; i += 1) { if (names.indexOf(pisCofinsLocalName(all[i])) >= 0) return (all[i].textContent || '').trim(); }
+    return '';
+  }
+  function pisCofinsChildByLocalName(scope, name) {
+    if (!scope) return null;
+    var all = Array.prototype.slice.call(scope.getElementsByTagName('*'));
+    for (var i = 0; i < all.length; i += 1) { if (pisCofinsLocalName(all[i]) === name) return all[i]; }
+    return null;
+  }
+  function pisCofinsParseDocument(content, fileName) {
+    var doc = new DOMParser().parseFromString(content, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) throw new Error('XML inválido: ' + fileName);
+    var all = Array.prototype.slice.call(doc.getElementsByTagName('*'));
+    var byLocal = function (name) { return all.filter(function (n) { return pisCofinsLocalName(n) === name; }); };
+    var detNodes = byLocal('det');
+    if (!detNodes.length) throw new Error('Nenhum item (det) reconhecido em ' + fileName + '. Confirme se é um XML de NF-e/NFC-e (modelo 55/65).');
+    var infNFeNode = byLocal('infNFe')[0];
+    var chave = infNFeNode ? (infNFeNode.getAttribute('Id') || '').replace(/^NFe/, '') : '';
+    var issueDate = pisCofinsFindText(doc, ['dhEmi', 'dEmi']);
+    var items = detNodes.map(function (det) {
+      var ncm = pisCofinsFindText(det, ['NCM']);
+      var desc = pisCofinsFindText(det, ['xProd']);
+      var cfop = pisCofinsFindText(det, ['CFOP']);
+      var vProd = parseLocaleNumber(pisCofinsFindText(det, ['vProd'])) || 0;
+      var pisNode = pisCofinsChildByLocalName(det, 'PIS');
+      var cofinsNode = pisCofinsChildByLocalName(det, 'COFINS');
+      return {
+        ncm: ncm, desc: desc, cfop: cfop, vProd: vProd,
+        pisCst: pisNode ? pisCofinsFindText(pisNode, ['CST']) : '', cofinsCst: cofinsNode ? pisCofinsFindText(cofinsNode, ['CST']) : '',
+        vPis: pisNode ? parseLocaleNumber(pisCofinsFindText(pisNode, ['vPIS'])) || 0 : 0,
+        vCofins: cofinsNode ? parseLocaleNumber(pisCofinsFindText(cofinsNode, ['vCOFINS'])) || 0 : 0
+      };
+    });
+    return { fileName: fileName, chave: chave, issueDate: issueDate, items: items };
+  }
+  async function handlePisCofinsFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []); if (!files.length) return;
+    try {
+      var entries = [];
+      for (var i = 0; i < files.length; i += 1) {
+        var file = files[i];
+        if (/\.xml$/i.test(file.name)) entries.push({ name: file.name, content: await file.text() });
+        else if (/\.zip$/i.test(file.name)) entries = entries.concat(await extractTaxTransitionZip(file));
+      }
+      if (!entries.length) throw new Error('Selecione arquivos XML ou pacotes ZIP que contenham XMLs.');
+      var parsed = [], failed = [];
+      entries.forEach(function (entry) {
+        try { parsed.push(pisCofinsParseDocument(entry.content, entry.name)); }
+        catch (error) { failed.push(entry.name + ': ' + error.message); }
+      });
+      if (!parsed.length) throw new Error(failed.length ? failed[0] : 'Nenhum documento reconhecido.');
+      pisCofinsXmlState.docs = pisCofinsXmlState.docs.concat(parsed);
+      audit('Notas analisadas no recuperador de PIS/Cofins', parsed.length + ' documento(s)');
+      toast('Documentos processados', parsed.length + ' documento(s) analisado(s)' + (failed.length ? ', ' + failed.length + ' com erro (veja o console).' : '.'));
+      if (failed.length && window.console) console.warn('Recuperador PIS/Cofins - falhas ao processar:', failed);
+      route();
+    } catch (error) { toast('Não foi possível ler os XMLs', error.message || 'Confira a estrutura dos arquivos.', 'error'); }
+  }
+  function pisCofinsMatchNcm(ncm, table) {
+    var digits = String(ncm || '').replace(/\D/g, '');
+    if (!digits) return null;
+    for (var i = 0; i < table.length; i += 1) {
+      var prefix = String(table[i].ncm || '').replace(/\D/g, '');
+      if (prefix && digits.indexOf(prefix) === 0) return table[i];
+    }
+    return null;
+  }
+  function pisCofinsWithinDecadencia(issueDate) {
+    if (!issueDate) return true;
+    var parsed = new Date(issueDate);
+    if (isNaN(parsed.getTime())) return true;
+    var limit = new Date(); limit.setFullYear(limit.getFullYear() - 5);
+    return parsed >= limit;
+  }
+  function pisCofinsDateBR(iso) {
+    if (!iso) return '—';
+    var parsed = new Date(iso);
+    return isNaN(parsed.getTime()) ? String(iso).slice(0, 10) : parsed.toLocaleDateString('pt-BR');
+  }
+  function pisCofinsAnalyze(docs, ncmTable) {
+    var flagged = [], totalPis = 0, totalCofins = 0, totalRevenue = 0, expiredCount = 0;
+    docs.forEach(function (doc) {
+      doc.items.forEach(function (item) {
+        var match = pisCofinsMatchNcm(item.ncm, ncmTable);
+        if (!match) return;
+        if ((item.vPis + item.vCofins) <= 0) return;
+        var within = pisCofinsWithinDecadencia(doc.issueDate);
+        if (!within) expiredCount += 1;
+        flagged.push({
+          fileName: doc.fileName, issueDateBR: pisCofinsDateBR(doc.issueDate), ncm: item.ncm, desc: item.desc,
+          cfop: item.cfop, pisCst: item.pisCst || '—', cofinsCst: item.cofinsCst || '—',
+          vProd: item.vProd, vPis: item.vPis, vCofins: item.vCofins,
+          matchDesc: match.desc, matchBase: match.base, expired: !within
+        });
+        totalRevenue += item.vProd;
+        if (within) { totalPis += item.vPis; totalCofins += item.vCofins; }
+      });
+    });
+    return { flagged: flagged, totalPis: totalPis, totalCofins: totalCofins, totalRevenue: totalRevenue, docCount: docs.length, expiredCount: expiredCount };
+  }
+  function pisCofinsNcmRowsHtml(table) {
+    if (!table.length) return '<tr><td colspan="4" style="text-align:center;color:var(--muted)">Nenhum NCM cadastrado.</td></tr>';
+    return table.map(function (row, index) {
+      return '<tr><td><b>' + esc(row.ncm) + '</b></td><td>' + esc(row.desc) + '</td><td>' + esc(row.base) + '</td><td><button type="button" class="row-button" data-action="piscofins-ncm-remove" data-index="' + index + '" aria-label="Remover">×</button></td></tr>';
+    }).join('');
+  }
+  function addPisCofinsNcmRow() {
+    var codeInput = $('#piscofins-ncm-new-code'), descInput = $('#piscofins-ncm-new-desc'), baseInput = $('#piscofins-ncm-new-base');
+    var code = codeInput ? codeInput.value.trim() : '';
+    if (!code) { toast('Informe o NCM', 'Digite o prefixo do NCM antes de adicionar.', 'warning'); return; }
+    var table = pisCofinsNcmTable();
+    table.push({ ncm: code, desc: descInput ? descInput.value.trim() : '', base: baseInput ? baseInput.value.trim() : '' });
+    state.settings.pisCofinsNcmTable = table; persist(); route();
+  }
+  function removePisCofinsNcmRow(index) {
+    var table = pisCofinsNcmTable();
+    table.splice(Number(index), 1);
+    state.settings.pisCofinsNcmTable = table; persist(); route();
+  }
+  function selectPisCofinsView(view) { state.pisCofinsView = view === 'sn' ? 'sn' : 'lrp'; route(); }
+  function resetPisCofinsView() { state.pisCofinsView = 'intro'; route(); }
+  function clearPisCofinsAnalysis() {
+    if (!window.confirm('Limpar todos os documentos enviados nesta análise?')) return;
+    pisCofinsXmlState = { docs: [] }; route(); toast('Análise limpa', 'Os documentos enviados foram removidos desta sessão.');
+  }
+  function exportPisCofinsAnalysis() {
+    if (!pisCofinsXmlState.docs.length) { toast('Nada para exportar', 'Envie ao menos uma nota fiscal antes de exportar.', 'error'); return; }
+    var ncmTable = pisCofinsNcmTable();
+    var analysis = pisCofinsAnalyze(pisCofinsXmlState.docs, ncmTable);
+    downloadFile('recuperador-pis-cofins-' + todayISO() + '.json', JSON.stringify({
+      schema: 'gestao-fiscal.recuperador-pis-cofins.v1', generatedAt: nowISO(), view: state.pisCofinsView, ncmTable: ncmTable,
+      documents: pisCofinsXmlState.docs.map(function (d) { return { fileName: d.fileName, chave: d.chave, issueDate: d.issueDate }; }),
+      analysis: analysis
+    }, null, 2));
+    audit('Análise de PIS/Cofins exportada', analysis.flagged.length + ' item(ns) · JSON');
+    toast('Relatório exportado', 'A análise completa foi salva em JSON.');
+  }
+  function renderPisCofinsResults(analysis, isSn) {
+    if (!pisCofinsXmlState.docs.length) {
+      return '<section class="card"><div class="card-body" style="text-align:center;color:var(--muted);padding:30px">Envie ao menos uma nota fiscal para ver os itens classificados e os valores potencialmente recuperáveis.</div></section>';
+    }
+    var totalLabel = isSn ? 'Receita elegível para segregação' : 'Valor potencialmente recuperável (PIS + Cofins)';
+    var totalValue = isSn ? analysis.totalRevenue : (analysis.totalPis + analysis.totalCofins);
+    return [
+      '<section class="das-total" style="margin-bottom:14px"><div class="das-total-main"><small>' + esc(totalLabel.toUpperCase()) + '</small><strong>' + money(totalValue) + '</strong></div><div class="das-metrics"><div><span>Documentos analisados</span><b>' + analysis.docCount + '</b></div><div><span>Itens classificados</span><b>' + analysis.flagged.length + '</b></div><div><span>Fora do prazo (5 anos)</span><b>' + analysis.expiredCount + '</b></div><div><span>PIS + Cofins destacado</span><b>' + money(analysis.totalPis + analysis.totalCofins) + '</b></div></div></section>',
+      '<section class="card"><header class="card-header"><h2>Itens classificados como possivelmente monofásicos</h2><small>Compare com a nota original antes de qualquer pedido — a classificação é um ponto de partida, não uma decisão fiscal.</small></header><div class="card-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>Nota</th><th>Emissão</th><th>NCM</th><th>Produto</th><th>CFOP</th><th>CST PIS/COFINS</th><th>Valor do item</th><th>PIS + Cofins destacado</th></tr></thead><tbody>' +
+        (analysis.flagged.length ? analysis.flagged.map(function (item) {
+          return '<tr' + (item.expired ? ' style="opacity:.45"' : '') + '><td>' + esc(item.fileName) + '</td><td>' + esc(item.issueDateBR) + '</td><td>' + esc(item.ncm) + '</td><td>' + esc(item.desc) + '<br><small style="color:var(--muted)">' + esc(item.matchDesc) + ' — ' + esc(item.matchBase) + '</small></td><td>' + esc(item.cfop) + '</td><td>' + esc(item.pisCst) + ' / ' + esc(item.cofinsCst) + '</td><td>' + money(item.vProd) + '</td><td>' + money(item.vPis + item.vCofins) + (item.expired ? ' <span class="tag tag--warning">fora do prazo</span>' : '') + '</td></tr>';
+        }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--muted)">Nenhum item da tabela de referência foi encontrado nos documentos enviados.</td></tr>') +
+      '</tbody></table></div></div></section>',
+      '<section class="warning-banner" style="margin-top:14px"><strong>Não substitui a análise do contador.</strong> A classificação por NCM é um ponto de partida editável — confirme cada item na legislação vigente e no enquadramento real do produto antes de solicitar restituição, compensação ou retificar o PGDAS-D.</section>'
+    ].join('');
+  }
+  function renderPisCofinsWorkspace(view) {
+    var ncmTable = pisCofinsNcmTable();
+    var analysis = pisCofinsAnalyze(pisCofinsXmlState.docs, ncmTable);
+    var isSn = view === 'sn';
+    var mechanismText = isSn
+      ? 'No Simples Nacional, o PIS e a Cofins não são destacados nota a nota — estão embutidos no valor único do DAS, calculado como percentual da receita bruta. Quando a receita é de produtos monofásicos, a Resolução CGSN nº 140/2018 prevê a segregação dessa receita para excluir da base do PGDAS-D o PIS/Cofins já recolhido pelo fabricante ou importador. O valor abaixo é a receita identificada como elegível para essa segregação — o impacto exato no DAS depende da retificação do PGDAS-D pelo contador, pois a fórmula de partilha varia por faixa e Anexo.'
+      : 'No Lucro Real e no Lucro Presumido, o PIS e a Cofins são recolhidos por DARF com base no que a nota fiscal destaca. Se a nota de revenda de um produto monofásico foi emitida com tributação normal (alíquota cheia) em vez de alíquota zero, o valor destacado foi pago a maior e pode ser objeto de restituição ou compensação via PER/DCOMP, respeitado o prazo decadencial de 5 anos contados da data de emissão.';
+    return [
+      '<div class="info-banner"><span>i</span><div><strong>' + (isSn ? 'Simples Nacional.' : 'Lucro Real e Presumido.') + '</strong> ' + mechanismText + '</div></div>',
+      '<section class="card"><header class="card-header"><div><h2>Tabela de referência — produtos monofásicos</h2><small>Lista de partida não exaustiva; confirme a classificação de cada NCM com o contador responsável antes de qualquer pedido de restituição ou compensação.</small></div></header><div class="card-body">' +
+        '<div class="table-wrap"><table class="data-table"><thead><tr><th>NCM (prefixo)</th><th>Descrição</th><th>Base legal</th><th></th></tr></thead><tbody id="piscofins-ncm-rows">' + pisCofinsNcmRowsHtml(ncmTable) + '</tbody></table></div>' +
+        '<div class="form-grid" style="grid-template-columns:120px 1.4fr 1fr auto;gap:8px;margin-top:12px;align-items:end">' +
+          '<label class="field"><span>NCM</span><input id="piscofins-ncm-new-code" placeholder="Ex.: 3004"></label>' +
+          '<label class="field"><span>Descrição</span><input id="piscofins-ncm-new-desc" placeholder="Descrição do produto"></label>' +
+          '<label class="field"><span>Base legal</span><input id="piscofins-ncm-new-base" placeholder="Ex.: Lei 10.147/2000"></label>' +
+          '<button type="button" class="secondary-button" data-action="piscofins-ncm-add">+ Adicionar</button>' +
+        '</div>' +
+      '</div></section>',
+      '<section class="card"><header class="card-header"><div><h2>Enviar notas fiscais</h2><small>NF-e (modelo 55) e NFC-e (modelo 65) — arquivos XML ou pacotes ZIP com XMLs</small></div></header><div class="card-body">' +
+        '<div class="transition-upload-zone"><input id="piscofins-xml-files" class="is-hidden" type="file" accept=".xml,.zip,application/xml,text/xml,application/zip" multiple><span>⇧</span><div><b>Enviar XMLs ou ZIP</b><small>Os itens são classificados automaticamente contra a tabela de referência acima.</small></div><button class="primary-button" data-action="piscofins-select-files">Selecionar arquivos</button></div>' +
+      '</div></section>',
+      renderPisCofinsResults(analysis, isSn)
+    ].join('');
+  }
+  function renderPisCofinsRecovery() {
+    var view = state.pisCofinsView || 'intro';
+    var hasDocs = pisCofinsXmlState.docs.length > 0;
+    var headerActions = view !== 'intro'
+      ? '<button class="secondary-button" data-action="piscofins-back">← Voltar</button>' + (hasDocs ? '<button class="secondary-button" data-action="piscofins-export">↧ Exportar JSON</button><button class="secondary-button" data-action="piscofins-clear">Limpar documentos</button>' : '')
+      : '';
+    var parts = [pageHeading('Recuperador de Créditos de PIS e Cofins', 'Identifique pagamentos indevidos de PIS e Cofins em produtos monofásicos ou de substituição tributária, a partir das notas fiscais enviadas, e veja os valores potencialmente recuperáveis.', headerActions)];
+    if (view === 'intro') {
+      parts.push(
+        '<section class="card"><div class="card-body">' +
+        '<p>O Recuperador de Créditos de PIS e Cofins é uma solução voltada aos comerciantes varejistas para verificar pagamentos indevidos de PIS e Cofins de produtos monofásicos ou de substituição tributária dessas contribuições e indicar os valores passíveis de compensação ou restituição, conforme opção do contribuinte, através do envio dos documentos fiscais (NF-e modelo 55 e NFC-e modelo 65).</p>' +
+        '<p>A análise poderá ser feita considerando o prazo decadencial de 5 anos contando da data de emissão do documento e poderá ser utilizada por todos os regimes tributários, inclusive por empresas optantes pelo Simples Nacional.</p>' +
+        '<div class="form-grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-top:16px">' +
+          '<div class="card" style="background:#f6f7f9;text-align:center;padding:24px 18px"><h3 style="margin:0 0 16px">Lucro Real e Presumido</h3><button class="primary-button" data-action="piscofins-select" data-view="lrp">Acessar →</button></div>' +
+          '<div class="card" style="background:#f6f7f9;text-align:center;padding:24px 18px"><h3 style="margin:0 0 16px">Simples Nacional</h3><button class="primary-button" data-action="piscofins-select" data-view="sn">Acessar →</button></div>' +
+        '</div></div></section>'
+      );
+    } else {
+      parts.push(renderPisCofinsWorkspace(view));
+    }
+    return parts.join('');
+  }
+
   function calculateProLabore2026(grossValue, dependentCount, otherDeductions) {
     var gross = Math.max(0, Number(grossValue || 0));
     var dependents = Math.max(0, Math.floor(Number(dependentCount || 0)));
@@ -6526,6 +6755,13 @@
     else if (action === 'contracts-save-custom') saveCustomContract();
     else if (action === 'transition-mode') setTaxTransitionMode(actionEl.getAttribute('data-mode'));
     else if (action === 'transition-select-files') { var xmlInput = $('#transition-xml-files'); if (xmlInput) xmlInput.click(); }
+    else if (action === 'piscofins-select') selectPisCofinsView(actionEl.getAttribute('data-view'));
+    else if (action === 'piscofins-back') resetPisCofinsView();
+    else if (action === 'piscofins-select-files') { var pcInput = $('#piscofins-xml-files'); if (pcInput) pcInput.click(); }
+    else if (action === 'piscofins-ncm-add') addPisCofinsNcmRow();
+    else if (action === 'piscofins-ncm-remove') removePisCofinsNcmRow(actionEl.getAttribute('data-index'));
+    else if (action === 'piscofins-clear') clearPisCofinsAnalysis();
+    else if (action === 'piscofins-export') exportPisCofinsAnalysis();
     else if (action === 'transition-select-year') selectTaxTransitionYear(actionEl.getAttribute('data-year'));
     else if (action === 'transition-clear') resetTaxTransition();
     else if (action === 'transition-save') saveTaxTransition();
@@ -6737,6 +6973,7 @@
     else if (event.target.matches('[data-balance-input]')) updateBalanceAnalysis(true);
     else if (event.target.matches('[data-transition-input]')) updateTaxTransition(true);
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
+    else if (event.target.id === 'piscofins-xml-files') handlePisCofinsFiles(event.target.files);
     else if (event.target.id === 'json-file-input') processImportedFile(event.target.files && event.target.files[0]);
     else if (event.target.id === 'profile-photo-input') saveProfilePhoto(event.target.files && event.target.files[0]);
     else if (event.target.id === 'sefaz-code-image') handleSefazCodeImage(event.target.files && event.target.files[0]);
