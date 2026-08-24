@@ -1198,6 +1198,70 @@ def parse_distributed_document(xml_data: bytes, schema_name: str, holder_documen
     }
 
 
+def decrypt_and_normalize_record(row: sqlite3.Row, source: str, holder_document: str, fernet) -> dict | None:
+    """Decifra e normaliza uma linha de fiscal_queries ou distributed_documents em um
+    formato único, reaproveitado pelo lote mensal de XML e pelo Explorador de Documentos."""
+    try:
+        result = json.loads(fernet.decrypt(row["result_encrypted"]).decode("utf-8"))
+        xml_data = fernet.decrypt(row["xml_encrypted"]) if row["xml_encrypted"] else None
+    except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return None
+    issuer_document = digits((result.get("issuer") or {}).get("document", ""))
+    recipient_document = digits((result.get("recipient") or {}).get("document", ""))
+    direction = str(result.get("direction") or (row["direction"] if source == "distribution" else "") or "Relacionada")
+    if holder_document and issuer_document == holder_document:
+        direction = "Emitida"
+    elif holder_document and recipient_document == holder_document:
+        direction = "Recebida"
+    key = digits(result.get("accessKey") or row["access_key"] or "")
+    model = str(result.get("model") or (row["document_type"] if source == "distribution" else row["model"]) or "Documento fiscal")
+    if model == "Evento fiscal" and len(key) == 44:
+        model = document_model(key)[1]
+    elif len(key) == 50:
+        model = "NFS-e"
+    status = str(result.get("status") or row["status"] or "Documento localizado")
+    summary = result.get("summary") or {}
+    events = result.get("events") or []
+    event_date = next((str(item.get("date", "")) for item in events if item.get("date")), "")
+    issued_at = str(summary.get("issuedAt") or event_date or "")
+    decoded_xml = xml_data.decode("utf-8", errors="ignore").casefold() if xml_data else ""
+    cancellation = (
+        "cancel" in status.casefold()
+        or "cancel" in str(result.get("officialMessage", "")).casefold()
+        or "cancel" in str(row["schema_name"] if source == "distribution" else "").casefold()
+        or "cancel" in decoded_xml
+        or "110111" in decoded_xml
+    )
+    return {
+        "id": row["id"], "source": source, "row": row, "certificateId": row["certificate_id"],
+        "environment": row["environment"], "result": result, "xml": xml_data, "hasXml": xml_data is not None,
+        "key": key, "model": model, "status": status, "direction": direction,
+        "issuer": result.get("issuer") or {}, "recipient": result.get("recipient") or {}, "summary": summary,
+        "issuedAt": issued_at, "cancelled": cancellation,
+        "capturedAt": row["received_at"] if source == "distribution" else row["consulted_at"],
+    }
+
+
+def parse_money_text(text: str) -> float:
+    """Reverte o formato de money_text ('R$ 1.234,56') para float, com precisão exata
+    já que o texto é gerado por money_text de forma determinística."""
+    if not text:
+        return 0.0
+    cleaned = re.sub(r"[^\d,.-]", "", str(text)).replace(".", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def record_total_value(result: dict) -> float:
+    taxes = (result or {}).get("taxes") or {}
+    for label in ("Total do documento", "Total dos serviços", "Valor líquido"):
+        if taxes.get(label):
+            return parse_money_text(taxes[label])
+    return 0.0
+
+
 def status_from_official(code: str, motive: str) -> tuple[str, str]:
     normalized = (motive or "").lower()
     if code == "100" or "autorizado" in normalized:
@@ -3417,53 +3481,17 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         records: list[dict] = []
         unreadable = 0
 
-        def record_from_row(row: sqlite3.Row, source: str) -> dict | None:
-            nonlocal unreadable
-            try:
-                result = json.loads(fernet.decrypt(row["result_encrypted"]).decode("utf-8"))
-                xml_data = fernet.decrypt(row["xml_encrypted"])
-            except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError):
-                unreadable += 1
-                return None
-            issuer_document = digits((result.get("issuer") or {}).get("document", ""))
-            recipient_document = digits((result.get("recipient") or {}).get("document", ""))
-            direction = str(result.get("direction") or (row["direction"] if source == "distribution" else "") or "Relacionada")
-            if holder_document and issuer_document == holder_document:
-                direction = "Emitida"
-            elif holder_document and recipient_document == holder_document:
-                direction = "Recebida"
-            key = digits(result.get("accessKey") or row["access_key"] or "")
-            model = str(result.get("model") or (row["document_type"] if source == "distribution" else row["model"]) or "Documento fiscal")
-            if model == "Evento fiscal" and len(key) == 44:
-                model = document_model(key)[1]
-            elif len(key) == 50:
-                model = "NFS-e"
-            status = str(result.get("status") or row["status"] or "Documento localizado")
-            summary = result.get("summary") or {}
-            events = result.get("events") or []
-            event_date = next((str(item.get("date", "")) for item in events if item.get("date")), "")
-            issued_at = str(summary.get("issuedAt") or event_date or "")
-            decoded_xml = xml_data.decode("utf-8", errors="ignore").casefold()
-            cancellation = (
-                "cancel" in status.casefold()
-                or "cancel" in str(result.get("officialMessage", "")).casefold()
-                or "cancel" in str(row["schema_name"] if source == "distribution" else "").casefold()
-                or "cancel" in decoded_xml
-                or "110111" in decoded_xml
-            )
-            return {
-                "source": source, "row": row, "result": result, "xml": xml_data,
-                "key": key, "model": model, "status": status, "direction": direction,
-                "issuedAt": issued_at, "cancelled": cancellation,
-            }
-
         for row in query_rows:
-            record = record_from_row(row, "query")
-            if record:
+            record = decrypt_and_normalize_record(row, "query", holder_document, fernet)
+            if record is None:
+                unreadable += 1
+            else:
                 records.append(record)
         for row in distributed_rows:
-            record = record_from_row(row, "distribution")
-            if record:
+            record = decrypt_and_normalize_record(row, "distribution", holder_document, fernet)
+            if record is None:
+                unreadable += 1
+            else:
                 records.append(record)
 
         def value_month(value: str) -> str:
@@ -3615,6 +3643,218 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "counts": counters, "warnings": warnings,
             "month": month, "company": certificate["company"],
             "coverage": manifest["coverage"],
+        }
+
+    def build_documents_explorer(self, params: dict, user: sqlite3.Row) -> dict:
+        def qp(name: str, default: str = "") -> str:
+            values = params.get(name)
+            return str(values[0]).strip() if values else default
+
+        certificate_id = qp("certificateId")
+        company_filter = qp("company").lower()
+        document_filter = digits(qp("document"))
+        access_key_filter = digits(qp("accessKey"))
+        number_filter = qp("number")
+        series_filter = qp("series")
+        date_from = qp("dateFrom")
+        date_to = qp("dateTo")
+        month_filter = qp("month")
+        situation = qp("situation", "all")
+        direction_filter = qp("direction", "all")
+        document_kind = qp("documentKind", "all")
+        try:
+            page = max(1, int(qp("page", "1") or "1"))
+        except ValueError:
+            page = 1
+        try:
+            page_size = min(200, max(1, int(qp("pageSize", "25") or "25")))
+        except ValueError:
+            page_size = 25
+
+        is_admin = user["role"] == "Administrador"
+        with connect() as database:
+            certificates = {row["id"]: row for row in database.execute("SELECT * FROM fiscal_certificates").fetchall()}
+            query_where, query_values = ["1 = 1"], []
+            if certificate_id:
+                query_where.append("certificate_id = ?"); query_values.append(certificate_id)
+            if not is_admin:
+                query_where.append("consulted_by = ?"); query_values.append(user["email"])
+            query_rows = database.execute(
+                f"SELECT * FROM fiscal_queries WHERE {' AND '.join(query_where)} ORDER BY consulted_at DESC LIMIT 5000",
+                query_values,
+            ).fetchall()
+            distributed_where, distributed_values = ["1 = 1"], []
+            if certificate_id:
+                distributed_where.append("certificate_id = ?"); distributed_values.append(certificate_id)
+            if not is_admin:
+                distributed_where.append("synced_by = ?"); distributed_values.append(user["email"])
+            distributed_rows = database.execute(
+                f"SELECT * FROM distributed_documents WHERE {' AND '.join(distributed_where)} ORDER BY received_at DESC LIMIT 5000",
+                distributed_values,
+            ).fetchall()
+
+        fernet = get_fernet()
+        records: list[dict] = []
+        for row in query_rows:
+            cert = certificates.get(row["certificate_id"])
+            record = decrypt_and_normalize_record(row, "query", digits(cert["document"]) if cert else "", fernet)
+            if record:
+                record["company"] = row["company"] or (cert["company"] if cert else "")
+                record["branch"] = cert["branch"] if cert else ""
+                records.append(record)
+        for row in distributed_rows:
+            cert = certificates.get(row["certificate_id"])
+            record = decrypt_and_normalize_record(row, "distribution", digits(cert["document"]) if cert else "", fernet)
+            if record:
+                record["company"] = cert["company"] if cert else ""
+                record["branch"] = cert["branch"] if cert else ""
+                records.append(record)
+
+        model_codes = {"NF-e": "nfe", "NFC-e": "nfce", "CT-e": "cte", "CT-e OS": "cte", "MDF-e": "mdfe", "NFS-e": "nfse"}
+        direction_map = {"issued": "emitida", "received": "recebida"}
+
+        def matches(record: dict) -> bool:
+            if document_kind != "all" and model_codes.get(record["model"], "") != document_kind:
+                return False
+            if situation == "authorized" and record["cancelled"]:
+                return False
+            if situation == "cancelled" and not record["cancelled"]:
+                return False
+            if direction_filter != "all" and record["direction"].casefold() != direction_map.get(direction_filter, ""):
+                return False
+            if company_filter and company_filter not in (record["company"] or "").lower():
+                return False
+            if document_filter:
+                issuer_doc = digits(record["issuer"].get("document", ""))
+                recipient_doc = digits(record["recipient"].get("document", ""))
+                if document_filter not in issuer_doc and document_filter not in recipient_doc:
+                    return False
+            if access_key_filter and access_key_filter not in record["key"]:
+                return False
+            if number_filter and number_filter not in str(record["summary"].get("number", "")):
+                return False
+            if series_filter and series_filter not in str(record["summary"].get("series", "")):
+                return False
+            issue_date = (record["issuedAt"] or "")[:10]
+            if month_filter and not issue_date.startswith(month_filter):
+                return False
+            if date_from and (not issue_date or issue_date < date_from):
+                return False
+            if date_to and (not issue_date or issue_date > date_to):
+                return False
+            return True
+
+        filtered = [record for record in records if matches(record)]
+        filtered.sort(key=lambda record: record["capturedAt"] or "", reverse=True)
+
+        stats = {"total": len(filtered), "byModel": {}, "authorized": 0, "cancelled": 0, "totalValue": 0.0}
+        for record in filtered:
+            stats["byModel"][record["model"]] = stats["byModel"].get(record["model"], 0) + 1
+            stats["cancelled" if record["cancelled"] else "authorized"] += 1
+            stats["totalValue"] += record_total_value(record["result"])
+        stats["totalValue"] = round(stats["totalValue"], 2)
+
+        can_sensitive = "view_sensitive" in self.permissions_for(user)
+        start = (page - 1) * page_size
+        items = []
+        for record in filtered[start:start + page_size]:
+            issuer, recipient = record["issuer"], record["recipient"]
+            issuer_document, recipient_document = digits(issuer.get("document", "")), digits(recipient.get("document", ""))
+            if not can_sensitive:
+                if issuer_document: issuer_document = "*" * max(0, len(issuer_document) - 4) + issuer_document[-4:]
+                if recipient_document: recipient_document = "*" * max(0, len(recipient_document) - 4) + recipient_document[-4:]
+            key = record["key"]
+            items.append({
+                "id": record["id"], "source": record["source"], "certificateId": record["certificateId"],
+                "company": record["company"], "branch": record["branch"],
+                "model": record["model"], "number": record["summary"].get("number", ""), "series": record["summary"].get("series", ""),
+                "accessKey": key if can_sensitive else (key[:6] + "…" + key[-8:] if key else ""),
+                "issuedAt": record["issuedAt"], "capturedAt": record["capturedAt"],
+                "issuerName": issuer.get("name", "") if can_sensitive else "Dados protegidos",
+                "issuerDocument": issuer_document,
+                "recipientName": recipient.get("name", "") if can_sensitive else "Dados protegidos",
+                "recipientDocument": recipient_document,
+                "value": round(record_total_value(record["result"]), 2), "status": record["status"],
+                "cancelled": record["cancelled"], "direction": record["direction"], "hasXml": record["hasXml"],
+                "environment": record["environment"],
+                "environmentLabel": "Produção" if record["environment"] == "production" else "Homologação",
+            })
+        return {"items": items, "total": len(filtered), "page": page, "pageSize": page_size, "stats": stats}
+
+    def build_documents_zip(self, payload: dict, user: sqlite3.Row) -> dict:
+        requested = payload.get("documents") or []
+        if not isinstance(requested, list) or not requested:
+            raise ValueError("Selecione ao menos um documento para baixar.")
+        if len(requested) > MAX_XML_BATCH_DOCUMENTS:
+            raise ValueError(f"Selecione no máximo {MAX_XML_BATCH_DOCUMENTS} documentos por lote.")
+        is_admin = user["role"] == "Administrador"
+        query_ids = [str(item.get("id", "")) for item in requested if item.get("source") == "query" and item.get("id")]
+        distributed_ids = [str(item.get("id", "")) for item in requested if item.get("source") == "distribution" and item.get("id")]
+
+        with connect() as database:
+            certificates = {row["id"]: row for row in database.execute("SELECT * FROM fiscal_certificates").fetchall()}
+            query_rows = []
+            if query_ids:
+                placeholders = ",".join(["?"] * len(query_ids))
+                query_rows = database.execute(f"SELECT * FROM fiscal_queries WHERE id IN ({placeholders})", query_ids).fetchall()
+            distributed_rows = []
+            if distributed_ids:
+                placeholders = ",".join(["?"] * len(distributed_ids))
+                distributed_rows = database.execute(f"SELECT * FROM distributed_documents WHERE id IN ({placeholders})", distributed_ids).fetchall()
+
+        fernet = get_fernet()
+        records: list[dict] = []
+        for row in query_rows:
+            if not is_admin and row["consulted_by"] != user["email"]:
+                continue
+            cert = certificates.get(row["certificate_id"])
+            record = decrypt_and_normalize_record(row, "query", digits(cert["document"]) if cert else "", fernet)
+            if record and record["hasXml"]:
+                record["company"] = row["company"] or (cert["company"] if cert else "")
+                records.append(record)
+        for row in distributed_rows:
+            if not is_admin and row["synced_by"] != user["email"]:
+                continue
+            cert = certificates.get(row["certificate_id"])
+            record = decrypt_and_normalize_record(row, "distribution", digits(cert["document"]) if cert else "", fernet)
+            if record and record["hasXml"]:
+                record["company"] = cert["company"] if cert else ""
+                records.append(record)
+        if not records:
+            raise ValueError("Nenhum XML disponível para os documentos selecionados. Documentos de consulta por chave sem anexo não possuem XML original.")
+
+        model_codes = {"NF-e": "nfe", "NFC-e": "nfce", "CT-e": "cte", "CT-e OS": "cte", "MDF-e": "mdfe", "NFS-e": "nfse"}
+        archive = io.BytesIO()
+        hashes: set[str] = set()
+        counters = {"total": 0, "duplicates": 0, "authorized": 0, "cancelled": 0}
+        source_bytes = 0
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=8) as zipped:
+            for record in records:
+                xml_data = record["xml"]
+                digest = hashlib.sha256(xml_data).hexdigest()
+                if digest in hashes:
+                    counters["duplicates"] += 1
+                    continue
+                hashes.add(digest)
+                source_bytes += len(xml_data)
+                if source_bytes > MAX_XML_BATCH_SOURCE_BYTES:
+                    raise ValueError("A seleção ultrapassou o limite seguro de tamanho. Baixe em lotes menores.")
+                status_slug = "cancelamento" if record["cancelled"] else "autorizada"
+                counters["cancelled" if record["cancelled"] else "authorized"] += 1
+                model_slug = model_codes.get(record["model"], "dfe")
+                identifier = record["key"] or record["id"]
+                filename = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{model_slug}-{identifier}-{status_slug}.xml")[:220]
+                company_slug = re.sub(r"[^A-Za-z0-9]+", "-", str(record["company"] or "empresa")).strip("-")[:42] or "empresa"
+                zipped.writestr(f"{company_slug}/{filename}", xml_data)
+                counters["total"] += 1
+        archive_data = archive.getvalue()
+        if len(archive_data) > MAX_XML_BATCH_ZIP_BYTES:
+            raise ValueError("O arquivo ZIP ultrapassou o limite seguro. Selecione menos documentos.")
+        self.audit(user["email"], "documents_bulk_download", f"{counters['total']} XML(s) baixado(s) em lote")
+        return {
+            "filename": f"documentos-fiscais-{dt.datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}.zip",
+            "dataBase64": base64.b64encode(archive_data).decode("ascii"),
+            "counts": counters,
         }
 
     def perform_distribution_sync(self, payload: dict, user: sqlite3.Row) -> dict:
@@ -4475,6 +4715,17 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 companies.append(summary)
             self.send_json({"companies": companies, "monthStart": month_start[:10]})
             return
+        if path == "/api/sefaz/documents":
+            user = self.require_user()
+            if user is None:
+                return
+            if not self.require_permission(user, "view_history"):
+                return
+            try:
+                self.send_json(self.build_documents_explorer(parse_qs(parsed_url.query), user))
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
         history_match = re.fullmatch(r"/api/sefaz/history/([a-f0-9]{32})(/xml)?", path)
         if history_match:
             user = self.require_user()
@@ -5178,6 +5429,16 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             try:
                 self.send_json(self.build_monthly_xml_batch(payload, user))
             except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/sefaz/documents/download":
+            user = self.require_user()
+            if user is None or not self.require_permission(user, "download_xml"):
+                return
+            try:
+                self.send_json(self.build_documents_zip(payload, user))
+            except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
 

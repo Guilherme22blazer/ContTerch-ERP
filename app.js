@@ -35,7 +35,7 @@
     'Terceiro setor': ['Associação', 'Fundação', 'Organização religiosa', 'Projeto social'],
     'Outro segmento': ['Atividade empresarial em geral', 'Profissional autônomo', 'Microempreendedor individual', 'Outra atividade']
   };
-  var sefazState = { certificates: [], history: [], distributedDocuments: [], distributionStates: [], nfseMonthlyImports: [], companiesOverview: [], companiesOverviewMonthStart: '', stats: {}, permissions: [], portals: {}, selectedResult: null, loading: false };
+  var sefazState = { certificates: [], history: [], distributedDocuments: [], distributionStates: [], nfseMonthlyImports: [], companiesOverview: [], companiesOverviewMonthStart: '', documents: { items: [], total: 0, page: 1, pageSize: 25, stats: {} }, documentSelection: {}, stats: {}, permissions: [], portals: {}, selectedResult: null, loading: false };
   var transitionXmlState = { files: [], totals: null };
   var SEFAZ_UFS = [
     ['11','RO'],['12','AC'],['13','AM'],['14','RR'],['15','PA'],['16','AP'],['17','TO'],
@@ -1568,20 +1568,37 @@
     return '<div class="card"><header class="card-header"><h2>Resumo do mês</h2><small>Documentos efetivamente captados via webservice oficial</small></header><div class="card-body"><div class="das-total"><div class="das-total-main"><small>Documentos captados no mês</small><strong>' + number(monthTotal) + '</strong></div><div class="das-metrics"><div><span>Empresas cadastradas</span><b>' + companies.length + '</b></div><div><span>Certificados a vencer</span><b>' + expiring.length + '</b></div><div><span>Certificados vencidos</span><b>' + expired.length + '</b></div></div></div></div></div>' +
       '<div class="card" style="margin-top:14px"><header class="card-header"><h2>Notificações</h2><small>Geradas a partir dos certificados cadastrados</small></header><div class="card-body"><ul class="captador-notices">' + notices.slice(0, 6).map(function (n) { return '<li><span>' + n.icon + '</span>' + esc(n.text) + '</li>'; }).join('') + '</ul></div></div>';
   }
+  function captadorSection() {
+    if (!state.settings.captadorSection) state.settings.captadorSection = 'empresas';
+    return state.settings.captadorSection;
+  }
+  function setCaptadorSection(section) {
+    state.settings.captadorSection = section === 'documentos' ? 'documentos' : 'empresas';
+    persist(); route();
+  }
   function renderCaptadorNotasFiscais() {
-    var actions = '<button class="secondary-button" data-action="captador-sync-all">↻ Sincronizar Todas</button><button class="secondary-button" data-action="captador-monthly-closing">▣ Fechamento Mensal</button>' + (sefazCan('manage_certificates') ? '<button class="primary-button" data-action="sefaz-add-certificate">＋ Adicionar Empresa</button>' : '');
+    var section = captadorSection();
+    var actions = section === 'documentos'
+      ? ''
+      : '<button class="secondary-button" data-action="captador-sync-all">↻ Sincronizar Todas</button><button class="secondary-button" data-action="captador-monthly-closing">▣ Fechamento Mensal</button>' + (sefazCan('manage_certificates') ? '<button class="primary-button" data-action="sefaz-add-certificate">＋ Adicionar Empresa</button>' : '');
     if (!apiEnabled()) {
       return [
         pageHeading('Captador de Notas Fiscais', 'Captação automática de NF-e, NFC-e, CT-e e NFS-e a partir do certificado digital A1 de cada empresa, via webservice oficial da SEFAZ.', ''),
         '<div class="info-banner info-banner--warning"><span>!</span><div><strong>Ative o modo seguro para ler o certificado.</strong> Execute <code>ABRIR-MODO-SEGURO.cmd</code>, mantenha a janela aberta e use o botão ao lado.</div><button class="primary-button" data-action="sefaz-open-secure-mode">Verificar e abrir</button></div>'
       ].join('');
     }
-    return [
-      pageHeading('Captador de Notas Fiscais', 'Captação automática de NF-e, NFC-e, CT-e e NFS-e a partir do certificado digital A1 de cada empresa, via webservice oficial da SEFAZ — os mesmos dados protegidos e o mesmo motor de sincronização da Consulta SEFAZ.', actions),
-      '<div class="info-banner"><span>i</span><div><strong>Captação real, sem dados fictícios.</strong> Esta tela reorganiza por empresa os documentos já sincronizados pelo webservice oficial NFeDistribuicaoDFe e pelas consultas realizadas na aba Consulta SEFAZ. Cadastre o certificado A1 de cada empresa para começar a captar.</div></div>',
+    var sectionTabs = '<div class="captador-tab-group" style="margin-bottom:14px"><button type="button" class="segment' + (section === 'empresas' ? ' active' : '') + '" data-action="captador-section" data-section="empresas">▤ Empresas</button><button type="button" class="segment' + (section === 'documentos' ? ' active' : '') + '" data-action="captador-section" data-section="documentos">▧ Documentos</button></div>';
+    var body = section === 'documentos' ? [
+      '<section class="card"><header class="card-header"><h2>Explorador de Documentos</h2><small>Notas e eventos já capturados por sincronização, consulta por chave ou importação manual</small></header><div class="card-body">' + captadorDocumentsStatsHtml((sefazState.documents || {}).stats) + captadorDocumentsFiltersHtml() + '<div id="cd-table-wrap">' + captadorDocumentsTableHtml() + '</div></div></section>'
+    ].join('') : [
       '<div class="captador-layout"><div class="captador-main">',
       '<section class="card"><header class="card-header"><div class="captador-tab-group" id="captador-tabs">' + captadorTabsHtml() + '</div><div class="page-actions"><select id="captador-status-filter" data-captador-input>' + captadorCertificateStatusOptions(captadorUi().statusFilter) + '</select><input id="captador-search" data-captador-input placeholder="Pesquisar pelo nome ou CNPJ da empresa" value="' + esc(captadorUi().query || '') + '"></div></header><div class="card-body" id="captador-companies-wrap">' + renderCaptadorCompaniesTable() + '</div></section>',
       '</div><aside class="captador-aside" id="captador-summary">' + captadorSummaryHtml() + '</aside></div>'
+    ].join('');
+    return [
+      pageHeading('Captador de Notas Fiscais', 'Captação automática de NF-e, NFC-e, CT-e e NFS-e a partir do certificado digital A1 de cada empresa, via webservice oficial da SEFAZ — os mesmos dados protegidos e o mesmo motor de sincronização da Consulta SEFAZ.', actions),
+      section === 'empresas' ? '<div class="info-banner"><span>i</span><div><strong>Captação real, sem dados fictícios.</strong> Esta tela reorganiza por empresa os documentos já sincronizados pelo webservice oficial NFeDistribuicaoDFe e pelas consultas realizadas na aba Consulta SEFAZ. Cadastre o certificado A1 de cada empresa para começar a captar.</div></div>' : '',
+      sectionTabs, body
     ].join('');
   }
   function loadCaptadorCompanies() {
@@ -1655,6 +1672,162 @@
     downloadFile('fechamento-mensal-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.captador-fechamento-mensal.v1', generatedAt: nowISO(), monthStart: sefazState.companiesOverviewMonthStart || '', companies: rows }, null, 2));
     audit('Fechamento mensal exportado', rows.length + ' empresa(s) · CSV + JSON');
     toast('Fechamento gerado', 'O resumo do mês foi exportado em CSV e JSON.');
+  }
+  function captadorDocumentsUi() {
+    if (!state.settings.captadorDocuments || typeof state.settings.captadorDocuments !== 'object') state.settings.captadorDocuments = {};
+    var ui = state.settings.captadorDocuments;
+    if (!ui.filters || typeof ui.filters !== 'object') ui.filters = { certificateId: '', document: '', number: '', series: '', accessKey: '', documentKind: 'all', situation: 'all', direction: 'all', month: '', dateFrom: '', dateTo: '' };
+    if (!ui.page) ui.page = 1;
+    if (!ui.pageSize) ui.pageSize = 25;
+    return ui;
+  }
+  function captadorDocumentSelectionKey(item) { return item.source + ':' + item.id; }
+  function loadCaptadorDocuments() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var ui = captadorDocumentsUi(), params = new URLSearchParams();
+    Object.keys(ui.filters).forEach(function (key) { if (ui.filters[key]) params.set(key, ui.filters[key]); });
+    params.set('page', ui.page); params.set('pageSize', ui.pageSize);
+    return apiRequest('/api/sefaz/documents?' + params.toString()).then(function (payload) {
+      sefazState.documents = payload;
+      sefazState.documentSelection = {};
+      refreshCaptadorDocuments();
+    }).catch(function (error) { toast('Não foi possível carregar os documentos', error.message, 'error'); });
+  }
+  function refreshCaptadorDocuments() {
+    var wrap = $('#cd-table-wrap');
+    if (wrap) wrap.innerHTML = captadorDocumentsTableHtml();
+    var stats = $('#cd-stats');
+    if (stats) stats.outerHTML = captadorDocumentsStatsHtml((sefazState.documents || {}).stats);
+  }
+  function captadorDocumentModelBadge(model) { return '<span class="tag tag--info">' + esc(model) + '</span>'; }
+  function captadorDocumentStatusTag(item) { return item.cancelled ? '<span class="tag tag--danger">Cancelada</span>' : '<span class="tag tag--success">' + esc(item.status || 'Autorizada') + '</span>'; }
+  function captadorDocumentsStatsHtml(stats) {
+    stats = stats || { total: 0, byModel: {}, authorized: 0, cancelled: 0, totalValue: 0 };
+    var byModel = stats.byModel || {};
+    var modelTiles = ['NF-e', 'NFC-e', 'CT-e', 'MDF-e', 'NFS-e'].map(function (model) {
+      return '<div><span>' + model + '</span><b>' + number(byModel[model] || 0) + '</b></div>';
+    }).join('');
+    return '<section class="das-total" id="cd-stats" style="margin-bottom:14px"><div class="das-total-main"><small>DOCUMENTOS CAPTURADOS (FILTRO ATUAL)</small><strong>' + number(stats.total) + '</strong></div><div class="das-metrics" style="grid-template-columns:repeat(7,1fr)">' + modelTiles + '<div><span>Autorizadas</span><b>' + number(stats.authorized) + '</b></div><div><span>Canceladas</span><b>' + number(stats.cancelled) + '</b></div></div></section>' +
+      '<div class="table-summary" style="margin-bottom:14px"><span>Valor total dos documentos filtrados</span><span><b>' + money(stats.totalValue) + '</b></span></div>';
+  }
+  function captadorDocumentsFiltersHtml() {
+    var ui = captadorDocumentsUi(), f = ui.filters;
+    var certOptions = '<option value="">Todas as empresas</option>' + (sefazState.companiesOverview || []).map(function (c) {
+      return '<option value="' + esc(c.id) + '"' + (f.certificateId === c.id ? ' selected' : '') + '>' + esc(c.company) + (c.branch && c.branch !== 'Matriz' ? ' · ' + esc(c.branch) : '') + '</option>';
+    }).join('');
+    var selectOptions = function (pairs, selected) { return pairs.map(function (pair) { return '<option value="' + pair[0] + '"' + (selected === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'; }).join(''); };
+    return '<div class="filters-card card" style="margin-bottom:14px"><div class="filters" style="grid-template-columns:repeat(4,1fr)">' +
+      '<label class="filter-field"><span>Empresa</span><select id="cd-certificate" data-cd-input>' + certOptions + '</select></label>' +
+      '<label class="filter-field"><span>CNPJ/CPF (emitente ou destinatário)</span><input id="cd-document" data-cd-input value="' + esc(f.document) + '"></label>' +
+      '<label class="filter-field"><span>Número da nota</span><input id="cd-number" data-cd-input value="' + esc(f.number) + '"></label>' +
+      '<label class="filter-field"><span>Série</span><input id="cd-series" data-cd-input value="' + esc(f.series) + '"></label>' +
+      '<label class="filter-field"><span>Chave de acesso</span><input id="cd-access-key" data-cd-input value="' + esc(f.accessKey) + '"></label>' +
+      '<label class="filter-field"><span>Tipo de documento</span><select id="cd-document-kind" data-cd-input>' + selectOptions([['all', 'Todos'], ['nfe', 'NF-e'], ['nfce', 'NFC-e'], ['cte', 'CT-e'], ['mdfe', 'MDF-e'], ['nfse', 'NFS-e']], f.documentKind) + '</select></label>' +
+      '<label class="filter-field"><span>Situação</span><select id="cd-situation" data-cd-input>' + selectOptions([['all', 'Todas'], ['authorized', 'Autorizadas'], ['cancelled', 'Canceladas']], f.situation) + '</select></label>' +
+      '<label class="filter-field"><span>Direção</span><select id="cd-direction" data-cd-input>' + selectOptions([['all', 'Todas'], ['issued', 'Emitidas'], ['received', 'Recebidas']], f.direction) + '</select></label>' +
+      '<label class="filter-field"><span>Competência (mês)</span><input id="cd-month" data-cd-input type="month" value="' + esc(f.month) + '"></label>' +
+      '<label class="filter-field"><span>Emissão de</span><input id="cd-date-from" data-cd-input type="date" value="' + esc(f.dateFrom) + '"></label>' +
+      '<label class="filter-field"><span>Emissão até</span><input id="cd-date-to" data-cd-input type="date" value="' + esc(f.dateTo) + '"></label>' +
+      '<button class="small-button" data-action="cd-clear-filters">Limpar filtros</button>' +
+    '</div></div>';
+  }
+  function captadorDocumentsTableHtml() {
+    var payload = sefazState.documents || { items: [], total: 0, page: 1, pageSize: 25, stats: {} };
+    var items = payload.items || [];
+    var rows = items.length ? items.map(function (item) {
+      var key = captadorDocumentSelectionKey(item);
+      var checked = sefazState.documentSelection[key] ? ' checked' : '';
+      return '<tr><td><input type="checkbox" data-cd-select="' + esc(key) + '"' + checked + '></td><td>' + captadorDocumentStatusTag(item) + '</td><td>' + captadorDocumentModelBadge(item.model) + '</td><td>' + esc(item.number || '—') + '</td><td>' + esc(item.series || '—') + '</td><td><code style="font-size:8px">' + esc(item.accessKey || '—') + '</code></td><td>' + esc(dateBR(item.issuedAt)) + '</td><td>' + esc(item.issuerName || '—') + '<br><small class="subtle">' + esc(formatCnpjDisplay(item.issuerDocument)) + '</small></td><td>' + esc(item.recipientName || '—') + '<br><small class="subtle">' + esc(formatCnpjDisplay(item.recipientDocument)) + '</small></td><td>' + money(item.value) + '</td><td>' + esc(item.direction) + '</td><td>' + esc(dateTimeBR(item.capturedAt)) + '</td><td><div class="row-actions"><button class="row-button" title="Ver documento" data-action="cd-view" data-id="' + esc(item.id) + '" data-source="' + esc(item.source) + '">⌕</button><button class="row-button" title="Baixar XML" data-action="cd-download-one" data-id="' + esc(item.id) + '" data-source="' + esc(item.source) + '"' + (item.hasXml ? '' : ' disabled') + '>↧</button></div></td></tr>';
+    }).join('') : '<tr><td colspan="12"><div class="empty-state"><i>⌕</i><h3>Nenhum documento encontrado</h3><p>Ajuste os filtros ou sincronize as notas na aba Empresas.</p></div></td></tr>';
+    var totalPages = Math.max(1, Math.ceil(payload.total / payload.pageSize));
+    var selectedCount = Object.keys(sefazState.documentSelection).filter(function (k) { return sefazState.documentSelection[k]; }).length;
+    var allOnPageSelected = items.length > 0 && items.every(function (item) { return sefazState.documentSelection[captadorDocumentSelectionKey(item)]; });
+    return '<div class="table-wrap"><table class="data-table"><thead><tr><th><input type="checkbox" id="cd-select-all"' + (allOnPageSelected ? ' checked' : '') + '></th><th>Situação</th><th>Tipo</th><th>Número</th><th>Série</th><th>Chave</th><th>Emissão</th><th>Emitente</th><th>Destinatário</th><th>Valor</th><th>Direção</th><th>Captura</th><th>Ações</th></tr></thead><tbody id="cd-table-body">' + rows + '</tbody></table></div>' +
+      '<div class="table-summary captador-pager"><span>' + selectedCount + ' selecionado(s) · ' + number(payload.total) + ' documento(s) no filtro</span><div class="captador-pager-controls">' +
+      '<button class="secondary-button" data-action="cd-download-selected"' + (selectedCount ? '' : ' disabled') + '>↧ Baixar selecionadas</button>' +
+      '<button class="secondary-button" data-action="cd-download-filtered"' + (payload.total ? '' : ' disabled') + '>↧ Baixar todas as filtradas</button>' +
+      '<label>Itens por página <select id="cd-page-size" data-cd-input><option value="10"' + (payload.pageSize === 10 ? ' selected' : '') + '>10</option><option value="25"' + (payload.pageSize === 25 ? ' selected' : '') + '>25</option><option value="50"' + (payload.pageSize === 50 ? ' selected' : '') + '>50</option><option value="100"' + (payload.pageSize === 100 ? ' selected' : '') + '>100</option></select></label>' +
+      '<button class="row-button" data-action="cd-page" data-page="1"' + (payload.page <= 1 ? ' disabled' : '') + '>|«</button><button class="row-button" data-action="cd-page" data-page="' + (payload.page - 1) + '"' + (payload.page <= 1 ? ' disabled' : '') + '>‹</button><button class="row-button" data-action="cd-page" data-page="' + (payload.page + 1) + '"' + (payload.page >= totalPages ? ' disabled' : '') + '>›</button><button class="row-button" data-action="cd-page" data-page="' + totalPages + '"' + (payload.page >= totalPages ? ' disabled' : '') + '>»|</button></div></div>';
+  }
+  function updateCaptadorDocumentFilters() {
+    var ui = captadorDocumentsUi(), f = ui.filters;
+    var field = function (id) { var el = $('#' + id); return el ? el.value : undefined; };
+    f.certificateId = field('cd-certificate') || '';
+    f.document = field('cd-document') || '';
+    f.number = field('cd-number') || '';
+    f.series = field('cd-series') || '';
+    f.accessKey = field('cd-access-key') || '';
+    f.documentKind = field('cd-document-kind') || 'all';
+    f.situation = field('cd-situation') || 'all';
+    f.direction = field('cd-direction') || 'all';
+    f.month = field('cd-month') || '';
+    f.dateFrom = field('cd-date-from') || '';
+    f.dateTo = field('cd-date-to') || '';
+    var pageSizeField = $('#cd-page-size'); if (pageSizeField) ui.pageSize = Number(pageSizeField.value) || 25;
+    ui.page = 1;
+    persist();
+    loadCaptadorDocuments();
+  }
+  function clearCaptadorDocumentFilters() {
+    var ui = captadorDocumentsUi();
+    ui.filters = { certificateId: '', document: '', number: '', series: '', accessKey: '', documentKind: 'all', situation: 'all', direction: 'all', month: '', dateFrom: '', dateTo: '' };
+    ui.page = 1;
+    persist(); route();
+  }
+  function setCaptadorDocumentPage(page) {
+    captadorDocumentsUi().page = Math.max(1, Number(page) || 1);
+    persist(); loadCaptadorDocuments();
+  }
+  function toggleCaptadorDocumentSelection(key, checked) {
+    if (checked) sefazState.documentSelection[key] = true; else delete sefazState.documentSelection[key];
+    refreshCaptadorDocuments();
+  }
+  function toggleAllCaptadorDocumentSelection(checked) {
+    var items = (sefazState.documents || {}).items || [];
+    items.forEach(function (item) {
+      var key = captadorDocumentSelectionKey(item);
+      if (checked) sefazState.documentSelection[key] = true; else delete sefazState.documentSelection[key];
+    });
+    refreshCaptadorDocuments();
+  }
+  async function openCaptadorDocument(id, source) {
+    try {
+      var result = source === 'distribution'
+        ? await apiRequest('/api/sefaz/distribution/documents/' + encodeURIComponent(id))
+        : await apiRequest('/api/sefaz/history/' + encodeURIComponent(id));
+      location.hash = 'sefaz-portal';
+      window.setTimeout(function () { renderSefazResult(result); var target = $('#sefaz-result'); if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 300);
+    } catch (error) { toast('Documento indisponível', error.message, 'error'); }
+  }
+  async function downloadCaptadorDocumentZip(documents, emptyMessage) {
+    if (!documents.length) { toast('Nada para baixar', emptyMessage, 'warning'); return; }
+    try {
+      var payload = await apiRequest('/api/sefaz/documents/download', { method: 'POST', body: JSON.stringify({ documents: documents }) });
+      var bytes = atob(payload.dataBase64), array = new Uint8Array(bytes.length);
+      for (var i = 0; i < bytes.length; i += 1) array[i] = bytes.charCodeAt(i);
+      downloadFile(payload.filename || 'documentos-fiscais.zip', array, 'application/zip');
+      toast('ZIP gerado', payload.counts.total + ' XML(s) incluído(s)' + (payload.counts.duplicates ? ', ' + payload.counts.duplicates + ' duplicado(s) ignorado(s)' : '') + '.');
+    } catch (error) { toast('Não foi possível gerar o ZIP', error.message, 'error'); }
+  }
+  function downloadCaptadorSelectedDocuments() {
+    var documents = Object.keys(sefazState.documentSelection).filter(function (key) { return sefazState.documentSelection[key]; }).map(function (key) {
+      var parts = key.split(':'); return { source: parts[0], id: parts.slice(1).join(':') };
+    });
+    downloadCaptadorDocumentZip(documents, 'Selecione ao menos um documento na tabela.');
+  }
+  async function downloadCaptadorOneDocument(id, source) {
+    downloadCaptadorDocumentZip([{ id: id, source: source }], 'Documento sem XML disponível.');
+  }
+  async function downloadCaptadorFilteredDocuments() {
+    var ui = captadorDocumentsUi(), params = new URLSearchParams();
+    Object.keys(ui.filters).forEach(function (key) { if (ui.filters[key]) params.set(key, ui.filters[key]); });
+    params.set('page', '1'); params.set('pageSize', '500');
+    try {
+      var payload = await apiRequest('/api/sefaz/documents?' + params.toString());
+      var documents = (payload.items || []).filter(function (item) { return item.hasXml; }).map(function (item) { return { id: item.id, source: item.source }; });
+      if (payload.total > 500) toast('Lote limitado a 500 documentos', 'O filtro encontrou ' + payload.total + ' documento(s); o ZIP incluirá os 500 mais recentes. Refine os filtros para exportar o restante.', 'warning');
+      await downloadCaptadorDocumentZip(documents, 'Nenhum documento com XML disponível para os filtros atuais.');
+    } catch (error) { toast('Não foi possível gerar o ZIP', error.message, 'error'); }
   }
   var auditorFiscalDocs = {};
   function auditorFiscalUi() {
@@ -3574,7 +3747,7 @@
     window.scrollTo(0, 0);
     bindViewControls();
     if (state.route === 'sefaz-portal') loadSefazData();
-    if (state.route === 'captador-notas-fiscais') loadCaptadorCompanies();
+    if (state.route === 'captador-notas-fiscais') { loadCaptadorCompanies(); if (captadorSection() === 'documentos') loadCaptadorDocuments(); }
     if (state.route === 'gestao-usuarios' && window.UserAccessManager) window.UserAccessManager.mount(main, { user: currentUser, syncUsers: function (users) { state.users = (users || []).map(function (user) { return Object.assign({}, user, { active: user.status !== 'Inativo' }); }); storageSet(KEYS.users, state.users); } });
   }
 
@@ -7535,6 +7708,13 @@
     else if (action === 'captador-page') setCaptadorPage(actionEl.getAttribute('data-page'));
     else if (action === 'captador-sync-all') syncAllCaptadorCompanies();
     else if (action === 'captador-monthly-closing') exportCaptadorMonthlyClosing();
+    else if (action === 'captador-section') setCaptadorSection(actionEl.getAttribute('data-section'));
+    else if (action === 'cd-clear-filters') clearCaptadorDocumentFilters();
+    else if (action === 'cd-page') setCaptadorDocumentPage(actionEl.getAttribute('data-page'));
+    else if (action === 'cd-view') openCaptadorDocument(actionEl.getAttribute('data-id'), actionEl.getAttribute('data-source'));
+    else if (action === 'cd-download-one') downloadCaptadorOneDocument(actionEl.getAttribute('data-id'), actionEl.getAttribute('data-source'));
+    else if (action === 'cd-download-selected') downloadCaptadorSelectedDocuments();
+    else if (action === 'cd-download-filtered') downloadCaptadorFilteredDocuments();
     else if (action === 'auditor-view') setAuditorFiscalView(actionEl.getAttribute('data-view'));
     else if (action === 'auditor-select-type') selectAuditorFiscalType(actionEl.getAttribute('data-type'));
     else if (action === 'auditor-select-files') { var auditorInput = $('#auditor-sped-files'); if (auditorInput) auditorInput.click(); }
@@ -7671,6 +7851,9 @@
     } else if (event.target.id === 'auditor-recent-query') {
       window.clearTimeout(state.auditorFilterTimer);
       state.auditorFilterTimer = window.setTimeout(updateAuditorFiscalRecentControls, 200);
+    } else if (event.target.matches('[data-cd-input]') && event.target.tagName !== 'SELECT') {
+      window.clearTimeout(state.cdFilterTimer);
+      state.cdFilterTimer = window.setTimeout(updateCaptadorDocumentFilters, 300);
     }
   });
 
@@ -7730,6 +7913,9 @@
     else if (event.target.id === 'auditor-recent-page-size') updateAuditorFiscalRecentControls();
     else if (event.target.matches('[data-auditor-param]')) updateAuditorFiscalParam(event.target.getAttribute('data-auditor-param'), event.target.checked);
     else if (event.target.id === 'auditor-sped-files') handleAuditorFiscalFiles(event.target.files);
+    else if (event.target.matches('[data-cd-input]')) updateCaptadorDocumentFilters();
+    else if (event.target.id === 'cd-select-all') toggleAllCaptadorDocumentSelection(event.target.checked);
+    else if (event.target.matches('[data-cd-select]')) toggleCaptadorDocumentSelection(event.target.getAttribute('data-cd-select'), event.target.checked);
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
     else if (event.target.id === 'piscofins-xml-files') handlePisCofinsFiles(event.target.files);
     else if (event.target.id === 'json-file-input') processImportedFile(event.target.files && event.target.files[0]);
