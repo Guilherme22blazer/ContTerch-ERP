@@ -134,6 +134,7 @@ ERP_MODULES = {
     "tab_mei": "MEI",
     "tab_controle_mei": "Controle de MEI",
     "tab_obrigacoes": "Obrigações Acessórias",
+    "tab_certidao_regularidade_fiscal": "Certidão de Regularidade Fiscal",
     "tab_ibs_cbs": "IBS e CBS",
     "tab_transicao_reforma": "Transição da Reforma Tributária",
     "tab_lei_complementar": "Lei Complementar Completa",
@@ -172,7 +173,7 @@ ERP_MODULES = {
 }
 FISCAL_TAB_MODULES = {
     "tab_sefaz_portal", "tab_dashboard", "tab_conttech_simples_nacional", "tab_diagnostico", "tab_mei", "tab_controle_mei",
-    "tab_obrigacoes", "tab_ibs_cbs", "tab_transicao_reforma", "tab_lei_complementar",
+    "tab_obrigacoes", "tab_certidao_regularidade_fiscal", "tab_ibs_cbs", "tab_transicao_reforma", "tab_lei_complementar",
     "tab_mei_ibs_cbs", "tab_parametros_2026", "tab_consulta_cnpj", "tab_inscricao_estadual",
     "tab_cnae_servicos", "tab_ncm_tipi", "tab_consulta_cest", "tab_cfop", "tab_icms_difal",
     "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_simulador_locacao",

@@ -219,6 +219,7 @@
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
     { route: 'obrigacoes', label: 'Obrigações Acessórias', icon: '▣', desc: 'Agenda e documentos fiscais' },
+    { route: 'certidao-regularidade-fiscal', label: 'Certidão de Regularidade Fiscal', icon: '▤', desc: 'Consulta e acompanhamento de certidões — Pessoa Física, Pessoa Jurídica, Imóvel Rural e Obra de Construção Civil' },
     { route: 'ibs-cbs', label: 'IBS e CBS', icon: '◈', desc: 'Reforma tributária do consumo' },
     { route: 'transicao-reforma', label: 'Transição da Reforma Tributária', icon: '⇄', desc: 'Comparação dos tributos atuais com IBS, CBS e Imposto Seletivo de 2026 a 2033' },
     { route: 'lei-complementar', label: 'Lei Complementar Completa', icon: '§', desc: 'Normas oficiais consolidadas' },
@@ -3083,6 +3084,7 @@
     else if (state.route === 'mei') main.innerHTML = renderTopic('mei');
     else if (state.route === 'controle-mei') main.innerHTML = renderMeiControl();
     else if (state.route === 'obrigacoes') main.innerHTML = renderObligations();
+    else if (state.route === 'certidao-regularidade-fiscal') main.innerHTML = renderCertidaoRegularidade();
     else if (state.route === 'ibs-cbs') main.innerHTML = renderTopic('ibs-cbs');
     else if (state.route === 'transicao-reforma') main.innerHTML = renderTaxTransition();
     else if (state.route === 'lei-complementar') main.innerHTML = renderLawLibrary();
@@ -4064,6 +4066,131 @@
       '<section class="card"><header class="card-header"><h2>▣ Matriz de obrigações</h2><label class="filter-field" style="min-width:190px"><span>Cliente</span><select id="obligation-client"><option>Todos os clientes</option>' + state.clients.map(function (c) { return '<option>' + esc(c.name) + '</option>'; }).join('') + '</select></label></header><div class="table-wrap"><table class="data-table"><thead><tr><th>Obrigação</th><th>Periodicidade</th><th>Prazo</th><th>Aplicabilidade</th><th>Fonte</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div></section>',
       '<div class="content-grid" style="margin-top:14px">' + OFFICIAL_SOURCES.filter(function (s) { return s.area === 'Obrigações Acessórias'; }).map(legalCard).join('') + '</div>'
     ].join('');
+  }
+
+  var CERTIDAO_CATEGORIES = [
+    { key: 'pf', icon: '◍', label: 'Pessoa Física', desc: 'Certidão de regularidade fiscal vinculada ao CPF do contribuinte.', fieldLabel: 'CPF' },
+    { key: 'pj', icon: '▣', label: 'Pessoa Jurídica', desc: 'Certidão Conjunta de Débitos Relativos a Tributos Federais e à Dívida Ativa da União, vinculada ao CNPJ.', fieldLabel: 'CNPJ' },
+    { key: 'rural', icon: '⁘', label: 'Imóvel Rural', desc: 'Certidão de regularidade fiscal vinculada ao NIRF ou ao CCIR do imóvel rural.', fieldLabel: 'NIRF ou CCIR' },
+    { key: 'obra', icon: '▲', label: 'Obra de Construção Civil', desc: 'Certidão de regularidade fiscal vinculada à matrícula CEI ou CNO da obra.', fieldLabel: 'CEI ou CNO' }
+  ];
+  var CERTIDAO_STATUS_OPTIONS = [
+    ['a-verificar', 'A verificar'],
+    ['regular', 'Regular'],
+    ['pendencia', 'Pendência identificada']
+  ];
+  var CERTIDAO_OFFICIAL_URL = 'https://servicos.receitafederal.gov.br/servico/certidoes/#/home';
+
+  function certidaoState() {
+    if (!state.settings.certidaoLog || typeof state.settings.certidaoLog !== 'object') state.settings.certidaoLog = {};
+    CERTIDAO_CATEGORIES.forEach(function (cat) { if (!Array.isArray(state.settings.certidaoLog[cat.key])) state.settings.certidaoLog[cat.key] = []; });
+    return state.settings.certidaoLog;
+  }
+
+  function certidaoCategoryByKey(key) {
+    return CERTIDAO_CATEGORIES.find(function (c) { return c.key === key; }) || CERTIDAO_CATEGORIES[0];
+  }
+
+  function certidaoStatusLabel(status) {
+    return (CERTIDAO_STATUS_OPTIONS.find(function (s) { return s[0] === status; }) || CERTIDAO_STATUS_OPTIONS[0])[1];
+  }
+
+  function certidaoStatusTag(status) {
+    var cls = status === 'regular' ? 'success' : status === 'pendencia' ? 'danger' : 'warning';
+    return '<span class="tag tag--' + cls + '">' + esc(certidaoStatusLabel(status)) + '</span>';
+  }
+
+  function certidaoStatusOptionsHtml(selected) {
+    return CERTIDAO_STATUS_OPTIONS.map(function (item) { return '<option value="' + item[0] + '"' + (item[0] === selected ? ' selected' : '') + '>' + item[1] + '</option>'; }).join('');
+  }
+
+  function certidaoLogListHtml(categoryKey) {
+    var entries = certidaoState()[categoryKey] || [];
+    if (!entries.length) return '<div class="sn-cnae-empty"><b>Nenhuma consulta registrada</b><small>Registre abaixo cada verificação feita no site oficial da Receita Federal.</small></div>';
+    return entries.slice().reverse().map(function (entry) {
+      return '<div class="certidao-log-item"><div class="certidao-log-info"><b>' + esc(entry.document || 'Sem identificação') + '</b>' +
+        (entry.clientName ? '<small>' + esc(entry.clientName) + '</small>' : '') +
+        (entry.note ? '<small>' + esc(entry.note) + '</small>' : '') +
+        '</div><div class="certidao-log-meta">' + certidaoStatusTag(entry.status) + '<small>' + esc(dateTimeBR(entry.at)) + '</small><button type="button" class="sn-cnae-remove" data-action="certidao-log-remove" data-category="' + esc(categoryKey) + '" data-id="' + esc(entry.id) + '" aria-label="Remover registro">×</button></div></div>';
+    }).join('');
+  }
+
+  function certidaoCategoryCardsHtml(activeKey) {
+    return '<div class="certidao-category-list">' + CERTIDAO_CATEGORIES.map(function (cat) {
+      return '<button type="button" class="certidao-category-item' + (cat.key === activeKey ? ' active' : '') + '" data-action="certidao-select-category" data-category="' + cat.key + '"><span class="certidao-category-icon">' + cat.icon + '</span><span class="certidao-category-text"><b>' + esc(cat.label) + '</b><small>' + esc(cat.desc) + '</small></span><span class="certidao-category-chevron">›</span></button>';
+    }).join('') + '</div>';
+  }
+
+  function certidaoDetailHtml(categoryKey) {
+    var cat = certidaoCategoryByKey(categoryKey);
+    var clientOptions = state.clients.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.name) + (c.document ? ' — ' + esc(c.document) : '') + '</option>'; }).join('');
+    return '<section class="card certidao-detail" id="certidao-detail" data-category="' + cat.key + '"><header class="card-header"><div><h2>' + cat.icon + ' ' + esc(cat.label) + '</h2><small>' + esc(cat.desc) + '</small></div><span class="tag tag--info">Etapa 2 de 2</span></header><div class="card-body">' +
+      '<div class="info-banner"><span>i</span><div><strong>Consulta orientativa.</strong> A emissão e a verificação oficial da certidão exigem autenticação no gov.br (ou certificado digital) diretamente no site da Receita Federal. Este painel organiza o pedido e registra o acompanhamento feito pelo escritório — ele não emite nem valida a certidão por conta própria.</div></div>' +
+      (state.clients.length ? '<div class="form-grid rental-form-grid"><label class="field field--full"><span>Cliente da carteira (opcional)</span><select id="certidao-client">' + '<option value="">Selecionar para preencher automaticamente</option>' + clientOptions + '</select></label></div>' : '') +
+      '<div class="form-grid rental-form-grid"><label class="field"><span>' + esc(cat.fieldLabel) + '</span><input id="certidao-document" placeholder="Digite o número do ' + esc(cat.fieldLabel) + '"></label><label class="field"><span>Situação apurada</span><select id="certidao-status">' + certidaoStatusOptionsHtml('a-verificar') + '</select></label></div>' +
+      '<label class="field field--full"><span>Observações (opcional)</span><input id="certidao-note" placeholder="Ex.: pendência de parcelamento, débito localizado, código de controle da última emissão..."></label>' +
+      '<div class="certidao-actions"><a class="primary-button" target="_blank" rel="noopener noreferrer" href="' + CERTIDAO_OFFICIAL_URL + '">↗ Abrir site oficial da Receita Federal</a><button type="button" class="secondary-button" data-action="certidao-log-add">+ Registrar consulta</button></div>' +
+      '<h3 class="rental-section-title">Consultas registradas — ' + esc(cat.label) + '</h3><div id="certidao-log-list" class="sn-cnae-list">' + certidaoLogListHtml(cat.key) + '</div>' +
+      '</div></section>';
+  }
+
+  function renderCertidaoRegularidade() {
+    var activeKey = state.certidaoCategory || '';
+    return [
+      pageHeading('Certidão de Regularidade Fiscal', 'Selecione o tipo de contribuinte para organizar o pedido e acompanhar certidões de regularidade fiscal — Pessoa Física, Pessoa Jurídica, Imóvel Rural e Obra de Construção Civil.', '<a class="secondary-button" target="_blank" rel="noopener noreferrer" href="' + CERTIDAO_OFFICIAL_URL + '">↗ Portal oficial da Receita Federal</a>'),
+      '<div class="info-banner"><span>i</span><div><strong>Painel de acompanhamento.</strong> A emissão oficial da certidão é feita pela Receita Federal, mediante login no gov.br ou certificado digital. Aqui você organiza qual contribuinte precisa de certidão, abre o site oficial já direcionado para a etapa correta e registra o resultado da verificação para a carteira de clientes.</div></div>',
+      '<section class="card"><header class="card-header"><h2>1. Tipo de contribuinte</h2><small>Selecione o tipo de contribuinte da certidão, como no portal oficial</small></header><div class="card-body">' + certidaoCategoryCardsHtml(activeKey) + '</div></section>',
+      activeKey ? certidaoDetailHtml(activeKey) : ''
+    ].join('');
+  }
+
+  function selectCertidaoCategory(key) {
+    var cat = certidaoCategoryByKey(key);
+    state.certidaoCategory = cat.key;
+    var main = $('#main-content');
+    if (main) { main.innerHTML = renderCertidaoRegularidade(); bindViewControls(); }
+    var detail = $('#certidao-detail');
+    if (detail) detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function updateCertidaoClientFields() {
+    var select = $('#certidao-client');
+    var documentField = $('#certidao-document');
+    if (!select || !documentField) return;
+    var client = state.clients.find(function (c) { return c.id === select.value; });
+    if (client && client.document) documentField.value = client.document;
+  }
+
+  function addCertidaoLogEntry() {
+    var categoryKey = ($('#certidao-detail') && $('#certidao-detail').getAttribute('data-category')) || state.certidaoCategory;
+    if (!categoryKey) return;
+    var documentField = $('#certidao-document');
+    var statusField = $('#certidao-status');
+    var noteField = $('#certidao-note');
+    var clientSelect = $('#certidao-client');
+    var documentValue = documentField ? String(documentField.value || '').trim() : '';
+    if (!documentValue) { toast('Informe o número', 'Digite o número do documento antes de registrar a consulta.', 'warning'); return; }
+    var client = clientSelect && clientSelect.value ? state.clients.find(function (c) { return c.id === clientSelect.value; }) : null;
+    var log = certidaoState();
+    log[categoryKey].push({
+      id: uid('certidao'), document: documentValue, clientId: client ? client.id : '',
+      clientName: client ? client.name : '', status: statusField ? statusField.value : 'a-verificar',
+      note: noteField ? String(noteField.value || '').trim() : '', at: nowISO()
+    });
+    persist();
+    audit('Consulta de certidão registrada', certidaoCategoryByKey(categoryKey).label + ' · ' + documentValue);
+    if (noteField) noteField.value = '';
+    var list = $('#certidao-log-list');
+    if (list) list.innerHTML = certidaoLogListHtml(categoryKey);
+    toast('Consulta registrada', 'O acompanhamento foi salvo para esta carteira.');
+  }
+
+  function removeCertidaoLogEntry(categoryKey, id) {
+    var log = certidaoState();
+    log[categoryKey] = (log[categoryKey] || []).filter(function (entry) { return entry.id !== id; });
+    persist();
+    var list = $('#certidao-log-list');
+    if (list) list.innerHTML = certidaoLogListHtml(categoryKey);
   }
 
   function renderParameters() {
@@ -6326,6 +6453,9 @@
     else if (action === 'sn-save') saveSnSimulation();
     else if (action === 'sn-export-json') exportSnSimulation();
     else if (action === 'sn-print') window.print();
+    else if (action === 'certidao-select-category') selectCertidaoCategory(actionEl.getAttribute('data-category'));
+    else if (action === 'certidao-log-add') addCertidaoLogEntry();
+    else if (action === 'certidao-log-remove') removeCertidaoLogEntry(actionEl.getAttribute('data-category'), actionEl.getAttribute('data-id'));
     else if (action === 'overtime-calculate') { updateOvertimeNightCalculator(true); audit('Horas extras e adicional noturno recalculados', money(calculateOvertimeNight(readOvertimeNightSimulation()).totalAdditions)); toast('Cálculo atualizado', 'Horas, adicionais, descanso semanal e total foram recalculados.'); }
     else if (action === 'overtime-clear') resetOvertimeNightSimulation();
     else if (action === 'overtime-save') saveOvertimeNightSimulation();
@@ -6604,6 +6734,7 @@
     }
     else if (event.target.matches('[data-rental-input]')) updateRentalSimulator();
     else if (event.target.matches('[data-sn-input]')) updateSnSimulator();
+    else if (event.target.id === 'certidao-client') updateCertidaoClientFields();
     else if (event.target.id === 'overtime-employee-type') applyOvertimeEmployeeDefaults();
     else if (event.target.matches('[data-overtime-input]')) updateOvertimeNightCalculator(true);
     else if (event.target.id === 'termination-reason') applyTerminationReasonDefaults();
