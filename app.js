@@ -223,6 +223,7 @@
     { route: 'ibs-cbs', label: 'IBS e CBS', icon: '◈', desc: 'Reforma tributária do consumo' },
     { route: 'transicao-reforma', label: 'Transição da Reforma Tributária', icon: '⇄', desc: 'Comparação dos tributos atuais com IBS, CBS e Imposto Seletivo de 2026 a 2033' },
     { route: 'recuperador-pis-cofins', label: 'Recuperador de Créditos de PIS e Cofins', icon: '⟲', desc: 'Identificação de pagamentos indevidos de PIS/Cofins em produtos monofásicos a partir das NF-e/NFC-e enviadas' },
+    { route: 'planejamento-tributario', label: 'Simulador de Planejamento Tributário', icon: '◈', desc: 'Comparativo entre Lucro Presumido, Lucro Real e Simples Nacional, simplificado ou detalhado' },
     { route: 'lei-complementar', label: 'Lei Complementar Completa', icon: '§', desc: 'Normas oficiais consolidadas' },
     { route: 'mei-ibs-cbs', label: 'MEI, IBS e CBS', icon: '◎', desc: 'Impactos da transição no SIMEI' },
     { route: 'parametros-2026', label: 'Parâmetros 2026', icon: '⚙', desc: 'Alíquotas, limites e prazos' },
@@ -3089,6 +3090,7 @@
     else if (state.route === 'ibs-cbs') main.innerHTML = renderTopic('ibs-cbs');
     else if (state.route === 'transicao-reforma') main.innerHTML = renderTaxTransition();
     else if (state.route === 'recuperador-pis-cofins') main.innerHTML = renderPisCofinsRecovery();
+    else if (state.route === 'planejamento-tributario') main.innerHTML = renderTaxPlanning();
     else if (state.route === 'lei-complementar') main.innerHTML = renderLawLibrary();
     else if (state.route === 'mei-ibs-cbs') main.innerHTML = renderTopic('mei-ibs-cbs');
     else if (state.route === 'parametros-2026') main.innerHTML = renderParameters();
@@ -5877,6 +5879,274 @@
     return parts.join('');
   }
 
+  function taxPlanningActivityDefaults(id) {
+    return { id: id, name: '', cnae: '', activityType: 'commerce', revenueMonth: 0, payroll12: 0 };
+  }
+  function taxPlanningDefaults() {
+    return {
+      mode: '', activities: [taxPlanningActivityDefaults('tp-act-1')],
+      expensesMonth: 0, icmsRate: 18, issRate: 5, ipiRate: 10, cbsRate: .9, ibsRate: .1
+    };
+  }
+  function taxPlanningState() {
+    if (!state.settings.taxPlanning || typeof state.settings.taxPlanning !== 'object') state.settings.taxPlanning = taxPlanningDefaults();
+    var data = state.settings.taxPlanning;
+    if (!Array.isArray(data.activities) || !data.activities.length) data.activities = [taxPlanningActivityDefaults('tp-act-1')];
+    return data;
+  }
+  function taxPlanningMaxActivities(mode) { return mode === 'detalhado' ? 3 : 1; }
+  function taxPlanningFactorR(data) {
+    var totalRevenue12 = data.activities.reduce(function (sum, a) { return sum + Math.max(0, Number(a.revenueMonth || 0)); }, 0) * 12;
+    var totalPayroll12 = data.activities.reduce(function (sum, a) { return sum + (a.activityType === 'services-factor-r' ? Math.max(0, Number(a.payroll12 || 0)) : 0); }, 0);
+    return totalRevenue12 > 0 ? (totalPayroll12 / totalRevenue12) * 100 : 0;
+  }
+  function taxPlanningActivityAnnex(activityType, factorR) {
+    if (activityType === 'commerce') return 'I';
+    if (activityType === 'industry') return 'II';
+    if (activityType === 'services-iv') return 'IV';
+    return factorR >= 28 ? 'III' : 'V';
+  }
+  function calculateTaxPlanning(data) {
+    var activities = data.activities || [];
+    var totalRevenueMonth = activities.reduce(function (sum, a) { return sum + Math.max(0, Number(a.revenueMonth || 0)); }, 0);
+    var totalRevenue12 = totalRevenueMonth * 12;
+    var factorR = taxPlanningFactorR(data);
+    var brackets = ANNEX_LIMITS.map(function (limit, index) { return { max: limit, label: (index + 1) + 'ª Faixa' }; });
+    var bracketIndex = brackets.findIndex(function (b) { return totalRevenue12 <= b.max; });
+    if (bracketIndex < 0) bracketIndex = brackets.length - 1;
+
+    var basePresIR = 0, basePresCS = 0, icmsBase = 0, issBase = 0, ipiBase = 0, totalDasSN = 0;
+    var activityResults = activities.map(function (activity) {
+      var revenue = Math.max(0, Number(activity.revenueMonth || 0));
+      var isServ = activity.activityType === 'services-factor-r' || activity.activityType === 'services-iv';
+      var isComInd = activity.activityType === 'commerce' || activity.activityType === 'industry';
+      basePresIR += revenue * (isServ ? .32 : .08);
+      basePresCS += revenue * (isServ ? .32 : .12);
+      if (isComInd) icmsBase += revenue;
+      if (isServ) issBase += revenue;
+      if (activity.activityType === 'industry') ipiBase += revenue;
+
+      var annexKey = taxPlanningActivityAnnex(activity.activityType, factorR);
+      var annex = SIMPLES_ANNEXES[annexKey];
+      var rate = annex.rates[bracketIndex], deduction = annex.deductions[bracketIndex];
+      var effective = totalRevenue12 > 0 ? Math.max(0, ((totalRevenue12 * rate / 100 - deduction) / totalRevenue12) * 100) : 0;
+      var das = revenue * effective / 100;
+      totalDasSN += das;
+      return { activity: activity, revenue: revenue, annexKey: annexKey, annex: annex, rate: rate, effective: effective, das: das };
+    });
+
+    var icmsRate = Math.max(0, Number(data.icmsRate || 0));
+    var issRate = Math.max(0, Number(data.issRate || 0));
+    var ipiRate = Math.max(0, Number(data.ipiRate || 0));
+    var cbsRate = Math.max(0, Number(data.cbsRate || 0));
+    var ibsRate = Math.max(0, Number(data.ibsRate || 0));
+    var expenses = Math.max(0, Number(data.expensesMonth || 0));
+
+    var lp = {
+      pis: totalRevenueMonth * .0065, cofins: totalRevenueMonth * .03,
+      irpj: basePresIR * .15, csll: basePresCS * .09,
+      ipi: ipiBase * ipiRate / 100, iss: issBase * issRate / 100, icms: icmsBase * icmsRate / 100,
+      cbs: totalRevenueMonth * cbsRate / 100, ibs: totalRevenueMonth * ibsRate / 100
+    };
+    var lucro = Math.max(0, totalRevenueMonth - expenses);
+    var lr = {
+      pis: totalRevenueMonth * .0165, cofins: totalRevenueMonth * .076,
+      irpj: lucro * .15, csll: lucro * .09,
+      ipi: ipiBase * ipiRate / 100, iss: issBase * issRate / 100, icms: icmsBase * icmsRate / 100,
+      cbs: totalRevenueMonth * cbsRate / 100, ibs: totalRevenueMonth * ibsRate / 100
+    };
+    var lpTotal = Object.keys(lp).reduce(function (sum, key) { return sum + lp[key]; }, 0);
+    var lrTotal = Object.keys(lr).reduce(function (sum, key) { return sum + lr[key]; }, 0);
+    var best = Math.min(lpTotal, lrTotal, totalDasSN);
+    var bestLabel = best === totalDasSN ? 'Simples Nacional' : (best === lpTotal ? 'Lucro Presumido' : 'Lucro Real');
+    return {
+      activities: activityResults, totalRevenueMonth: totalRevenueMonth, totalRevenue12: totalRevenue12,
+      factorR: factorR, bracketIndex: bracketIndex, bracket: brackets[bracketIndex],
+      lp: lp, lr: lr, lpTotal: lpTotal, lrTotal: lrTotal, snTotal: totalDasSN,
+      lpNet: totalRevenueMonth - lpTotal, lrNet: totalRevenueMonth - lrTotal, snNet: totalRevenueMonth - totalDasSN,
+      bestLabel: bestLabel, best: best
+    };
+  }
+
+  function taxPlanningActivityCardHtml(activity, index, calc) {
+    var result = calc.activities[index];
+    var isFactorR = activity.activityType === 'services-factor-r';
+    return '<section class="card" data-tp-activity="' + index + '"><header class="card-header"><div><h2>Atividade ' + (index + 1) + '</h2><small data-tp-meta>' + esc(result.annex.name) + ' · Faixa ' + (calc.bracketIndex + 1) + '</small></div>' +
+      (index > 0 ? '<button type="button" class="row-button" data-action="tp-remove-activity" data-index="' + index + '" aria-label="Remover atividade">×</button>' : '') +
+      '</header><div class="card-body"><div class="form-grid rental-form-grid">' +
+        '<label class="field"><span>Nome da atividade</span><input id="tp-name-' + index + '" data-tp-input data-index="' + index + '" placeholder="Ex.: Comércio varejista" value="' + esc(activity.name) + '"></label>' +
+        '<label class="field"><span>CNAE (opcional)</span><input id="tp-cnae-' + index + '" data-tp-input data-index="' + index + '" placeholder="Ex.: 4771-7/01" value="' + esc(activity.cnae) + '"></label>' +
+        '<label class="field"><span>Tipo de atividade</span><select id="tp-activity-type-' + index + '" data-tp-input data-index="' + index + '">' + snActivityOptions(activity.activityType) + '</select></label>' +
+        '<label class="field"><span>Faturamento mensal (R$)</span><input id="tp-revenue-' + index + '" data-tp-input data-index="' + index + '" type="number" min="0" step="0.01" value="' + Number(activity.revenueMonth || 0) + '"></label>' +
+      '</div><div class="form-grid rental-form-grid tp-payroll-wrap' + (isFactorR ? '' : ' is-hidden') + '" data-tp-payroll-wrap="' + index + '"><label class="field"><span>Folha de pagamento nos últimos 12 meses (R$)</span><input id="tp-payroll-' + index + '" data-tp-input data-index="' + index + '" type="number" min="0" step="0.01" value="' + Number(activity.payroll12 || 0) + '"></label></div></div></section>';
+  }
+
+  function taxPlanningComparativeTableHtml(calc) {
+    var revenue = calc.totalRevenueMonth || 0;
+    function pct(value) { return revenue > 0 ? number(value / revenue * 100) + '%' : '—'; }
+    var rows = [
+      ['PIS', calc.lp.pis, calc.lr.pis], ['COFINS', calc.lp.cofins, calc.lr.cofins],
+      ['IRPJ', calc.lp.irpj, calc.lr.irpj], ['CSLL', calc.lp.csll, calc.lr.csll],
+      ['IPI', calc.lp.ipi, calc.lr.ipi], ['ISS', calc.lp.iss, calc.lr.iss],
+      ['ICMS', calc.lp.icms, calc.lr.icms], ['CBS (2026)', calc.lp.cbs, calc.lr.cbs], ['IBS (2026)', calc.lp.ibs, calc.lr.ibs]
+    ];
+    var body = rows.map(function (row) {
+      return '<tr><td>' + row[0] + '</td><td>' + pct(row[1]) + '</td><td>' + money(row[1]) + '</td><td>' + pct(row[2]) + '</td><td>' + money(row[2]) + '</td><td>—</td><td>—</td></tr>';
+    }).join('');
+    body += '<tr><td><b>Simples Nacional (DAS)</b></td><td>—</td><td>—</td><td>—</td><td>—</td><td>' + pct(calc.snTotal) + '</td><td>' + money(calc.snTotal) + '</td></tr>';
+    return '<div class="table-wrap"><table class="data-table"><thead><tr><th rowspan="2">Tributos</th><th colspan="2">Lucro Presumido</th><th colspan="2">Lucro Real</th><th colspan="2">Simples Nacional</th></tr><tr><th>Alíq.</th><th>Valor</th><th>Alíq.</th><th>Valor</th><th>Alíq.</th><th>Valor</th></tr></thead><tbody>' + body +
+      '<tr class="current"><td><b>TOTAL DE IMPOSTOS</b></td><td></td><td><b>' + money(calc.lpTotal) + '</b></td><td></td><td><b>' + money(calc.lrTotal) + '</b></td><td></td><td><b>' + money(calc.snTotal) + '</b></td></tr>' +
+      '<tr><td><b>VALOR LÍQUIDO</b></td><td></td><td><b>' + money(calc.lpNet) + '</b></td><td></td><td><b>' + money(calc.lrNet) + '</b></td><td></td><td><b>' + money(calc.snNet) + '</b></td></tr>' +
+      '</tbody></table></div>';
+  }
+
+  function taxPlanningOverviewHtml(calc) {
+    function card(label, total, net, isBest) {
+      return '<div class="card' + (isBest ? ' das-total' : '') + '" style="padding:18px;text-align:center"><small>' + esc(label) + (isBest ? ' · <b style="color:#1c8a4b">melhor opção</b>' : '') + '</small><h3 style="margin:8px 0">' + money(total) + '</h3><small>Líquido: ' + money(net) + '</small></div>';
+    }
+    return '<div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:14px">' +
+      card('Lucro Presumido', calc.lpTotal, calc.lpNet, calc.bestLabel === 'Lucro Presumido') +
+      card('Lucro Real', calc.lrTotal, calc.lrNet, calc.bestLabel === 'Lucro Real') +
+      card('Simples Nacional', calc.snTotal, calc.snNet, calc.bestLabel === 'Simples Nacional') +
+    '</div>';
+  }
+
+  function renderTaxPlanningIntro() {
+    return [
+      '<section class="card"><div class="card-body" style="text-align:center;padding:32px 18px 8px">' +
+        '<h2 style="margin:0 0 8px">Seja bem-vindo ao Simulador de Planejamento Tributário</h2>' +
+        '<p style="color:var(--muted);max-width:640px;margin:0 auto 24px">Compare a carga tributária entre Lucro Presumido, Lucro Real e Simples Nacional, já considerando CBS e IBS da Reforma Tributária. Escolha a opção que melhor atenda à sua empresa.</p>' +
+      '</div></section>',
+      '<div class="form-grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">' +
+        '<div class="card" style="text-align:center;padding:28px 20px"><span class="tag tag--success" style="margin-bottom:10px;display:inline-block">Incluso Reforma Tributária</span><h3 style="margin:6px 0 10px">Planejamento Tributário Simplificado</h3><p style="color:var(--muted);min-height:48px">Simule com apenas 1 (um) CNAE e visão geral dos tributos.</p><button class="primary-button" data-action="tp-select-mode" data-mode="simplificado">Acessar →</button></div>' +
+        '<div class="card" style="text-align:center;padding:28px 20px"><h3 style="margin:6px 0 10px">Planejamento Tributário Detalhado</h3><p style="color:var(--muted);min-height:48px">Simule podendo inserir até 3 (três) CNAEs e visualize os tributos detalhados.</p><button class="primary-button" data-action="tp-select-mode" data-mode="detalhado">Acessar →</button></div>' +
+      '</div>'
+    ].join('');
+  }
+
+  function renderTaxPlanningWorkspace() {
+    var data = taxPlanningState();
+    var calc = calculateTaxPlanning(data);
+    var maxActivities = taxPlanningMaxActivities(data.mode);
+    var activitiesHtml = data.activities.map(function (activity, index) { return taxPlanningActivityCardHtml(activity, index, calc); }).join('');
+    var addButton = (data.mode === 'detalhado' && data.activities.length < maxActivities)
+      ? '<div style="margin:10px 0"><button type="button" class="secondary-button" data-action="tp-add-activity">+ Adicionar atividade (' + data.activities.length + '/' + maxActivities + ')</button></div>' : '';
+    return [
+      '<div class="info-banner"><span>i</span><div><strong>Simulador orientativo.</strong> Compara Lucro Presumido, Lucro Real e Simples Nacional a partir dos percentuais gerais de presunção (Lei nº 9.249/1995), do PIS/Cofins cumulativo e não cumulativo, e de alíquotas de teste de CBS/IBS da Reforma Tributária (EC nº 132/2023 e LC nº 214/2025). Confirme enquadramento, benefícios setoriais e créditos específicos com o contador antes de decidir.</div></div>',
+      '<section class="card"><header class="card-header"><h2>Parâmetros gerais</h2><small>Alíquotas e despesas usadas no comparativo</small></header><div class="card-body"><div class="form-grid rental-form-grid">' +
+        '<label class="field"><span>Despesas mensais dedutíveis — Lucro Real (R$)</span><input id="tp-expenses" data-tp-input type="number" min="0" step="0.01" value="' + Number(data.expensesMonth || 0) + '"></label>' +
+        '<label class="field"><span>Alíquota de ICMS (%)</span><input id="tp-icms-rate" data-tp-input type="number" min="0" step="0.01" value="' + Number(data.icmsRate || 0) + '"></label>' +
+        '<label class="field"><span>Alíquota de ISS (%)</span><input id="tp-iss-rate" data-tp-input type="number" min="0" step="0.01" value="' + Number(data.issRate || 0) + '"></label>' +
+        '<label class="field"><span>Alíquota de IPI (%)</span><input id="tp-ipi-rate" data-tp-input type="number" min="0" step="0.01" value="' + Number(data.ipiRate || 0) + '"></label>' +
+        '<label class="field"><span>CBS (%) — teste 2026</span><input id="tp-cbs-rate" data-tp-input type="number" min="0" step="0.01" value="' + Number(data.cbsRate || 0) + '"></label>' +
+        '<label class="field"><span>IBS (%) — teste 2026</span><input id="tp-ibs-rate" data-tp-input type="number" min="0" step="0.01" value="' + Number(data.ibsRate || 0) + '"></label>' +
+      '</div></div></section>',
+      activitiesHtml,
+      addButton,
+      '<section class="card" id="tp-result-card"><header class="card-header"><h2>' + (data.mode === 'detalhado' ? 'Comparativo detalhado' : 'Visão geral do comparativo') + '</h2><small>Atualiza automaticamente conforme os dados informados</small></header><div class="card-body" id="tp-result-body">' +
+        (data.mode === 'detalhado' ? taxPlanningComparativeTableHtml(calc) : taxPlanningOverviewHtml(calc)) +
+      '</div></section>',
+      '<div class="warning-banner" style="margin-top:14px"><strong>Não substitui a análise do contador.</strong> A comparação usa percentuais gerais de presunção e alíquotas informadas manualmente — regimes especiais, benefícios fiscais, substituição tributária e créditos específicos do seu setor podem alterar o resultado real.</div>'
+    ].join('');
+  }
+
+  function renderTaxPlanning() {
+    var data = taxPlanningState();
+    var actions = data.mode ? '<button class="secondary-button" data-action="tp-back">← Voltar</button><button class="secondary-button" data-action="tp-export">↧ Exportar JSON</button><button class="secondary-button" data-action="tp-reset">Limpar dados</button><button class="primary-button" data-action="tp-save">▣ Salvar simulação</button>' : '';
+    return [
+      pageHeading('Simulador de Planejamento Tributário', 'Compare a carga tributária entre Lucro Presumido, Lucro Real e Simples Nacional para apoiar decisões de planejamento tributário.', actions),
+      data.mode ? renderTaxPlanningWorkspace() : renderTaxPlanningIntro()
+    ].join('');
+  }
+
+  function selectTaxPlanningMode(mode) {
+    mode = mode === 'detalhado' ? 'detalhado' : 'simplificado';
+    var data = taxPlanningState();
+    data.mode = mode;
+    var max = taxPlanningMaxActivities(mode);
+    if (data.activities.length > max) data.activities = data.activities.slice(0, max);
+    persist(); route();
+  }
+
+  function backToTaxPlanningIntro() {
+    var data = taxPlanningState();
+    data.mode = '';
+    persist(); route();
+  }
+
+  function addTaxPlanningActivity() {
+    var data = taxPlanningState();
+    var max = taxPlanningMaxActivities(data.mode);
+    if (data.activities.length >= max) return;
+    data.activities.push(taxPlanningActivityDefaults('tp-act-' + Date.now()));
+    persist(); route();
+  }
+
+  function removeTaxPlanningActivity(index) {
+    var data = taxPlanningState();
+    index = Number(index);
+    if (data.activities.length <= 1) return;
+    data.activities.splice(index, 1);
+    persist(); route();
+  }
+
+  function resetTaxPlanning() {
+    if (!window.confirm('Limpar todos os dados desta simulação e voltar à tela inicial?')) return;
+    state.settings.taxPlanning = taxPlanningDefaults();
+    persist(); route(); toast('Simulação limpa', 'Os parâmetros foram restaurados.');
+  }
+
+  function readTaxPlanningFromDom() {
+    var data = taxPlanningState();
+    var field = function (id) { var el = $('#' + id); return el ? el.value : undefined; };
+    data.expensesMonth = Math.max(0, parseLocaleNumber(field('tp-expenses')));
+    data.icmsRate = Math.max(0, parseLocaleNumber(field('tp-icms-rate')));
+    data.issRate = Math.max(0, parseLocaleNumber(field('tp-iss-rate')));
+    data.ipiRate = Math.max(0, parseLocaleNumber(field('tp-ipi-rate')));
+    data.cbsRate = Math.max(0, parseLocaleNumber(field('tp-cbs-rate')));
+    data.ibsRate = Math.max(0, parseLocaleNumber(field('tp-ibs-rate')));
+    data.activities.forEach(function (activity, index) {
+      var nameEl = $('#tp-name-' + index); if (nameEl) activity.name = nameEl.value;
+      var cnaeEl = $('#tp-cnae-' + index); if (cnaeEl) activity.cnae = cnaeEl.value;
+      var typeEl = $('#tp-activity-type-' + index); if (typeEl) activity.activityType = typeEl.value;
+      var revenueEl = $('#tp-revenue-' + index); if (revenueEl) activity.revenueMonth = Math.max(0, parseLocaleNumber(revenueEl.value));
+      var payrollEl = $('#tp-payroll-' + index); if (payrollEl) activity.payroll12 = Math.max(0, parseLocaleNumber(payrollEl.value));
+    });
+    return data;
+  }
+
+  function updateTaxPlanningSimulator() {
+    var data = readTaxPlanningFromDom();
+    var calc = calculateTaxPlanning(data);
+    data.activities.forEach(function (activity, index) {
+      var wrap = $('[data-tp-payroll-wrap="' + index + '"]');
+      if (wrap) wrap.classList.toggle('is-hidden', activity.activityType !== 'services-factor-r');
+      var card = $('[data-tp-activity="' + index + '"]');
+      var meta = card && card.querySelector('[data-tp-meta]');
+      if (meta) meta.textContent = calc.activities[index].annex.name + ' · Faixa ' + (calc.bracketIndex + 1);
+    });
+    var resultBody = $('#tp-result-body');
+    if (resultBody) resultBody.innerHTML = data.mode === 'detalhado' ? taxPlanningComparativeTableHtml(calc) : taxPlanningOverviewHtml(calc);
+    window.clearTimeout(state.tpSaveTimer);
+    state.tpSaveTimer = window.setTimeout(function () { persist(); }, 350);
+  }
+
+  function saveTaxPlanning() {
+    var data = readTaxPlanningFromDom();
+    var calc = calculateTaxPlanning(data);
+    state.settings.taxPlanning = Object.assign({}, data, { savedAt: nowISO() });
+    persist(); audit('Simulação de Planejamento Tributário salva', (data.mode === 'detalhado' ? 'Detalhado' : 'Simplificado') + ' · melhor opção: ' + calc.bestLabel);
+    toast('Simulação salva', 'Os dados e o resultado foram armazenados permanentemente neste navegador.');
+  }
+
+  function exportTaxPlanning() {
+    var data = readTaxPlanningFromDom();
+    var calc = calculateTaxPlanning(data);
+    downloadFile('planejamento-tributario-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.planejamento-tributario.v1', generatedAt: nowISO(), data: data, result: calc, sources: ['Lei nº 9.249/1995', 'LC nº 123/2006', 'EC nº 132/2023', 'LC nº 214/2025'] }, null, 2));
+    audit('Simulação de Planejamento Tributário exportada', (data.mode === 'detalhado' ? 'Detalhado' : 'Simplificado') + ' · JSON');
+    toast('Relatório exportado', 'A memória da simulação foi salva em JSON.');
+  }
+
   function calculateProLabore2026(grossValue, dependentCount, otherDeductions) {
     var gross = Math.max(0, Number(grossValue || 0));
     var dependents = Math.max(0, Math.floor(Number(dependentCount || 0)));
@@ -6762,6 +7032,13 @@
     else if (action === 'piscofins-ncm-remove') removePisCofinsNcmRow(actionEl.getAttribute('data-index'));
     else if (action === 'piscofins-clear') clearPisCofinsAnalysis();
     else if (action === 'piscofins-export') exportPisCofinsAnalysis();
+    else if (action === 'tp-select-mode') selectTaxPlanningMode(actionEl.getAttribute('data-mode'));
+    else if (action === 'tp-back') backToTaxPlanningIntro();
+    else if (action === 'tp-add-activity') addTaxPlanningActivity();
+    else if (action === 'tp-remove-activity') removeTaxPlanningActivity(actionEl.getAttribute('data-index'));
+    else if (action === 'tp-reset') resetTaxPlanning();
+    else if (action === 'tp-save') saveTaxPlanning();
+    else if (action === 'tp-export') exportTaxPlanning();
     else if (action === 'transition-select-year') selectTaxTransitionYear(actionEl.getAttribute('data-year'));
     else if (action === 'transition-clear') resetTaxTransition();
     else if (action === 'transition-save') saveTaxTransition();
@@ -6913,6 +7190,8 @@
       updateBalanceAnalysis(true);
     } else if (event.target.matches('[data-transition-input]')) {
       updateTaxTransition(true);
+    } else if (event.target.matches('[data-tp-input]')) {
+      updateTaxPlanningSimulator();
     } else if (event.target.id === 'sefaz-access-key') {
       updateSefazKeyFeedback();
     } else if (event.target.id === 'sefaz-filter-company') {
@@ -6972,6 +7251,7 @@
     else if (event.target.matches('[data-alimony-input]')) updateAlimonyCalculator(true);
     else if (event.target.matches('[data-balance-input]')) updateBalanceAnalysis(true);
     else if (event.target.matches('[data-transition-input]')) updateTaxTransition(true);
+    else if (event.target.matches('[data-tp-input]')) updateTaxPlanningSimulator();
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
     else if (event.target.id === 'piscofins-xml-files') handlePisCofinsFiles(event.target.files);
     else if (event.target.id === 'json-file-input') processImportedFile(event.target.files && event.target.files[0]);

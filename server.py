@@ -138,6 +138,7 @@ ERP_MODULES = {
     "tab_ibs_cbs": "IBS e CBS",
     "tab_transicao_reforma": "Transição da Reforma Tributária",
     "tab_recuperador_pis_cofins": "Recuperador de Créditos de PIS e Cofins",
+    "tab_planejamento_tributario": "Simulador de Planejamento Tributário",
     "tab_lei_complementar": "Lei Complementar Completa",
     "tab_mei_ibs_cbs": "MEI, IBS e CBS",
     "tab_parametros_2026": "Parâmetros 2026",
@@ -174,7 +175,8 @@ ERP_MODULES = {
 }
 FISCAL_TAB_MODULES = {
     "tab_sefaz_portal", "tab_dashboard", "tab_conttech_simples_nacional", "tab_diagnostico", "tab_mei", "tab_controle_mei",
-    "tab_obrigacoes", "tab_certidao_regularidade_fiscal", "tab_ibs_cbs", "tab_transicao_reforma", "tab_recuperador_pis_cofins", "tab_lei_complementar",
+    "tab_obrigacoes", "tab_certidao_regularidade_fiscal", "tab_ibs_cbs", "tab_transicao_reforma", "tab_recuperador_pis_cofins",
+    "tab_planejamento_tributario", "tab_lei_complementar",
     "tab_mei_ibs_cbs", "tab_parametros_2026", "tab_consulta_cnpj", "tab_inscricao_estadual",
     "tab_cnae_servicos", "tab_ncm_tipi", "tab_consulta_cest", "tab_cfop", "tab_icms_difal",
     "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_simulador_locacao",
