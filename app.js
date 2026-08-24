@@ -201,6 +201,7 @@
     { route: 'inicio', label: 'Visão Geral da Carteira', icon: '⌂', desc: 'Dashboard profissional com indicadores e andamento de todos os clientes' },
     { route: 'sefaz-portal', label: 'Consulta SEFAZ e Portal do Contribuinte', icon: '▣', desc: 'Consulta oficial de documentos fiscais e gestão segura de certificados' },
     { route: 'dashboard', label: 'Cálculo DAS', icon: '▥', desc: 'Apuração interativa do Simples Nacional' },
+    { route: 'conttech-simples-nacional', label: 'Conttech Simples Nacional', icon: '§', desc: 'Simulador de apuração do Simples Nacional em 3 etapas' },
     { route: 'diagnostico', label: 'Diagnóstico Tributário', icon: '◉', desc: 'Riscos, inconsistências e recomendações' },
     { route: 'mei', label: 'MEI', icon: '●', desc: 'Limites, regras e desenquadramento' },
     { route: 'controle-mei', label: 'Controle de MEI', icon: '▤', desc: 'Receitas, despesas, fluxo mensal e dashboard financeiro' },
@@ -3104,6 +3105,7 @@
     else if (state.route === 'aliquotas-iss') main.innerHTML = renderIssRates();
     else if (state.route === 'consulta-cest') main.innerHTML = renderCestConsultation();
     else if (state.route === 'simulador-locacao') main.innerHTML = renderRentalSimulator();
+    else if (state.route === 'conttech-simples-nacional') main.innerHTML = renderSnSimulator();
     else if (state.route === 'gestao-usuarios') main.innerHTML = '<div id="user-access-management"></div>';
     else if (state.route === 'configuracoes') main.innerHTML = renderSettings();
     else if (state.route === 'historico') main.innerHTML = renderHistory();
@@ -3444,6 +3446,229 @@
         '</div>',
       '</div>'
     ].join('');
+  }
+
+  function snSimulationDefaults() {
+    return {
+      cnpjOpening: '', competence: '', uf: 'SP', cnaes: [], cnaeQuery: '',
+      companyStage: 'established', accumulatedRevenue: 0, monthsSinceOpening: 12,
+      activityType: 'commerce', payroll12: 0, revenue12: 0, revenueMonth: 0
+    };
+  }
+
+  function snActivityOptions(selected) {
+    var options = [
+      ['commerce', 'Comércio (Anexo I)'],
+      ['industry', 'Indústria (Anexo II)'],
+      ['services-factor-r', 'Serviços — Fator R (Anexo III ou V)'],
+      ['services-iv', 'Serviços — Anexo IV (sem CPP no DAS)']
+    ];
+    if (!options.some(function (item) { return item[0] === selected; })) selected = options[0][0];
+    return options.map(function (item) { return '<option value="' + item[0] + '"' + (item[0] === selected ? ' selected' : '') + '>' + item[1] + '</option>'; }).join('');
+  }
+
+  function snEffectiveRbt12(data) {
+    if (data.companyStage === 'first-year') {
+      var months = Math.max(1, Math.min(12, Math.round(data.monthsSinceOpening || 1)));
+      return Math.max(0, (Number(data.accumulatedRevenue || 0) / months) * 12);
+    }
+    return Math.max(0, Number(data.revenue12 || 0));
+  }
+
+  function snResolveAnnex(data) {
+    if (data.activityType === 'commerce') return 'I';
+    if (data.activityType === 'industry') return 'II';
+    if (data.activityType === 'services-iv') return 'IV';
+    var rbt12 = snEffectiveRbt12(data);
+    var factorR = rbt12 > 0 ? (Number(data.payroll12 || 0) / rbt12) * 100 : 0;
+    return factorR >= 28 ? 'III' : 'V';
+  }
+
+  function calculateSnSimulation(data) {
+    var annexKey = snResolveAnnex(data);
+    var annex = SIMPLES_ANNEXES[annexKey];
+    var rbt12 = snEffectiveRbt12(data);
+    var brackets = ANNEX_LIMITS.map(function (limit, index) {
+      return { max: limit, rate: annex.rates[index], deduction: annex.deductions[index], label: (index + 1) + 'ª Faixa' };
+    });
+    var bracketIndex = brackets.findIndex(function (b) { return rbt12 <= b.max; });
+    if (bracketIndex < 0) bracketIndex = brackets.length - 1;
+    var bracket = brackets[bracketIndex];
+    var effective = rbt12 > 0 ? Math.max(0, ((rbt12 * bracket.rate / 100 - bracket.deduction) / rbt12) * 100) : 0;
+    var month = Math.max(0, Number(data.revenueMonth || 0));
+    var total = month * effective / 100;
+    var shares = annexShares(annex, bracketIndex, false, total);
+    var factorR = rbt12 > 0 ? (Number(data.payroll12 || 0) / rbt12) * 100 : 0;
+    var bracketMin = bracketIndex === 0 ? 0 : brackets[bracketIndex - 1].max + .01;
+    var bracketProgress = bracket.max > bracketMin ? Math.max(0, Math.min(100, (rbt12 - bracketMin) / (bracket.max - bracketMin) * 100)) : 0;
+    return {
+      annexKey: annexKey, annex: annex, rbt12: rbt12, month: month, brackets: brackets, bracket: bracket,
+      bracketIndex: bracketIndex, bracketMin: bracketMin, bracketProgress: bracketProgress,
+      effective: effective, total: total, shares: shares, factorR: factorR,
+      overLimit: rbt12 > ANNEX_LIMITS[ANNEX_LIMITS.length - 1]
+    };
+  }
+
+  function snFormulaText(calc) {
+    if (!calc.rbt12) return 'Informe o RBT12 (ou os dados do 1º ano de atividade) para calcular a alíquota efetiva e o DAS.';
+    return '((' + number(calc.rbt12) + ' × ' + number(calc.bracket.rate) + '% − ' + number(calc.bracket.deduction) + ') ÷ ' + number(calc.rbt12) + ') × ' + number(calc.month) + ' = ' + money(calc.total);
+  }
+
+  function snCnaeListHtml(list) {
+    list = list || [];
+    if (!list.length) return '<div class="sn-cnae-empty"><b>Nenhum CNAE incluído</b><small>Pesquise acima o CNAE que deseja registrar nesta simulação.</small></div>';
+    return list.map(function (item, index) {
+      return '<div class="sn-cnae-item"><span>' + esc(item) + '</span><button type="button" class="sn-cnae-remove" data-action="sn-cnae-remove" data-index="' + index + '" aria-label="Remover CNAE">×</button></div>';
+    }).join('');
+  }
+
+  function renderSnSimulator() {
+    var data = Object.assign(snSimulationDefaults(), state.settings.snSimulation || {});
+    var calc = calculateSnSimulation(data);
+    var isFirstYear = data.companyStage === 'first-year';
+    return [
+      pageHeading('Conttech Simples Nacional', 'Simulador de apuração do Simples Nacional em 3 etapas: dados iniciais, dados do cálculo e receita — com DAS, alíquota efetiva e partilha tributária calculados instantaneamente.', '<button class="secondary-button" data-action="sn-export-json">↧ Exportar JSON</button><button class="secondary-button" data-action="sn-print">▣ PDF / imprimir</button><button class="primary-button" data-action="sn-save">▣ Salvar simulação</button>'),
+      '<div class="info-banner"><span>i</span><div><strong>Simulador orientativo.</strong> Os percentuais e faixas seguem a LC nº 123/2006 (Anexos I a V). A classificação do Anexo pela atividade e o eventual Fator R devem ser confirmados no cadastro CNAE/CNPJ e na legislação vigente antes do recolhimento oficial do DAS.</div></div>',
+      '<div class="rental-stepper" id="sn-stepper" aria-label="Etapas da simulação"><button class="active" data-action="sn-step" data-step="1"><span>1</span><b>Dados Iniciais</b><small>CNPJ, competência e UF</small></button><i></i><button data-action="sn-step" data-step="2"><span>2</span><b>Dados do Cálculo</b><small>RBT12, atividade e Fator R</small></button><i></i><button data-action="sn-step" data-step="3"><span>3</span><b>Receita</b><small>Resultado do DAS</small></button></div>',
+      '<div class="rental-layout" id="sn-simulator" data-sn-stage="' + (isFirstYear ? 'first-year' : 'established') + '" data-current-step="1"><div class="rental-form-column">',
+      '<section class="card rental-panel active" data-sn-panel="1"><header class="card-header"><div><h2>1. Dados Iniciais</h2><small>Identifique a empresa e a competência do cálculo</small></div><span class="tag tag--info">Etapa 1 de 3</span></header><div class="card-body">' +
+        '<div class="form-grid rental-form-grid"><label class="field"><span>Abertura do CNPJ</span><input id="sn-cnpj-opening" type="month" data-sn-input value="' + esc(data.cnpjOpening) + '"></label><label class="field"><span>Mês e Ano do Cálculo</span><input id="sn-competence" type="month" data-sn-input value="' + esc(data.competence) + '"></label><label class="field"><span>Estado</span><select id="sn-uf" data-sn-input>' + icmsStateOptions(data.uf) + '</select></label></div>' +
+        '<h3 class="rental-section-title">CNAE de Atuação</h3>' +
+        '<div class="form-grid rental-form-grid"><label class="field field--full"><span>Digite o número/descrição do CNAE</span><input id="sn-cnae-query" data-sn-input placeholder="Ex.: 6201-5/01 — Desenvolvimento de programas" value="' + esc(data.cnaeQuery || '') + '"></label></div>' +
+        '<button type="button" class="secondary-button" data-action="sn-cnae-add">+ Adicionar CNAE</button>' +
+        '<div id="sn-cnae-list" class="sn-cnae-list">' + snCnaeListHtml(data.cnaes) + '</div>' +
+        '<div class="help-text">O Anexo de enquadramento é definido na Etapa 2, conforme o tipo de atividade — a lista de CNAEs acima é apenas para registro/consulta desta simulação.</div>' +
+      '<div class="rental-panel-actions"><button class="secondary-button" data-action="sn-clear">Limpar dados</button><button class="primary-button" data-action="sn-step" data-step="2">Próximo: dados do cálculo →</button></div></div></section>',
+      '<section class="card rental-panel" data-sn-panel="2"><header class="card-header"><div><h2>2. Dados do Cálculo</h2><small>Enquadramento, RBT12 e Fator R</small></div><span class="tag tag--info">Etapa 2 de 3</span></header><div class="card-body">' +
+        '<div class="segmented"><button type="button" class="segment' + (!isFirstYear ? ' active' : '') + '" data-action="sn-select-stage" data-stage="established">🏢 Empresa Estabelecida<br><small>RBT12 real</small></button><button type="button" class="segment' + (isFirstYear ? ' active' : '') + '" data-action="sn-select-stage" data-stage="first-year">▧ 1º Ano de Atividade<br><small>RBT12 proporcionalizado</small></button></div>' +
+        '<div class="form-grid rental-form-grid sn-only-established' + (isFirstYear ? ' is-hidden' : '') + '"><label class="field"><span>RBT12 — Receita Bruta acumulada nos últimos 12 meses (R$)</span><input id="sn-rbt12" data-sn-input type="number" min="0" step="0.01" value="' + Number(data.revenue12 || 0) + '"></label></div>' +
+        '<div class="form-grid rental-form-grid sn-only-first-year' + (!isFirstYear ? ' is-hidden' : '') + '"><label class="field"><span>Receita bruta acumulada desde a abertura (R$)</span><input id="sn-accumulated-revenue" data-sn-input type="number" min="0" step="0.01" value="' + Number(data.accumulatedRevenue || 0) + '"></label><label class="field"><span>Meses em atividade</span><input id="sn-months-active" data-sn-input type="number" min="1" max="12" step="1" value="' + Number(data.monthsSinceOpening || 1) + '"></label></div>' +
+        '<h3 class="rental-section-title">Tipo de atividade</h3><div class="form-grid rental-form-grid"><label class="field"><span>Atividade</span><select id="sn-activity-type" data-sn-input>' + snActivityOptions(data.activityType) + '</select></label></div>' +
+        '<div class="form-grid rental-form-grid sn-only-factor-r' + (data.activityType !== 'services-factor-r' ? ' is-hidden' : '') + '"><label class="field"><span>Folha de pagamento nos últimos 12 meses, com encargos (R$)</span><input id="sn-payroll12" data-sn-input type="number" min="0" step="0.01" value="' + Number(data.payroll12 || 0) + '"></label><div class="field"><span>Fator R apurado</span><div class="sn-factor-r-badge" id="sn-factor-r-badge">' + number(calc.factorR) + '% → ' + esc(calc.annex.name) + '</div></div></div>' +
+      '<div class="rental-panel-actions"><button class="secondary-button" data-action="sn-step" data-step="1">← Voltar</button><button class="primary-button" data-action="sn-step" data-step="3">Próximo: receita →</button></div></div></section>',
+      '<section class="card rental-panel" data-sn-panel="3"><header class="card-header"><div><h2>3. Receita e Resultado</h2><small>Informe a receita bruta do mês e veja o DAS calculado</small></div><span class="tag tag--success">Resultado instantâneo</span></header><div class="card-body">' +
+        '<label class="money-box"><span>R$</span><input id="sn-revenue-month" data-sn-input inputmode="decimal" autocomplete="off" value="' + dasInputValue(calc.month) + '" aria-label="Receita bruta do mês"></label>' +
+        '<section class="das-total" id="sn-total-card" aria-live="polite"><div class="das-total-main"><small>DAS a recolher</small><strong id="sn-payable">' + money(calc.total) + '</strong></div><div class="das-metrics"><div><span>Alíq. efetiva</span><b id="sn-effective">' + number(calc.effective) + '%</b></div><div><span>Alíq. nominal</span><b id="sn-nominal">' + number(calc.bracket.rate) + '%</b></div><div><span>Faixa</span><b id="sn-bracket">' + calc.bracket.label + '</b></div><div><span>Anexo</span><b id="sn-annex-label">' + esc(calc.annex.name) + '</b></div></div></section>' +
+        '<div class="formula" id="sn-formula">' + snFormulaText(calc) + '</div>' +
+        (calc.overLimit ? '<div class="info-banner"><span>!</span><div><strong>RBT12 acima do limite.</strong> O valor informado ultrapassa ' + money(ANNEX_LIMITS[ANNEX_LIMITS.length - 1]) + ', teto do Simples Nacional. Avalie o desenquadramento do regime.</div></div>' : '') +
+        '<h3 class="rental-section-title">Partilha Tributária — <span id="sn-tax-title-annex">' + esc(calc.annex.name) + '</span></h3><div class="tax-list" id="sn-tax-list">' + dasTaxRows(calc) + '</div>' +
+        '<h3 class="rental-section-title">Faixas — <span id="sn-bracket-title-annex">' + esc(calc.annex.name) + '</span></h3><div class="table-wrap"><table class="bracket-table"><thead><tr><th>Faixa</th><th>De</th><th>Até</th><th>Alíq.</th><th>Dedução</th></tr></thead><tbody id="sn-bracket-rows">' + dasBracketRows(calc) + '</tbody></table></div>' +
+      '<div class="rental-panel-actions"><button class="secondary-button" data-action="sn-step" data-step="2">← Ajustar dados</button><button class="secondary-button" data-action="sn-export-json">↧ JSON</button><button class="primary-button" data-action="sn-save">▣ Salvar simulação</button></div></div></section>',
+      '</div><aside class="card rental-summary"><header class="card-header"><div><h2>Resultado instantâneo</h2><small>Atualiza a cada alteração</small></div><span class="rental-live-dot">ao vivo</span></header><div class="rental-summary-total"><small>DAS do mês</small><strong id="sn-quick-total">' + money(calc.total) + '</strong><span id="sn-quick-annex">' + esc(calc.annex.name) + '</span></div><div class="rental-summary-grid"><div><small>RBT12</small><b id="sn-quick-rbt12">' + money(calc.rbt12) + '</b></div><div><small>Alíq. efetiva</small><b id="sn-quick-effective">' + number(calc.effective) + '%</b></div><div><small>Faixa</small><b id="sn-quick-bracket">' + calc.bracket.label + '</b></div><div><small>Receita do mês</small><b id="sn-quick-month">' + money(calc.month) + '</b></div></div><div class="rental-summary-foot"><span>Última atualização</span><b id="sn-calculated-at">—</b></div></aside></div>',
+      '<section class="card rental-sources"><header class="card-header"><div><h2>Fontes oficiais</h2><small>Base legal do Simples Nacional</small></div><span class="tag tag--success">Fontes oficiais</span></header><div class="card-body"><a href="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp123.htm" target="_blank" rel="noopener noreferrer"><b>LC nº 123/2006</b><span>Estatuto da ME/EPP e do Simples Nacional ↗</span></a><a href="https://normas.receita.fazenda.gov.br/sijut2consulta/link.action?idAto=92278&visao=compilado" target="_blank" rel="noopener noreferrer"><b>Resolução CGSN nº 140/2018</b><span>Regulamento do Simples Nacional, compilada ↗</span></a></div></section>'
+    ].join('');
+  }
+
+  function readSnSimulation() {
+    var fallback = Object.assign(snSimulationDefaults(), state.settings.snSimulation || {});
+    var value = function (id, defaultValue) { var el = $('#' + id); return el ? el.value : defaultValue; };
+    return {
+      cnpjOpening: value('sn-cnpj-opening', fallback.cnpjOpening),
+      competence: value('sn-competence', fallback.competence),
+      uf: value('sn-uf', fallback.uf),
+      cnaes: fallback.cnaes || [],
+      cnaeQuery: value('sn-cnae-query', fallback.cnaeQuery),
+      companyStage: ($('#sn-simulator') && $('#sn-simulator').getAttribute('data-sn-stage')) || fallback.companyStage,
+      accumulatedRevenue: Math.max(0, parseLocaleNumber(value('sn-accumulated-revenue', fallback.accumulatedRevenue))),
+      monthsSinceOpening: Math.max(1, Math.min(12, Math.round(parseLocaleNumber(value('sn-months-active', fallback.monthsSinceOpening)) || 1))),
+      activityType: value('sn-activity-type', fallback.activityType),
+      payroll12: Math.max(0, parseLocaleNumber(value('sn-payroll12', fallback.payroll12))),
+      revenue12: Math.max(0, parseLocaleNumber(value('sn-rbt12', fallback.revenue12))),
+      revenueMonth: Math.max(0, parseDasNumber(value('sn-revenue-month', fallback.revenueMonth)))
+    };
+  }
+
+  function updateSnSimulator() {
+    var root = $('#sn-simulator');
+    if (!root) return;
+    var data = readSnSimulation();
+    state.settings.snSimulation = data;
+    var calc = calculateSnSimulation(data);
+    var text = function (id, value) { var el = $('#' + id); if (el) el.textContent = value; };
+    $$('.sn-only-established').forEach(function (el) { el.classList.toggle('is-hidden', data.companyStage === 'first-year'); });
+    $$('.sn-only-first-year').forEach(function (el) { el.classList.toggle('is-hidden', data.companyStage !== 'first-year'); });
+    $$('.sn-only-factor-r').forEach(function (el) { el.classList.toggle('is-hidden', data.activityType !== 'services-factor-r'); });
+    var factorRBadge = $('#sn-factor-r-badge');
+    if (factorRBadge) factorRBadge.textContent = number(calc.factorR) + '% → ' + calc.annex.name;
+    text('sn-payable', money(calc.total));
+    text('sn-effective', number(calc.effective) + '%');
+    text('sn-nominal', number(calc.bracket.rate) + '%');
+    text('sn-bracket', calc.bracket.label);
+    text('sn-annex-label', calc.annex.name);
+    text('sn-formula', snFormulaText(calc));
+    text('sn-tax-title-annex', calc.annex.name);
+    text('sn-bracket-title-annex', calc.annex.name);
+    var taxList = $('#sn-tax-list'); if (taxList) taxList.innerHTML = dasTaxRows(calc);
+    var bracketRows = $('#sn-bracket-rows'); if (bracketRows) bracketRows.innerHTML = dasBracketRows(calc);
+    text('sn-quick-total', money(calc.total));
+    text('sn-quick-annex', calc.annex.name);
+    text('sn-quick-rbt12', money(calc.rbt12));
+    text('sn-quick-effective', number(calc.effective) + '%');
+    text('sn-quick-bracket', calc.bracket.label);
+    text('sn-quick-month', money(calc.month));
+    text('sn-calculated-at', new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    window.clearTimeout(state.snSaveTimer);
+    state.snSaveTimer = window.setTimeout(function () { persist(); }, 350);
+  }
+
+  function setSnStep(step) {
+    step = Math.max(1, Math.min(3, Number(step || 1)));
+    var root = $('#sn-simulator'); if (!root) return;
+    root.setAttribute('data-current-step', step);
+    $$('[data-sn-panel]').forEach(function (panel) { panel.classList.toggle('active', Number(panel.getAttribute('data-sn-panel')) === step); });
+    $$('#sn-stepper button').forEach(function (button) { var buttonStep = Number(button.getAttribute('data-step')); button.classList.toggle('active', buttonStep === step); button.classList.toggle('complete', buttonStep < step); });
+    updateSnSimulator();
+    var target = $('[data-sn-panel="' + step + '"]'); if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function selectSnStage(stage) {
+    var root = $('#sn-simulator'); if (!root) return;
+    stage = stage === 'first-year' ? 'first-year' : 'established';
+    root.setAttribute('data-sn-stage', stage);
+    $$('.segment[data-action="sn-select-stage"]').forEach(function (btn) { btn.classList.toggle('active', btn.getAttribute('data-stage') === stage); });
+    updateSnSimulator();
+  }
+
+  function addSnCnae() {
+    var input = $('#sn-cnae-query');
+    var value = input ? String(input.value || '').trim() : '';
+    if (!value) return;
+    var current = Object.assign(snSimulationDefaults(), state.settings.snSimulation || {});
+    current.cnaes = (current.cnaes || []).concat([value]);
+    current.cnaeQuery = '';
+    state.settings.snSimulation = current;
+    if (input) input.value = '';
+    var list = $('#sn-cnae-list'); if (list) list.innerHTML = snCnaeListHtml(current.cnaes);
+    window.clearTimeout(state.snSaveTimer);
+    state.snSaveTimer = window.setTimeout(function () { persist(); }, 350);
+  }
+
+  function removeSnCnae(index) {
+    var current = Object.assign(snSimulationDefaults(), state.settings.snSimulation || {});
+    current.cnaes = (current.cnaes || []).filter(function (_, i) { return i !== Number(index); });
+    state.settings.snSimulation = current;
+    var list = $('#sn-cnae-list'); if (list) list.innerHTML = snCnaeListHtml(current.cnaes);
+    window.clearTimeout(state.snSaveTimer);
+    state.snSaveTimer = window.setTimeout(function () { persist(); }, 350);
+  }
+
+  function resetSnSimulation() {
+    if (!window.confirm('Limpar os dados desta simulação e restaurar os valores iniciais?')) return;
+    state.settings.snSimulation = snSimulationDefaults(); persist(); route(); toast('Simulação limpa', 'Os parâmetros iniciais foram restaurados.');
+  }
+
+  function saveSnSimulation() {
+    var data = readSnSimulation(); var calc = calculateSnSimulation(data);
+    state.settings.snSimulation = Object.assign({}, data, { savedAt: nowISO() });
+    persist(); audit('Simulação Conttech Simples Nacional salva', calc.annex.name + ' · ' + money(calc.total) + ' de DAS');
+    toast('Simulação salva', 'Dados, parâmetros e resultado foram armazenados permanentemente neste navegador.');
+  }
+
+  function exportSnSimulation() {
+    var data = readSnSimulation(); var calc = calculateSnSimulation(data);
+    downloadFile('conttech-simples-nacional-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.conttech-simples-nacional.v1', generatedAt: nowISO(), data: data, result: calc, sources: ['LC 123/2006', 'Resolução CGSN 140/2018'] }, null, 2));
+    audit('Simulação Conttech Simples Nacional exportada', calc.annex.name + ' · JSON');
+    toast('Relatório exportado', 'A memória da simulação foi salva em JSON.');
   }
 
   function statusTag(status) {
@@ -6093,6 +6318,14 @@
     else if (action === 'rental-save') saveRentalSimulation();
     else if (action === 'rental-export-json') exportRentalSimulation();
     else if (action === 'rental-print') window.print();
+    else if (action === 'sn-step') setSnStep(actionEl.getAttribute('data-step'));
+    else if (action === 'sn-select-stage') selectSnStage(actionEl.getAttribute('data-stage'));
+    else if (action === 'sn-cnae-add') addSnCnae();
+    else if (action === 'sn-cnae-remove') removeSnCnae(actionEl.getAttribute('data-index'));
+    else if (action === 'sn-clear') resetSnSimulation();
+    else if (action === 'sn-save') saveSnSimulation();
+    else if (action === 'sn-export-json') exportSnSimulation();
+    else if (action === 'sn-print') window.print();
     else if (action === 'overtime-calculate') { updateOvertimeNightCalculator(true); audit('Horas extras e adicional noturno recalculados', money(calculateOvertimeNight(readOvertimeNightSimulation()).totalAdditions)); toast('Cálculo atualizado', 'Horas, adicionais, descanso semanal e total foram recalculados.'); }
     else if (action === 'overtime-clear') resetOvertimeNightSimulation();
     else if (action === 'overtime-save') saveOvertimeNightSimulation();
@@ -6307,6 +6540,8 @@
       state.cestFilterTimer = window.setTimeout(function () { renderCestResults(true); }, 90);
     } else if (event.target.matches('[data-rental-input]')) {
       updateRentalSimulator();
+    } else if (event.target.matches('[data-sn-input]')) {
+      updateSnSimulator();
     } else if (event.target.matches('[data-overtime-input]')) {
       updateOvertimeNightCalculator(true);
     } else if (event.target.matches('[data-termination-input]')) {
@@ -6368,6 +6603,7 @@
       updateRentalSimulator();
     }
     else if (event.target.matches('[data-rental-input]')) updateRentalSimulator();
+    else if (event.target.matches('[data-sn-input]')) updateSnSimulator();
     else if (event.target.id === 'overtime-employee-type') applyOvertimeEmployeeDefaults();
     else if (event.target.matches('[data-overtime-input]')) updateOvertimeNightCalculator(true);
     else if (event.target.id === 'termination-reason') applyTerminationReasonDefaults();
