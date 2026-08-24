@@ -952,7 +952,35 @@ def build_official_ssl_context() -> ssl.SSLContext:
     return context
 
 
-def classify_official_connection_error(error: Exception, service_label: str) -> str:
+def diagnose_peer_certificate(hostname: str, port: int = 443) -> str:
+    """Conecta-se ao host SEM validar a cadeia (somente para diagnóstico — o resultado
+    nunca é usado para processar dados reais) e devolve emissor/titular/validade do
+    certificado que o servidor realmente apresentou. Usado quando a verificação da
+    cadeia falha, para saber se a causa é mesmo a ausência de uma raiz confiável ou
+    outra coisa (emissor diferente do esperado, certificado vencido, cadeia
+    incompleta) — em vez de continuar supondo."""
+    try:
+        insecure = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        insecure.check_hostname = False
+        insecure.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((hostname, port), timeout=10) as sock:
+            with insecure.wrap_socket(sock, server_hostname=hostname) as tls:
+                der = tls.getpeercert(binary_form=True)
+        if not der:
+            return "não foi possível obter o certificado do servidor para diagnóstico."
+        certificate = x509.load_der_x509_certificate(der)
+        not_before = getattr(certificate, "not_valid_before_utc", None) or certificate.not_valid_before.replace(tzinfo=dt.timezone.utc)
+        not_after = getattr(certificate, "not_valid_after_utc", None) or certificate.not_valid_after.replace(tzinfo=dt.timezone.utc)
+        return (
+            f"certificado apresentado pelo servidor — titular: {certificate.subject.rfc4514_string()}; "
+            f"emitido por: {certificate.issuer.rfc4514_string()}; "
+            f"validade: {not_before.date()} a {not_after.date()}."
+        )
+    except Exception as diagnostic_error:
+        return f"não foi possível obter o certificado do servidor para diagnóstico ({diagnostic_error})."
+
+
+def classify_official_connection_error(error: Exception, service_label: str, endpoint: str = "") -> str:
     """Traduz falhas de rede/TLS na comunicação com um webservice oficial em uma
     mensagem específica (timeout, DNS, conexão recusada, ou uma de duas causas de TLS
     bem diferentes que costumavam cair na mesma mensagem genérica de "certificado
@@ -987,10 +1015,15 @@ def classify_official_connection_error(error: Exception, service_label: str) -> 
     if isinstance(error, URLError) and kind == "unknown":
         kind, tech_detail = describe(error.reason)
     detail = tech_detail[:200]
+    peer_detail = ""
+    if kind == "server_cert_untrusted" and endpoint:
+        hostname = urlparse(endpoint).hostname
+        if hostname:
+            peer_detail = " " + diagnose_peer_certificate(hostname)
     messages = {
         "timeout": f"{service_label} não respondeu dentro do tempo limite. O serviço pode estar sobrecarregado ou lento — tente novamente em alguns instantes.",
         "cert_rejected_by_server": f"{service_label} recusou o certificado digital apresentado na conexão segura (mTLS). Confira se o certificado está válido, corresponde ao CNPJ consultado e ainda não expirou. Detalhe técnico: {detail}",
-        "server_cert_untrusted": f"Não foi possível validar o certificado do próprio serviço oficial de {service_label} a partir deste servidor. Isso costuma indicar que a cadeia de certificação (raiz ICP-Brasil) não está confiável neste ambiente — não é necessariamente um problema com o certificado da empresa. Detalhe técnico: {detail}",
+        "server_cert_untrusted": f"Não foi possível validar o certificado do próprio serviço oficial de {service_label} a partir deste servidor. Isso costuma indicar que a cadeia de certificação (raiz ICP-Brasil) não está confiável neste ambiente — não é necessariamente um problema com o certificado da empresa. Detalhe técnico: {detail}.{peer_detail}",
         "tls": f"{service_label} recusou a conexão segura (TLS). Detalhe técnico: {detail}",
         "dns": f"Não foi possível resolver o endereço do serviço {service_label} (falha de DNS). O serviço pode estar temporariamente fora do ar.",
         "refused": f"{service_label} recusou a conexão (porta fechada ou serviço fora do ar).",
@@ -1034,7 +1067,7 @@ def soap_query(access_key: str, environment: str, pfx_data: bytes, password: str
             detail = error.read(1200).decode("utf-8", errors="replace")
             raise RuntimeError(f"SEFAZ rejeitou a comunicação HTTP ({error.code}). {re.sub('<[^>]+>', ' ', detail)[:220]}") from error
         except (URLError, TimeoutError, socket.timeout, ssl.SSLError, OSError) as error:
-            raise RuntimeError(classify_official_connection_error(error, config["source"])) from error
+            raise RuntimeError(classify_official_connection_error(error, config["source"], config["endpoint"])) from error
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as error:
@@ -1122,7 +1155,7 @@ def soap_distribution(
                 f"{re.sub('<[^>]+>', ' ', detail)[:240]}"
             ) from error
         except (URLError, TimeoutError, socket.timeout, ssl.SSLError, OSError) as error:
-            raise RuntimeError(classify_official_connection_error(error, "O Ambiente Nacional da NF-e")) from error
+            raise RuntimeError(classify_official_connection_error(error, "O Ambiente Nacional da NF-e", endpoint)) from error
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as error:
@@ -1478,7 +1511,7 @@ def nfse_api_query(
                 raise ValueError("O certificado não possui autorização para consultar esta NFS-e.") from error
             raise RuntimeError(f"A SEFIN Nacional recusou a consulta HTTP {error.code}. {detail[:260]}") from error
         except (URLError, TimeoutError, ssl.SSLError, OSError) as error:
-            raise RuntimeError(classify_official_connection_error(error, "A SEFIN Nacional")) from error
+            raise RuntimeError(classify_official_connection_error(error, "A SEFIN Nacional", endpoint)) from error
 
 
 def parse_nfse_xml(xml_data: bytes, access_key: str) -> dict:
