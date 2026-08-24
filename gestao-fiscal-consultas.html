@@ -522,7 +522,7 @@ input:focus,select:focus{border-color:#103d92!important;box-shadow:0 0 0 3px rgb
     <!-- CONSULTA VIA API (cnpj.ws público) -->
     <div class="ie-block" style="margin-bottom:1rem;border-color:rgba(0,212,170,.35)">
       <h3 style="color:var(--accent3)">⚡ Consulta automática por CNPJ (API)</h3>
-      <p>Consulta gratuita via API pública <strong>publica.cnpj.ws</strong> (espelho RFB + base SEFAZ consolidada) — retorna todas as Inscrições Estaduais ativas/baixadas do CNPJ sem captcha. Para volumes maiores, configure um token (Sintegra WS, InfoSimples ou CNPJa).</p>
+      <p>Consulta cadastral por CNPJ com apresentação no <strong>padrão Sintegra</strong>: IE, situação, regime, tipo de contribuinte, atualização e fonte. A API pública possui cobertura variável por UF; quando não houver retorno, o sistema orientará a confirmação no portal oficial, sem classificar automaticamente a empresa como não contribuinte. Para volumes maiores, configure um token (Sintegra WS, InfoSimples ou CNPJa).</p>
       <div class="search-row">
         <div class="cnpj-input-wrap">
           <label>CNPJ a consultar</label>
@@ -2667,6 +2667,25 @@ document.getElementById('ieApiProv').addEventListener('change', function(){
   const need = this.value !== 'cnpjws';
   document.getElementById('ieTokenWrap').style.display = need ? '' : 'none';
 });
+function ieActiveValue(value){
+  if(value===true||value===false)return value;
+  const text=String(value==null?'':value).trim().toLowerCase();
+  if(!text)return null;
+  if(/^(sim|s|true|1|ativa|ativo|habilitada|habilitado)$/.test(text))return true;
+  if(/^(nao|não|n|false|0|inativa|inativo|baixada|baixado|suspensa|suspenso|cancelada|cancelado)$/.test(text))return false;
+  return null;
+}
+function ieStatusText(item){
+  const explicit=String(item.situacao||'').trim();
+  if(explicit)return explicit;
+  const active=ieActiveValue(item.ativo);
+  return active===true?'ATIVA / HABILITADA':active===false?'INATIVA / NÃO HABILITADA':'NÃO INFORMADA';
+}
+function ieDate(value){
+  if(!value)return'';
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?String(value):date.toLocaleString('pt-BR');
+}
 async function consultarIE(){
   const raw = cleanCNPJ(document.getElementById('ieApiCnpj').value);
   const prov = document.getElementById('ieApiProv').value;
@@ -2687,64 +2706,94 @@ async function consultarIE(){
       if(!r.ok) throw new Error('HTTP '+r.status);
       const d = await r.json();
       const est = d.estabelecimento || {};
-      ies = (est.inscricoes_estaduais||[]).map(x=>({uf:x.estado&&x.estado.sigla, ie:x.inscricao_estadual, ativo:x.ativo, situacao:x.situacao||x.status||x.tipo, tipo:x.tipo}));
+      ies = (est.inscricoes_estaduais||[]).map(x=>({
+        uf:x.estado&&x.estado.sigla, estado:x.estado&&x.estado.nome, ie:x.inscricao_estadual,
+        ativo:ieActiveValue(x.ativo), situacao:x.situacao||x.status||'', regime:x.regime||'',
+        tipo:x.tipo||'Inscrição Estadual', atualizado:x.atualizado_em||'',
+        fonte:'CNPJ.ws / base estadual consolidada'
+      }));
+      const simples=!!(d.simples&&d.simples.simples), mei=!!(d.simples&&d.simples.mei);
       extra = {razao:d.razao_social, fantasia:est.nome_fantasia, cnpj:est.cnpj||raw, uf:est.estado&&est.estado.sigla, mun:est.cidade&&est.cidade.nome, sit:est.situacao_cadastral,
         endereco:[est.tipo_logradouro,est.logradouro,est.numero,est.complemento,est.bairro,est.cidade&&est.cidade.nome,est.estado&&est.estado.sigla,est.cep].filter(Boolean).join(', '),
         cnaePrincipal:est.atividade_principal&&((est.atividade_principal.id||est.atividade_principal.codigo||'')+' — '+(est.atividade_principal.descricao||'')),
         cnaesSecundarios:(est.atividades_secundarias||[]).map(a=>(a.id||a.codigo||'')+' — '+(a.descricao||'')),
-        regime:(d.simples&&d.simples.simples)?'Simples Nacional':(d.simples&&d.simples.mei)?'MEI':(est.regime_tributario||d.regime_tributario),
+        regime:mei?'MEI':simples?'Simples Nacional':(est.regime_tributario||d.regime_tributario||'Não informado'),
         abertura:est.data_inicio_atividade||d.data_abertura, porte:d.porte&&d.porte.descricao, natureza:d.natureza_juridica&&d.natureza_juridica.descricao,
-        telefones:(est.telefones||[]).map(t=>[t.ddd,t.numero].filter(Boolean).join(' ')), emails:est.email?[est.email]:[], fonte:'CNPJ.ws / bases RFB e SEFAZ'};
+        telefones:(est.telefones||[]).map(t=>[t.ddd,t.numero].filter(Boolean).join(' ')), emails:est.email?[est.email]:[],
+        fonte:'CNPJ.ws — dados RFB e inscrições estaduais disponíveis', atualizado:est.atualizado_em||d.atualizado_em, consultadoEm:new Date().toISOString()};
     } else if(prov==='cnpja'){
       if(!token) throw new Error('Token CNPJa obrigatório (https://cnpja.com).');
-      const r = await fetch('https://api.cnpja.com/office/'+raw+'?registrations=BR', {headers:{Authorization:token}});
+      const r = await fetch('https://api.cnpja.com/office/'+raw+'?registrations=ALL', {headers:{Authorization:token}});
       if(!r.ok) throw new Error('HTTP '+r.status);
       const d = await r.json();
-      ies = (d.registrations||[]).map(x=>({uf:x.state, ie:x.number, ativo:x.enabled, tipo:x.statusText||x.type}));
-      extra = {razao:d.company&&d.company.name, fantasia:d.alias, uf:d.address&&d.address.state, mun:d.address&&d.address.city, sit:d.statusText};
+      ies = (d.registrations||[]).map(x=>({
+        uf:x.state, ie:x.number, ativo:ieActiveValue(x.enabled),
+        situacao:(x.status&&x.status.text)||x.statusText||'', regime:(x.regime&&x.regime.text)||x.regime||'',
+        tipo:(x.type&&x.type.text)||x.type||'Inscrição Estadual', atualizado:x.updated||x.updatedAt||'',
+        fonte:'CNPJa / CCC ou Sintegra'
+      }));
+      const address=d.address||{}, company=d.company||{};
+      extra = {razao:company.name, fantasia:d.alias, cnpj:d.taxId||raw, uf:address.state, mun:address.city, sit:d.status&&d.status.text,
+        endereco:[address.street,address.number,address.details,address.district,address.city,address.state,address.zip].filter(Boolean).join(', '),
+        cnaePrincipal:d.mainActivity&&((d.mainActivity.id||'')+' — '+(d.mainActivity.text||'')),
+        cnaesSecundarios:(d.sideActivities||[]).map(a=>(a.id||'')+' — '+(a.text||'')),
+        regime:(company.simples&&company.simples.optant)?'Simples Nacional':(company.simei&&company.simei.optant)?'MEI':'Lucro Real ou Presumido',
+        abertura:d.founded, porte:company.size&&company.size.text, natureza:company.nature&&company.nature.text,
+        telefones:(d.phones||[]).map(p=>[p.area,p.number].filter(Boolean).join(' ')), emails:(d.emails||[]).map(e=>e.address).filter(Boolean),
+        fonte:'CNPJa — Cadastro Centralizado de Contribuintes/Sintegra', atualizado:d.updated, consultadoEm:new Date().toISOString()};
     } else if(prov==='infosimples'){
       if(!token) throw new Error('Token InfoSimples obrigatório (https://infosimples.com).');
       const r = await fetch('https://api.infosimples.com/api/v2/consultas/sintegra/unificada?token='+encodeURIComponent(token)+'&cnpj='+raw);
       if(!r.ok) throw new Error('HTTP '+r.status);
       const d = await r.json();
-      const arr = (d.data&&d.data[0]&&d.data[0].inscricoes_estaduais)||[];
-      ies = arr.map(x=>({uf:x.uf, ie:x.numero, ativo:(x.situacao||'').toLowerCase().includes('ativ'), tipo:x.situacao}));
-      extra = {razao:d.data&&d.data[0]&&d.data[0].razao_social};
+      const root = (d.data&&d.data[0])||{};
+      const arr = root.inscricoes_estaduais||[];
+      ies = arr.map(x=>({uf:x.uf, ie:x.numero, ativo:ieActiveValue(x.situacao), situacao:x.situacao||'', regime:x.regime||'', tipo:x.tipo||'Inscrição Estadual', atualizado:x.atualizado_em||'', fonte:'InfoSimples / Sintegra Unificada'}));
+      extra = {razao:root.razao_social, fantasia:root.nome_fantasia, cnpj:raw, uf:root.uf, mun:root.municipio, sit:root.situacao_cadastral, endereco:root.endereco, regime:root.regime, fonte:'InfoSimples — consulta Sintegra Unificada', consultadoEm:new Date().toISOString()};
     } else if(prov==='sintegraws'){
       if(!token) throw new Error('Token Sintegra WS obrigatório (https://sintegraws.com.br).');
       const uf = document.getElementById('ieUF').value || 'SP';
       const r = await fetch('https://www.sintegraws.com.br/api/v1/execute-api.php?token='+encodeURIComponent(token)+'&cnpj='+raw+'&plugin=RF&uf='+uf);
       if(!r.ok) throw new Error('HTTP '+r.status);
       const d = await r.json();
-      ies = d.inscricao_estadual ? [{uf:uf, ie:d.inscricao_estadual, ativo:(d.situacao_cadastral||'').toLowerCase().includes('ativ'), tipo:d.situacao_cadastral}] : [];
-      extra = {razao:d.nome_empresarial, fantasia:d.nome_fantasia, uf:uf, mun:d.municipio, sit:d.situacao_cadastral};
+      ies = d.inscricao_estadual ? [{uf:uf, ie:d.inscricao_estadual, ativo:ieActiveValue(d.situacao_cadastral), situacao:d.situacao_cadastral||'', regime:d.regime_tributario||'', tipo:d.tipo_contribuinte||'Inscrição Estadual', atualizado:d.data_consulta||'', fonte:'Sintegra WS'}] : [];
+      extra = {razao:d.nome_empresarial, fantasia:d.nome_fantasia, cnpj:raw, uf:uf, mun:d.municipio, sit:d.situacao_cadastral, endereco:d.endereco, regime:d.regime_tributario, fonte:'Sintegra WS', consultadoEm:new Date().toISOString()};
     }
-    st.innerHTML='<span style="color:#2ecc71">✓ Consulta realizada. '+ies.length+' inscrição(ões) localizada(s).</span>';
+    if(ies.length) st.innerHTML='<span style="color:#2ecc71">✓ '+ies.length+' inscrição(ões) estadual(is) localizada(s). Dados organizados no padrão Sintegra.</span>';
+    else st.innerHTML='<span style="color:var(--accent3)">⚠ Nenhuma inscrição estadual foi devolvida por esta fonte. A condição de contribuinte não será presumida; confirme no Sintegra/SEFAZ.</span>';
     renderIEResult(ies, extra, raw);
   }catch(e){
     st.innerHTML='<span style="color:var(--accent2)">❌ '+e.message+'</span>';
   }
 }
 function renderIEResult(ies, x, cnpj){
-  const missing='Informação não localizada no Sintegra';
+  x = x||{}; ies = Array.isArray(ies)?ies:[];
+  const missing='Não informado pela fonte consultada';
   const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const val=v=>v!==undefined&&v!==null&&String(v).trim()!==''?esc(v):'<span style="color:var(--muted);font-style:italic">'+missing+'</span>';
   const fmtCnpj=formatCNPJAlfa(x.cnpj||cnpj||'');
-  const statusIE=i=>{const parts=[];if(i.ativo===true)parts.push('Ativa');else if(i.ativo===false)parts.push('Inativa');const extra=String(i.situacao||i.tipo||'').trim();if(extra&&extra.toLowerCase()!==(parts[0]||'').toLowerCase())parts.push(extra);return parts.join(' / ');};
-  const contribuinte=ies.length?'Contribuinte do ICMS':'Não contribuinte do ICMS';
+  const numbered=ies.filter(i=>String(i.ie||'').trim());
+  const active=numbered.filter(i=>ieActiveValue(i.ativo)===true);
+  const condition=active.length?'Contribuinte do ICMS — inscrição ativa':numbered.length?'Inscrição estadual localizada — sem confirmação de atividade':'Condição de contribuinte não confirmada';
   const fields=[
-    ['Condição perante o ICMS',contribuinte],['Razão social',x.razao],['Nome fantasia',x.fantasia],['CNPJ',fmtCnpj],
-    ['Endereço completo',x.endereco],['CNAE principal',x.cnaePrincipal],
+    ['Condição perante o ICMS',condition],['Razão social',x.razao],['Nome fantasia',x.fantasia],['CNPJ',fmtCnpj],
+    ['Endereço completo',x.endereco],['Município / UF',[x.mun,x.uf].filter(Boolean).join(' / ')],['CNAE principal',x.cnaePrincipal],
     ['Atividades secundárias',Array.isArray(x.cnaesSecundarios)?x.cnaesSecundarios.join(' • '):x.cnaesSecundarios],
-    ['Regime de tributação',x.regime],['Data de abertura',x.abertura],['Situação cadastral',x.sit],
-    ['Porte',x.porte],['Natureza jurídica',x.natureza],
-    ['Telefone(s)',Array.isArray(x.telefones)?x.telefones.join(' • '):x.telefones],
-    ['E-mail(s)',Array.isArray(x.emails)?x.emails.join(' • '):x.emails],['Fonte da consulta',x.fonte]
+    ['Regime de tributação',x.regime],['Data de abertura',x.abertura],['Situação cadastral RFB',x.sit],['Porte',x.porte],
+    ['Natureza jurídica',x.natureza],['Telefone(s)',Array.isArray(x.telefones)?x.telefones.join(' • '):x.telefones],
+    ['E-mail(s)',Array.isArray(x.emails)?x.emails.join(' • '):x.emails],['Atualização da base',ieDate(x.atualizado)],
+    ['Fonte da consulta',x.fonte],['Consulta realizada em',ieDate(x.consultadoEm)]
   ];
   const details=fields.map(f=>`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:.65rem .75rem;min-width:0"><div style="font-size:.58rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.28rem">${esc(f[0])}</div><div style="font-size:.75rem;color:var(--text);line-height:1.45;overflow-wrap:anywhere">${val(f[1])}</div></div>`).join('');
-  const queriedAt=new Date().toLocaleString('pt-BR');
-  const rows=(ies.length?ies:[{}]).map(i=>`<tr style="border-bottom:1px solid var(--border)"><td style="padding:.6rem .8rem;font-family:Syne,sans-serif;color:var(--accent);font-weight:700">${val(i.uf||x.uf)}</td><td style="padding:.6rem .8rem;font-family:'DM Mono',monospace;color:var(--accent3);font-size:.83rem">${val(i.ie)}</td><td style="padding:.6rem .8rem">${statusIE(i)?'<span class="snBadge '+(i.ativo===false?'nao':'sim')+'">'+esc(statusIE(i))+'</span>':val('')}</td><td style="padding:.6rem .8rem;color:var(--dim);font-size:.72rem">${val(x.regime)}</td><td style="padding:.6rem .8rem;color:var(--dim);font-size:.72rem;min-width:220px"><strong style="color:${ies.length?'var(--accent3)':'var(--accent2)'}">${esc(contribuinte)}</strong><br>${(i.tipo||i.situacao)?'<span>'+(i.tipo?'Tipo: '+esc(i.tipo):esc(i.situacao))+'</span>':val('')}</td><td style="padding:.6rem .8rem;color:var(--muted);font-size:.68rem;min-width:180px">${esc(queriedAt)}<br>${val(x.fonte)}</td></tr>`).join('');
-  document.getElementById('ieApiResult').innerHTML=`<div class="snCard" style="border-color:var(--accent3)"><div style="font-family:Syne,sans-serif;font-size:1.05rem;font-weight:800;color:var(--accent3)">${val(x.razao)}</div><div style="font-size:.7rem;color:var(--muted);margin-top:.25rem">Cadastro fiscal e empresarial consolidado</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.55rem;margin-top:.85rem">${details}</div></div><div class="snCard" style="overflow-x:auto"><div style="font-family:Syne,sans-serif;font-weight:700;color:var(--accent)">Inscrição Estadual — padrão Sintegra</div><div style="font-size:.68rem;color:var(--muted);margin:.3rem 0 .8rem">A ausência de retorno não significa que a empresa não seja contribuinte. Quando necessário, confirme no portal oficial da UF.</div><table style="width:100%;border-collapse:collapse;font-size:.78rem"><thead><tr style="background:var(--surface2);color:var(--muted);font-family:Syne,sans-serif;font-size:.65rem;letter-spacing:.08em;text-transform:uppercase"><th style="text-align:left;padding:.55rem .8rem">UF</th><th style="text-align:left;padding:.55rem .8rem">Inscrição Estadual</th><th style="text-align:left;padding:.55rem .8rem">Situação</th><th style="text-align:left;padding:.55rem .8rem">Regime</th><th style="text-align:left;padding:.55rem .8rem">Tipo / Detalhe</th><th style="text-align:left;padding:.55rem .8rem">Atualização / Fonte</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const rows=(numbered.length?numbered:[{uf:x.uf,fonte:x.fonte}]).map(i=>{
+    const status=numbered.length?ieStatusText(i):'NÃO LOCALIZADA NA FONTE';
+    const av=ieActiveValue(i.ativo), color=av===true?'#2ecc71':av===false?'var(--accent2)':'var(--accent3)';
+    const type=numbered.length?(av===true?'Contribuinte do ICMS':'Inscrição estadual cadastrada'):'Validação complementar necessária';
+    return `<tr style="border-bottom:1px solid var(--border)"><td style="padding:.65rem .8rem;font-family:Syne,sans-serif;color:var(--accent);font-weight:700">${val(i.uf||x.uf)}</td><td style="padding:.65rem .8rem;font-family:'DM Mono',monospace;color:var(--accent3);font-size:.83rem">${val(i.ie)}</td><td style="padding:.65rem .8rem"><span class="snBadge" style="color:${color};border:1px solid ${color};background:rgba(0,0,0,.04)">${esc(status)}</span></td><td style="padding:.65rem .8rem;color:var(--dim);font-size:.72rem">${val(i.regime||x.regime)}</td><td style="padding:.65rem .8rem;color:var(--dim);font-size:.72rem;min-width:220px"><strong style="color:${color}">${esc(type)}</strong><br><span>${val(i.tipo)}</span></td><td style="padding:.65rem .8rem;color:var(--muted);font-size:.68rem;min-width:190px">${val(ieDate(i.atualizado))}<br><span>${val(i.fonte||x.fonte)}</span></td></tr>`;
+  }).join('');
+  const uf=x.uf||(numbered[0]&&numbered[0].uf)||'';
+  const official=uf&&typeof IE_URLS!=='undefined'&&IE_URLS[uf]?`<a class="btn btn-ghost" href="${esc(IE_URLS[uf].url)}" target="_blank" style="display:inline-flex;margin-top:.75rem">🔗 Confirmar no portal oficial ${esc(uf)}</a>`:'';
+  document.getElementById('ieApiResult').innerHTML=`<div class="snCard" style="border-color:var(--accent3)"><div style="font-family:Syne,sans-serif;font-size:1.05rem;font-weight:800;color:var(--accent3)">${val(x.razao)}</div><div style="font-size:.7rem;color:var(--muted);margin-top:.25rem">Cadastro fiscal e empresarial consolidado</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.55rem;margin-top:.85rem">${details}</div>${official}</div><div class="snCard" style="overflow-x:auto"><div style="font-family:Syne,sans-serif;font-weight:700;color:var(--accent)">Inscrição Estadual — padrão Sintegra</div><div style="font-size:.68rem;color:var(--muted);margin:.3rem 0 .8rem">A ausência de retorno não significa que a empresa não seja contribuinte. Quando necessário, confirme no portal oficial da UF.</div><table style="width:100%;border-collapse:collapse;font-size:.78rem"><thead><tr style="background:var(--surface2);color:var(--muted);font-family:Syne,sans-serif;font-size:.65rem;letter-spacing:.08em;text-transform:uppercase"><th style="text-align:left;padding:.55rem .8rem">UF</th><th style="text-align:left;padding:.55rem .8rem">Inscrição Estadual</th><th style="text-align:left;padding:.55rem .8rem">Situação</th><th style="text-align:left;padding:.55rem .8rem">Regime</th><th style="text-align:left;padding:.55rem .8rem">Tipo / Detalhe</th><th style="text-align:left;padding:.55rem .8rem">Atualização / Fonte</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 </script>
