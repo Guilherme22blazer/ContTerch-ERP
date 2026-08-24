@@ -201,6 +201,7 @@
     { route: 'inicio', label: 'Visão Geral da Carteira', icon: '⌂', desc: 'Dashboard profissional com indicadores e andamento de todos os clientes' },
     { route: 'sefaz-portal', label: 'Consulta SEFAZ e Portal do Contribuinte', icon: '▣', desc: 'Consulta oficial de documentos fiscais e gestão segura de certificados' },
     { route: 'captador-notas-fiscais', label: 'Captador de Notas Fiscais', icon: '⇓', desc: 'Painel por empresa da captação automática de NF-e, NFC-e, CT-e e NFS-e via certificado digital' },
+    { route: 'auditor-fiscal', label: 'Auditor Fiscal (SPED/EFD)', icon: '◲', desc: 'Validação estrutural de arquivos SPED — EFD ICMS/IPI, EFD Contribuições, ECF, ECD e Simples Nacional' },
     { route: 'dashboard', label: 'Cálculo DAS', icon: '▥', desc: 'Apuração interativa do Simples Nacional' },
     { route: 'conttech-simples-nacional', label: 'Conttech Simples Nacional', icon: '§', desc: 'Simulador de apuração do Simples Nacional em 3 etapas' },
     { route: 'diagnostico', label: 'Diagnóstico Tributário', icon: '◉', desc: 'Riscos, inconsistências e recomendações' },
@@ -1654,6 +1655,269 @@
     downloadFile('fechamento-mensal-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.captador-fechamento-mensal.v1', generatedAt: nowISO(), monthStart: sefazState.companiesOverviewMonthStart || '', companies: rows }, null, 2));
     audit('Fechamento mensal exportado', rows.length + ' empresa(s) · CSV + JSON');
     toast('Fechamento gerado', 'O resumo do mês foi exportado em CSV e JSON.');
+  }
+  var auditorFiscalDocs = {};
+  function auditorFiscalUi() {
+    if (!state.settings.auditorFiscal || typeof state.settings.auditorFiscal !== 'object') state.settings.auditorFiscal = {};
+    var ui = state.settings.auditorFiscal;
+    if (!ui.view) ui.view = 'enviar';
+    if (!ui.uploadType) ui.uploadType = '';
+    if (!ui.params || typeof ui.params !== 'object') ui.params = { checkLineFormat: true, checkRequiredRecords: true, checkBlockCounts: true, checkRegisterTotals: true };
+    if (!Array.isArray(ui.files)) ui.files = [];
+    if (typeof ui.recentQuery !== 'string') ui.recentQuery = '';
+    if (!ui.recentPage) ui.recentPage = 1;
+    if (!ui.recentPageSize) ui.recentPageSize = 10;
+    return ui;
+  }
+  function parseSpedContent(content, fileName) {
+    var normalized = String(content || '').replace(/^﻿/, '');
+    var rawLines = normalized.split(/\r\n|\r|\n/);
+    var lines = [];
+    rawLines.forEach(function (raw, index) {
+      var trimmed = raw.replace(/\s+$/, '');
+      if (!trimmed) return;
+      var wellFormed = trimmed.charAt(0) === '|' && trimmed.charAt(trimmed.length - 1) === '|';
+      var fields = trimmed.split('|');
+      var reg = fields.length > 1 ? fields[1] : '';
+      lines.push({ lineNumber: index + 1, raw: trimmed, reg: reg, fields: fields, wellFormed: wellFormed });
+    });
+    return { fileName: fileName, lines: lines };
+  }
+  function validateSpedStructure(doc, params) {
+    var lines = doc.lines;
+    var errors = [], warnings = [];
+    var addError = function (message, lineNumber) { errors.push({ level: 'Erro', message: message, line: lineNumber || null }); };
+    var addWarning = function (message, lineNumber) { warnings.push({ level: 'Atenção', message: message, line: lineNumber || null }); };
+    if (!lines.length) { addError('O arquivo está vazio ou não pôde ser lido como texto SPED.', null); return { errors: errors, warnings: warnings, regCounts: {}, blockSummaries: [], totalLines: 0 }; }
+    if (params.checkLineFormat !== false) {
+      lines.forEach(function (line) {
+        if (!line.wellFormed) addError('Linha ' + line.lineNumber + ' não inicia/termina com o delimitador "|" — registro fora do padrão SPED.', line.lineNumber);
+      });
+    }
+    if (params.checkRequiredRecords !== false) {
+      if (lines[0].reg !== '0000') addError('O primeiro registro do arquivo deveria ser "0000" (abertura), mas é "' + (lines[0].reg || '?') + '".', lines[0].lineNumber);
+      var lastLine = lines[lines.length - 1];
+      if (lastLine.reg !== '9999') addError('O último registro do arquivo deveria ser "9999" (encerramento), mas é "' + (lastLine.reg || '?') + '".', lastLine.lineNumber);
+    }
+    var regCounts = {};
+    lines.forEach(function (line) { if (line.reg) regCounts[line.reg] = (regCounts[line.reg] || 0) + 1; });
+    var blockSummaries = [];
+    if (params.checkBlockCounts !== false) {
+      var blockLetters = {};
+      lines.forEach(function (line) {
+        if (/^.001$/.test(line.reg) || /^.990$/.test(line.reg)) blockLetters[line.reg.charAt(0)] = true;
+      });
+      Object.keys(blockLetters).sort().forEach(function (letter) {
+        var openReg = letter + '001', closeReg = letter + '990';
+        var actualCount = lines.filter(function (l) { return l.reg.charAt(0) === letter && !(letter === '9' && l.reg === '9999'); }).length;
+        var closeLines = lines.filter(function (l) { return l.reg === closeReg; });
+        var openLines = lines.filter(function (l) { return l.reg === openReg; });
+        var summary = { block: letter, openFound: openLines.length > 0, closeFound: closeLines.length > 0, actualCount: actualCount, declaredCount: null, ok: true };
+        if (!openLines.length) { addWarning('Bloco ' + letter + ': registro de abertura "' + openReg + '" não encontrado.', null); summary.ok = false; }
+        if (!closeLines.length) { addError('Bloco ' + letter + ': registro de encerramento "' + closeReg + '" não encontrado — a contagem do bloco não pôde ser conferida.', null); summary.ok = false; }
+        else closeLines.forEach(function (closeLine) {
+          var declared = Number(closeLine.fields[2]);
+          summary.declaredCount = declared;
+          if (Number.isFinite(declared) && declared !== actualCount) {
+            addError('Bloco ' + letter + ': o registro ' + closeReg + ' (linha ' + closeLine.lineNumber + ') declara ' + declared + ' registro(s), mas o arquivo contém ' + actualCount + ' registro(s) do bloco ' + letter + '.', closeLine.lineNumber);
+            summary.ok = false;
+          }
+        });
+        blockSummaries.push(summary);
+      });
+    }
+    if (params.checkRegisterTotals !== false) {
+      var declared9900 = {};
+      lines.filter(function (l) { return l.reg === '9900'; }).forEach(function (l) {
+        declared9900[l.fields[2]] = { qty: Number(l.fields[3]), line: l.lineNumber };
+      });
+      if (Object.keys(declared9900).length) {
+        Object.keys(regCounts).forEach(function (reg) {
+          var declared = declared9900[reg];
+          if (!declared) { addWarning('Registro "' + reg + '" aparece ' + regCounts[reg] + ' vez(es) no arquivo, mas não há entrada correspondente no registro 9900.', null); return; }
+          if (Number.isFinite(declared.qty) && declared.qty !== regCounts[reg]) addError('Registro 9900 (linha ' + declared.line + ') declara ' + declared.qty + ' ocorrência(s) de "' + reg + '", mas o arquivo contém ' + regCounts[reg] + '.', declared.line);
+        });
+        Object.keys(declared9900).forEach(function (reg) {
+          if (!regCounts[reg]) addError('Registro 9900 (linha ' + declared9900[reg].line + ') declara o registro "' + reg + '", que não aparece no arquivo.', declared9900[reg].line);
+        });
+      } else {
+        addWarning('Nenhum registro 9900 encontrado — não foi possível conferir a contagem de registros por tipo (Bloco 9).', null);
+      }
+      lines.filter(function (l) { return l.reg === '9999'; }).forEach(function (l) {
+        var declaredTotal = Number(l.fields[2]);
+        if (Number.isFinite(declaredTotal) && declaredTotal !== lines.length) addError('Registro 9999 (linha ' + l.lineNumber + ') declara ' + declaredTotal + ' linha(s), mas o arquivo contém ' + lines.length + ' linha(s).', l.lineNumber);
+      });
+    }
+    return { errors: errors, warnings: warnings, regCounts: regCounts, blockSummaries: blockSummaries, totalLines: lines.length };
+  }
+  async function handleAuditorFiscalFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []); if (!files.length) return;
+    var ui = auditorFiscalUi();
+    if (!ui.uploadType) { toast('Selecione o tipo', 'Escolha "ICMS IPI / PIS COFINS / ECF / ECD" ou "Simples Nacional" antes de enviar o arquivo.', 'warning'); return; }
+    var entries = [], fileErrors = [];
+    for (var index = 0; index < files.length; index += 1) {
+      var file = files[index];
+      try {
+        if (/\.txt$/i.test(file.name)) entries.push({ name: file.name, content: await file.text() });
+        else if (/\.zip$/i.test(file.name)) entries = entries.concat(await extractTaxTransitionZip(file, /\.txt$/i));
+        else throw new Error('formato não suportado, envie .txt ou .zip');
+      } catch (error) { fileErrors.push(file.name + ': ' + error.message); }
+    }
+    if (!entries.length) { toast('Nenhum arquivo processado', fileErrors.join(' ') || 'Selecione arquivos .txt ou pacotes ZIP com .txt.', 'error'); return; }
+    entries.forEach(function (entry) {
+      var doc = parseSpedContent(entry.content, entry.name);
+      var result = validateSpedStructure(doc, ui.params);
+      var id = uid('auditor');
+      var record = {
+        id: id, fileName: entry.name, uploadType: ui.uploadType, uploadedAt: nowISO(),
+        totalLines: result.totalLines || 0, errorCount: result.errors.length, warningCount: result.warnings.length,
+        errors: result.errors.slice(0, 200), warnings: result.warnings.slice(0, 200),
+        regCounts: result.regCounts, blockSummaries: result.blockSummaries
+      };
+      ui.files.unshift(record);
+      audit('Arquivo SPED validado', entry.name + ' · ' + record.errorCount + ' erro(s) · ' + record.warningCount + ' alerta(s)');
+    });
+    ui.files = ui.files.slice(0, 200);
+    persist();
+    if (fileErrors.length) toast('Alguns arquivos não puderam ser lidos', fileErrors.join(' '), 'warning');
+    toast('Validação concluída', entries.length + ' arquivo(s) processado(s) — confira em "Arquivos Recentes".');
+    ui.view = 'recentes';
+    route();
+  }
+  function selectAuditorFiscalType(type) {
+    var ui = auditorFiscalUi();
+    ui.uploadType = type === 'simples' ? 'simples' : 'geral';
+    persist(); route();
+  }
+  function setAuditorFiscalView(view) {
+    var ui = auditorFiscalUi();
+    ui.view = ['enviar', 'parametros', 'recentes', 'historico'].indexOf(view) >= 0 ? view : 'enviar';
+    persist(); route();
+  }
+  function updateAuditorFiscalParam(param, checked) {
+    var ui = auditorFiscalUi();
+    ui.params[param] = !!checked;
+    persist();
+  }
+  function auditorFiscalRegisterLabel(uploadType) { return uploadType === 'simples' ? 'Simples Nacional (EFD ICMS/IPI)' : 'ICMS IPI / PIS COFINS / ECF / ECD'; }
+  function auditorFiscalStatusTag(file) {
+    if (file.errorCount) return '<span class="tag tag--danger">' + file.errorCount + ' erro(s)</span>';
+    if (file.warningCount) return '<span class="tag tag--warning">' + file.warningCount + ' alerta(s)</span>';
+    return '<span class="tag tag--success">Sem divergências</span>';
+  }
+  function auditorFiscalFilteredFiles() {
+    var ui = auditorFiscalUi(), query = ui.recentQuery.toLowerCase();
+    return ui.files.filter(function (file) { return !query || file.fileName.toLowerCase().indexOf(query) >= 0; });
+  }
+  function renderAuditorFiscalRecentTable() {
+    var ui = auditorFiscalUi(), filtered = auditorFiscalFilteredFiles();
+    var totalPages = Math.max(1, Math.ceil(filtered.length / ui.recentPageSize));
+    ui.recentPage = Math.max(1, Math.min(ui.recentPage, totalPages));
+    var start = (ui.recentPage - 1) * ui.recentPageSize;
+    var pageItems = filtered.slice(start, start + ui.recentPageSize);
+    var rows = pageItems.length ? pageItems.map(function (file) {
+      return '<tr><td><b>' + esc(file.fileName) + '</b><br><small class="subtle">' + number(file.totalLines) + ' linha(s)</small></td><td>' + esc(auditorFiscalRegisterLabel(file.uploadType)) + '</td><td>' + esc(dateTimeBR(file.uploadedAt)) + '</td><td>' + auditorFiscalStatusTag(file) + '</td><td><div class="row-actions"><button class="row-button" title="Ver detalhes" data-action="auditor-view-details" data-id="' + esc(file.id) + '">⌕</button><button class="row-button" title="Baixar relatório" data-action="auditor-download-report" data-id="' + esc(file.id) + '">↧</button><button class="row-button" title="Remover" data-action="auditor-remove-file" data-id="' + esc(file.id) + '">×</button></div></td></tr>';
+    }).join('') : '<tr><td colspan="5"><div class="empty-state"><i>▤</i><h3>Nenhum arquivo encontrado</h3><p>Envie um arquivo SPED na aba "Enviar Arquivos".</p></div></td></tr>';
+    return '<div class="table-wrap"><table class="data-table"><thead><tr><th>Arquivo</th><th>Tipo</th><th>Enviado em</th><th>Divergências</th><th>Ações</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="table-summary captador-pager"><span>' + filtered.length + (filtered.length === 1 ? ' arquivo encontrado' : ' arquivos encontrados') + '</span><div class="captador-pager-controls"><label>Exibir <select id="auditor-recent-page-size" data-auditor-input><option value="10"' + (ui.recentPageSize === 10 ? ' selected' : '') + '>10</option><option value="25"' + (ui.recentPageSize === 25 ? ' selected' : '') + '>25</option><option value="50"' + (ui.recentPageSize === 50 ? ' selected' : '') + '>50</option></select></label><span>' + (filtered.length ? (start + 1) : 0) + ' até ' + Math.min(start + ui.recentPageSize, filtered.length) + ' de ' + filtered.length + ' itens</span><button class="row-button" data-action="auditor-recent-page" data-page="1"' + (ui.recentPage <= 1 ? ' disabled' : '') + '>|«</button><button class="row-button" data-action="auditor-recent-page" data-page="' + (ui.recentPage - 1) + '"' + (ui.recentPage <= 1 ? ' disabled' : '') + '>‹</button><button class="row-button" data-action="auditor-recent-page" data-page="' + (ui.recentPage + 1) + '"' + (ui.recentPage >= totalPages ? ' disabled' : '') + '>›</button><button class="row-button" data-action="auditor-recent-page" data-page="' + totalPages + '"' + (ui.recentPage >= totalPages ? ' disabled' : '') + '>»|</button></div></div>';
+  }
+  function refreshAuditorFiscalRecent() {
+    var wrap = $('#auditor-recentes-wrap');
+    if (wrap) wrap.innerHTML = renderAuditorFiscalRecentTable();
+  }
+  function updateAuditorFiscalRecentControls() {
+    var ui = auditorFiscalUi();
+    var queryField = $('#auditor-recent-query'); if (queryField) ui.recentQuery = queryField.value;
+    var pageSizeField = $('#auditor-recent-page-size'); if (pageSizeField) ui.recentPageSize = Number(pageSizeField.value) || 10;
+    ui.recentPage = 1;
+    refreshAuditorFiscalRecent();
+    window.clearTimeout(state.auditorFilterTimer);
+    state.auditorFilterTimer = window.setTimeout(function () { persist(); }, 350);
+  }
+  function setAuditorFiscalRecentPage(page) {
+    auditorFiscalUi().recentPage = Math.max(1, Number(page) || 1);
+    refreshAuditorFiscalRecent();
+  }
+  function removeAuditorFiscalFile(id) {
+    if (!window.confirm('Remover este arquivo da lista? O registro no histórico é mantido.')) return;
+    var ui = auditorFiscalUi();
+    ui.files = ui.files.filter(function (file) { return file.id !== id; });
+    delete auditorFiscalDocs[id];
+    persist(); refreshAuditorFiscalRecent();
+    toast('Arquivo removido', 'O arquivo foi removido da lista de arquivos recentes.');
+  }
+  function downloadAuditorFiscalReport(id) {
+    var file = auditorFiscalUi().files.find(function (item) { return item.id === id; });
+    if (!file) return;
+    downloadFile('auditor-fiscal-' + file.fileName.replace(/\.[^.]+$/, '') + '.json', JSON.stringify({
+      schema: 'gestao-fiscal.auditor-fiscal.v1', generatedAt: nowISO(), fileName: file.fileName,
+      uploadType: auditorFiscalRegisterLabel(file.uploadType), uploadedAt: file.uploadedAt, totalLines: file.totalLines,
+      errorCount: file.errorCount, warningCount: file.warningCount, errors: file.errors, warnings: file.warnings,
+      regCounts: file.regCounts, blockSummaries: file.blockSummaries
+    }, null, 2));
+    audit('Relatório do Auditor Fiscal exportado', file.fileName + ' · JSON');
+    toast('Relatório exportado', 'O resultado da validação foi salvo em JSON.');
+  }
+  function openAuditorFiscalDetails(id) {
+    var file = auditorFiscalUi().files.find(function (item) { return item.id === id; });
+    if (!file) return;
+    var errorsHtml = file.errors.length ? '<ul class="captador-notices">' + file.errors.map(function (item) { return '<li><span>⚠</span>' + (item.line ? 'Linha ' + item.line + ': ' : '') + esc(item.message) + '</li>'; }).join('') + '</ul>' : '<p class="subtle">Nenhum erro estrutural encontrado.</p>';
+    var warningsHtml = file.warnings.length ? '<ul class="captador-notices">' + file.warnings.map(function (item) { return '<li><span>i</span>' + (item.line ? 'Linha ' + item.line + ': ' : '') + esc(item.message) + '</li>'; }).join('') + '</ul>' : '<p class="subtle">Nenhum alerta.</p>';
+    var regRows = Object.keys(file.regCounts || {}).sort().map(function (reg) { return '<tr><td>' + esc(reg) + '</td><td>' + number(file.regCounts[reg]) + '</td></tr>'; }).join('');
+    var blockRows = (file.blockSummaries || []).map(function (b) { return '<tr><td>' + esc(b.block) + '</td><td>' + (b.openFound ? 'Sim' : 'Não') + '</td><td>' + (b.closeFound ? 'Sim' : 'Não') + '</td><td>' + number(b.actualCount) + '</td><td>' + (b.declaredCount == null ? '—' : number(b.declaredCount)) + '</td><td>' + (b.ok ? '<span class="tag tag--success">OK</span>' : '<span class="tag tag--danger">Divergente</span>') + '</td></tr>'; }).join('');
+    var body = '<div><b>' + esc(file.fileName) + '</b><br><small class="subtle">' + esc(auditorFiscalRegisterLabel(file.uploadType)) + ' · ' + esc(dateTimeBR(file.uploadedAt)) + ' · ' + number(file.totalLines) + ' linha(s)</small></div>' +
+      '<h3 class="rental-section-title" style="margin-top:14px">Erros (' + file.errors.length + ')</h3>' + errorsHtml +
+      '<h3 class="rental-section-title" style="margin-top:14px">Alertas (' + file.warnings.length + ')</h3>' + warningsHtml +
+      (blockRows ? '<h3 class="rental-section-title" style="margin-top:14px">Blocos</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Bloco</th><th>Abertura</th><th>Encerramento</th><th>Qtd. real</th><th>Qtd. declarada</th><th>Status</th></tr></thead><tbody>' + blockRows + '</tbody></table></div>' : '') +
+      (regRows ? '<h3 class="rental-section-title" style="margin-top:14px">Registros encontrados</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Registro</th><th>Ocorrências</th></tr></thead><tbody>' + regRows + '</tbody></table></div>' : '');
+    openModal('Detalhes da validação', body, '<button class="secondary-button" data-action="close-modal">Fechar</button><button class="primary-button" data-action="auditor-download-report" data-id="' + esc(file.id) + '">↧ Baixar relatório</button>');
+  }
+  function renderAuditorFiscalUpload() {
+    var ui = auditorFiscalUi();
+    var cardHtml = function (type, title, description) {
+      return '<button type="button" class="card" data-action="auditor-select-type" data-type="' + type + '" style="padding:26px 20px;text-align:center;cursor:pointer;border-width:' + (ui.uploadType === type ? '2px' : '1px') + ';border-color:' + (ui.uploadType === type ? 'var(--green-700)' : 'var(--line)') + '"><h3 style="margin:6px 0;font-size:13px">' + title + '</h3><p style="color:var(--muted);font-size:9px;margin:0">' + description + '</p></button>';
+    };
+    var typeCards = '<div class="form-grid" style="grid-template-columns:1fr 1fr;gap:18px">' +
+      cardHtml('geral', 'ICMS IPI / PIS COFINS / ECF / ECD', 'O arquivo precisa estar no formato .txt') +
+      cardHtml('simples', 'Simples Nacional', 'Para escrituração EFD ICMS/IPI Simples Nacional (AL, CE, MS, PA e RN) utilize esta opção.') +
+    '</div>';
+    var uploadZone = ui.uploadType ? '<section class="card" style="margin-top:18px"><header class="card-header"><h2>Enviar arquivo — ' + esc(auditorFiscalRegisterLabel(ui.uploadType)) + '</h2></header><div class="card-body"><div class="transition-upload-zone"><input id="auditor-sped-files" class="is-hidden" type="file" accept=".txt,.zip,text/plain,application/zip" multiple><span>⇧</span><div><b>Enviar arquivos .txt ou ZIP</b><small>A validação estrutural roda localmente no navegador — o conteúdo não é enviado a servidores externos.</small></div><button class="primary-button" data-action="auditor-select-files">Selecionar arquivos</button></div></div></section>' : '';
+    return typeCards + uploadZone + '<div style="text-align:center;margin-top:20px"><button class="secondary-button" data-action="auditor-view" data-view="recentes">Ir para os arquivos enviados</button></div>';
+  }
+  function renderAuditorFiscalParams() {
+    var params = auditorFiscalUi().params;
+    var options = [
+      ['checkLineFormat', 'Formato das linhas', 'Cada linha deve iniciar e terminar com o delimitador "|".'],
+      ['checkRequiredRecords', 'Registros obrigatórios', 'O arquivo deve iniciar com o registro 0000 e terminar com o 9999.'],
+      ['checkBlockCounts', 'Contagem por bloco (X001/X990)', 'Confere se a quantidade declarada no registro de encerramento de cada bloco bate com a quantidade real de linhas do bloco.'],
+      ['checkRegisterTotals', 'Totais do Bloco 9 (9900/9999)', 'Confere a contagem por tipo de registro (9900) e o total geral de linhas do arquivo (9999).']
+    ];
+    var rows = options.map(function (option) {
+      return '<label class="check" style="align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:9px;margin-bottom:8px;display:flex;gap:8px"><input type="checkbox" data-auditor-param="' + option[0] + '"' + (params[option[0]] !== false ? ' checked' : '') + '><span><b style="display:block;font-size:10px">' + option[1] + '</b><small style="color:var(--muted);font-size:9px">' + option[2] + '</small></span></label>';
+    }).join('');
+    return '<section class="card"><header class="card-header"><h2>Parâmetros de Validação</h2><small>Escolha quais checagens estruturais serão aplicadas às próximas validações</small></header><div class="card-body">' + rows + '</div></section>' +
+      '<div class="info-banner" style="margin-top:14px"><span>i</span><div><strong>Validação estrutural, não substitui a apuração.</strong> Estas checagens conferem a integridade do arquivo SPED — delimitadores, registros obrigatórios (0000/9999) e os contadores declarados pelo próprio arquivo (X001/X990 por bloco, 9900 por tipo de registro) — a mesma primeira camada de conferência usada pelos validadores oficiais do PVA. Elas não recalculam ICMS, IPI, PIS/COFINS ou a apuração declarada; confirme os valores fiscais com o contador responsável.</div></div>';
+  }
+  function renderAuditorFiscalHistory() {
+    var rows = state.audit.filter(function (item) { return /SPED|Auditor Fiscal/i.test(item.action); }).slice(0, 100).map(function (item) {
+      return '<div class="audit-row"><time>' + new Date(item.date).toLocaleString('pt-BR') + '</time><span><b>' + esc(item.action) + '</b><small>' + esc(item.detail) + '</small></span><span class="tag tag--info">' + esc(item.user) + '</span></div>';
+    }).join('') || '<div class="empty-state"><p>Nenhuma validação registrada ainda.</p></div>';
+    return '<section class="card"><header class="card-header"><h2>Histórico de Validações</h2><span class="subtle">até 100 ações recentes</span></header><div class="audit-list">' + rows + '</div></section>';
+  }
+  function renderAuditorFiscal() {
+    var ui = auditorFiscalUi();
+    var tabs = [['enviar', '⇧ Enviar Arquivos'], ['parametros', '⚙ Parâmetros de Validação'], ['recentes', '▤ Arquivos Recentes'], ['historico', '◷ Histórico']];
+    var nav = '<div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:16px">' + tabs.map(function (tab) {
+      return '<button type="button" class="segment' + (ui.view === tab[0] ? ' active' : '') + '" style="border:1px solid var(--line);border-radius:7px" data-action="auditor-view" data-view="' + tab[0] + '">' + tab[1] + '</button>';
+    }).join('') + '</div>';
+    var body = ui.view === 'parametros' ? renderAuditorFiscalParams()
+      : ui.view === 'recentes' ? '<section class="card"><header class="card-header"><h2>Arquivos Recentes</h2><div class="page-actions"><input id="auditor-recent-query" data-auditor-input placeholder="Filtrar pelo nome do arquivo" value="' + esc(ui.recentQuery) + '"></div></header><div class="card-body" id="auditor-recentes-wrap">' + renderAuditorFiscalRecentTable() + '</div></section>'
+      : ui.view === 'historico' ? renderAuditorFiscalHistory()
+      : renderAuditorFiscalUpload();
+    return [
+      pageHeading('Auditor Fiscal (SPED/EFD)', 'Validação estrutural de arquivos SPED — EFD ICMS/IPI, EFD Contribuições, ECF, ECD e EFD do Simples Nacional — processada localmente no navegador, sem enviar o conteúdo a servidores externos.', ''),
+      nav, body
+    ].join('');
   }
   function icmsState(uf) {
     return ICMS_STATES.find(function (item) { return item.uf === uf; }) || ICMS_STATES.find(function (item) { return item.uf === 'SP'; });
@@ -3264,6 +3528,7 @@
     if (state.route === 'inicio') main.innerHTML = renderPortfolioDashboard();
     else if (state.route === 'sefaz-portal') main.innerHTML = renderSefazPortal();
     else if (state.route === 'captador-notas-fiscais') main.innerHTML = renderCaptadorNotasFiscais();
+    else if (state.route === 'auditor-fiscal') main.innerHTML = renderAuditorFiscal();
     else if (state.route === 'dashboard') main.innerHTML = renderDashboard();
     else if (state.route === 'clientes' && parts[1]) main.innerHTML = renderClientDetail(parts[1]);
     else if (state.route === 'clientes') main.innerHTML = renderClients();
@@ -5783,7 +6048,8 @@
       ibs: taxTransitionXmlNumber(doc, ['vIBS'], ['IBSCBSTot', 'IBSCBSMono']), cbs: taxTransitionXmlNumber(doc, ['vCBS'], ['IBSCBSTot', 'IBSCBSMono']), selective: taxTransitionXmlNumber(doc, ['vIS'], ['ISTot'])
     };
   }
-  async function extractTaxTransitionZip(file) {
+  async function extractTaxTransitionZip(file, extensionPattern) {
+    extensionPattern = extensionPattern || /\.xml$/i;
     if (file.size > 25 * 1024 * 1024) throw new Error('O ZIP ' + file.name + ' excede o limite seguro de 25 MB.');
     var buffer = await file.arrayBuffer(), view = new DataView(buffer), eocd = -1;
     for (var position = Math.max(0, view.byteLength - 65557); position <= view.byteLength - 22; position += 1) { if (view.getUint32(position, true) === 0x06054b50) eocd = position; }
@@ -5796,7 +6062,7 @@
       var nameLength = view.getUint16(cursor + 28, true), extraLength = view.getUint16(cursor + 30, true), commentLength = view.getUint16(cursor + 32, true), localOffset = view.getUint32(cursor + 42, true);
       var nameBytes = new Uint8Array(buffer, cursor + 46, nameLength), name = new TextDecoder(flags & 0x800 ? 'utf-8' : 'utf-8').decode(nameBytes);
       cursor += 46 + nameLength + extraLength + commentLength;
-      if (!/\.xml$/i.test(name) || /\/$/.test(name)) continue;
+      if (!extensionPattern.test(name) || /\/$/.test(name)) continue;
       if (flags & 1) throw new Error('O ZIP possui arquivo criptografado e não pode ser processado: ' + name + '.');
       if (method !== 0 && method !== 8) throw new Error('Método de compactação não suportado no arquivo ' + name + '.');
       if (localOffset + 30 > view.byteLength || view.getUint32(localOffset, true) !== 0x04034b50) throw new Error('Entrada local inválida no ZIP: ' + name + '.');
@@ -5812,7 +6078,7 @@
       }
       entries.push({ name: file.name + '/' + name.replace(/^.*[\\/]/, ''), content: new TextDecoder('utf-8').decode(expanded) });
     }
-    if (!entries.length) throw new Error('Nenhum XML foi encontrado dentro de ' + file.name + '.');
+    if (!entries.length) throw new Error('Nenhum arquivo compatível foi encontrado dentro de ' + file.name + '.');
     return entries;
   }
   async function handleTaxTransitionFiles(fileList) {
@@ -7269,6 +7535,13 @@
     else if (action === 'captador-page') setCaptadorPage(actionEl.getAttribute('data-page'));
     else if (action === 'captador-sync-all') syncAllCaptadorCompanies();
     else if (action === 'captador-monthly-closing') exportCaptadorMonthlyClosing();
+    else if (action === 'auditor-view') setAuditorFiscalView(actionEl.getAttribute('data-view'));
+    else if (action === 'auditor-select-type') selectAuditorFiscalType(actionEl.getAttribute('data-type'));
+    else if (action === 'auditor-select-files') { var auditorInput = $('#auditor-sped-files'); if (auditorInput) auditorInput.click(); }
+    else if (action === 'auditor-view-details') openAuditorFiscalDetails(actionEl.getAttribute('data-id'));
+    else if (action === 'auditor-download-report') downloadAuditorFiscalReport(actionEl.getAttribute('data-id'));
+    else if (action === 'auditor-remove-file') removeAuditorFiscalFile(actionEl.getAttribute('data-id'));
+    else if (action === 'auditor-recent-page') setAuditorFiscalRecentPage(actionEl.getAttribute('data-page'));
     else if (action === 'clear-filters') { state.filters = {}; route(); }
     else if (action === 'obligation-info') showObligationInfo(actionEl.getAttribute('data-name'));
     else if (action === 'history-calc') toast('Histórico utilizado', 'O RBT12 salvo no cadastro já está aplicado ao cálculo.');
@@ -7395,6 +7668,9 @@
       state.captadorFilterTimer = window.setTimeout(updateCaptadorFilters, 200);
     } else if (event.target.matches('[data-captador-input]')) {
       updateCaptadorFilters();
+    } else if (event.target.id === 'auditor-recent-query') {
+      window.clearTimeout(state.auditorFilterTimer);
+      state.auditorFilterTimer = window.setTimeout(updateAuditorFiscalRecentControls, 200);
     }
   });
 
@@ -7451,6 +7727,9 @@
     else if (event.target.matches('[data-transition-input]')) updateTaxTransition(true);
     else if (event.target.matches('[data-tp-input]')) updateTaxPlanningSimulator();
     else if (event.target.matches('[data-captador-input]')) updateCaptadorFilters();
+    else if (event.target.id === 'auditor-recent-page-size') updateAuditorFiscalRecentControls();
+    else if (event.target.matches('[data-auditor-param]')) updateAuditorFiscalParam(event.target.getAttribute('data-auditor-param'), event.target.checked);
+    else if (event.target.id === 'auditor-sped-files') handleAuditorFiscalFiles(event.target.files);
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
     else if (event.target.id === 'piscofins-xml-files') handlePisCofinsFiles(event.target.files);
     else if (event.target.id === 'json-file-input') processImportedFile(event.target.files && event.target.files[0]);

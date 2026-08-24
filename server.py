@@ -129,6 +129,7 @@ ERP_MODULES = {
     "tab_inicio": "Visão Geral da Carteira",
     "tab_sefaz_portal": "Consulta SEFAZ e Portal do Contribuinte",
     "tab_captador_notas_fiscais": "Captador de Notas Fiscais",
+    "tab_auditor_fiscal": "Auditor Fiscal (SPED/EFD)",
     "tab_dashboard": "Cálculo DAS",
     "tab_conttech_simples_nacional": "Conttech Simples Nacional",
     "tab_diagnostico": "Diagnóstico Tributário",
@@ -175,7 +176,7 @@ ERP_MODULES = {
     "tab_historico": "Histórico de Atualizações",
 }
 FISCAL_TAB_MODULES = {
-    "tab_sefaz_portal", "tab_captador_notas_fiscais", "tab_dashboard", "tab_conttech_simples_nacional", "tab_diagnostico", "tab_mei", "tab_controle_mei",
+    "tab_sefaz_portal", "tab_captador_notas_fiscais", "tab_auditor_fiscal", "tab_dashboard", "tab_conttech_simples_nacional", "tab_diagnostico", "tab_mei", "tab_controle_mei",
     "tab_obrigacoes", "tab_certidao_regularidade_fiscal", "tab_ibs_cbs", "tab_transicao_reforma", "tab_recuperador_pis_cofins",
     "tab_planejamento_tributario", "tab_lei_complementar",
     "tab_mei_ibs_cbs", "tab_parametros_2026", "tab_consulta_cnpj", "tab_inscricao_estadual",
