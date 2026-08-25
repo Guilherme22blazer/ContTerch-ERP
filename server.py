@@ -2381,6 +2381,22 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             return None
         return user
 
+    @staticmethod
+    def is_super_admin(user: sqlite3.Row) -> bool:
+        return (user["perfil_nome"] or "") == "SUPER_ADMIN"
+
+    def owns_company_row(self, row_company_id: str | None, user: sqlite3.Row) -> bool:
+        """Isolamento multi-tenant: verdadeiro se a linha pertence à mesma
+        empresa do usuário autenticado, ou se o usuário é SUPER_ADMIN (único
+        perfil com visão entre empresas). Nunca confia em nenhum identificador
+        de empresa vindo da requisição — só no company_id da própria sessão."""
+        if self.is_super_admin(user):
+            return True
+        return bool(row_company_id) and row_company_id == user["company_id"]
+
+    def deny_cross_tenant(self) -> None:
+        self.send_json({"error": "Registro não encontrado."}, HTTPStatus.NOT_FOUND)
+
     def user_role_permissions(self, user: sqlite3.Row) -> set[str]:
         """Códigos de permissão granular (módulo.ação) efetivos do usuário:
         permissões do perfil (role_permissions) com exceções individuais
@@ -3126,9 +3142,12 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             if plan is None:
                 raise ValueError("Selecione um plano de assinatura ativo.")
             existing = database.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone() if user_id else None
+            if existing is not None and not self.owns_company_row(existing["company_id"], administrator):
+                raise ValueError("Usuário não encontrado.")
+            target_company_id = existing["company_id"] if existing is not None else administrator["company_id"]
             assigned_to_plan = database.execute(
-                "SELECT COUNT(*) AS total FROM users WHERE plan_id = ? AND (? = '' OR id != ?)",
-                (plan_id, user_id, user_id),
+                "SELECT COUNT(*) AS total FROM users WHERE plan_id = ? AND company_id = ? AND (? = '' OR id != ?)",
+                (plan_id, target_company_id, user_id, user_id),
             ).fetchone()["total"]
             if assigned_to_plan >= int(plan["max_users"] or 1):
                 raise ValueError("O plano selecionado atingiu a quantidade máxima de usuários.")
@@ -3145,7 +3164,10 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             if existing and existing["email"] == administrator["email"] and (role != "Administrador" or status != "Ativo"):
                 raise ValueError("O administrador da sessão não pode remover o próprio acesso administrativo.")
             if existing and existing["role"] == "Administrador" and role != "Administrador":
-                active_admins = database.execute("SELECT COUNT(*) AS total FROM users WHERE role = 'Administrador' AND active = 1 AND status = 'Ativo'").fetchone()["total"]
+                active_admins = database.execute(
+                    "SELECT COUNT(*) AS total FROM users WHERE role = 'Administrador' AND active = 1 AND status = 'Ativo' AND company_id = ?",
+                    (target_company_id,),
+                ).fetchone()["total"]
                 if active_admins <= 1:
                     raise ValueError("Mantenha pelo menos um administrador ativo.")
             previous = dict(existing) if existing else {}
@@ -3300,12 +3322,21 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             write_access_audit(database, administrator["email"], "", action, dict(existing) if existing else {}, {"id": plan_id, "name": name, "modules": modules}, self.client_ip())
         return plan_id
 
-    def certificate_row(self, certificate_id: str) -> sqlite3.Row | None:
+    def certificate_row(self, certificate_id: str, user: sqlite3.Row | None = None) -> sqlite3.Row | None:
+        """Busca um certificado por id. Quando `user` é informado, o
+        certificado só é devolvido se pertencer à mesma empresa do usuário
+        autenticado (ou se o usuário for SUPER_ADMIN) — nunca confia no id
+        vindo da requisição para decidir a que empresa ele pertence."""
         with connect() as database:
-            return database.execute(
+            row = database.execute(
                 "SELECT * FROM fiscal_certificates WHERE id = ? AND active = 1",
                 (certificate_id,),
             ).fetchone()
+        if row is None or user is None:
+            return row
+        if not self.owns_company_row(row["company_id"], user):
+            return None
+        return row
 
     def certificate_summary(self, row: sqlite3.Row) -> dict:
         valid_until = dt.datetime.fromisoformat(row["valid_until"].replace("Z", "+00:00"))
@@ -3386,15 +3417,15 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                   id, access_key, model, company, certificate_id, environment, status,
                   risk_level, official_code, source_name, source_url, result_encrypted,
                   xml_encrypted, xml_filename, xml_sha256, record_origin, import_batch_id,
-                  consulted_by, consulted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  consulted_by, consulted_at, company_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result["id"], result["accessKey"], result["model"], certificate["company"],
                     certificate["id"], result["environment"], result["status"], result["riskLevel"],
                     result.get("officialCode", ""), result["sourceName"], result["sourceUrl"], encoded_result,
                     encrypted_xml, xml_filename or None, xml_sha256, record_origin, import_batch_id or None,
-                    user["email"], result["consultedAt"],
+                    user["email"], result["consultedAt"], user["company_id"],
                 ),
             )
 
@@ -3402,7 +3433,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         month = str(payload.get("month", "")).strip()
         if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", month):
             raise ValueError("Selecione o mês do pacote oficial da NFS-e.")
-        certificate = self.certificate_row(str(payload.get("certificateId", "")).strip())
+        certificate = self.certificate_row(str(payload.get("certificateId", "")).strip(), user)
         if certificate is None:
             raise ValueError("Selecione o certificado da empresa antes da importação.")
         environment = str(payload.get("environment") or certificate["environment"] or "production")
@@ -3546,15 +3577,15 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                       id, access_key, model, company, certificate_id, environment, status,
                       risk_level, official_code, source_name, source_url, result_encrypted,
                       xml_encrypted, xml_filename, xml_sha256, record_origin, import_batch_id,
-                      consulted_by, consulted_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      consulted_by, consulted_at, company_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         result["id"], result["accessKey"], "NFS-e", certificate["company"], certificate["id"],
                         environment, result["status"], result["riskLevel"], result["officialCode"],
                         result["sourceName"], result["sourceUrl"], encoded_result, encrypted_xml,
                         item["filename"], item["sha256"], "official_monthly_import", batch_id,
-                        user["email"], now,
+                        user["email"], now, user["company_id"],
                     ),
                 )
                 imported += 1
@@ -3565,13 +3596,13 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 INSERT INTO nfse_monthly_imports(
                   id, certificate_id, environment, month, source_filename, source_sha256,
                   source_documents, imported_documents, duplicate_documents, cancellation_events,
-                  ignored_documents, error_count, is_complete, imported_by, imported_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  ignored_documents, error_count, is_complete, imported_by, imported_at, company_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id, certificate["id"], environment, month, filename, source_hash,
                     len(members), imported, duplicates, cancellations, ignored, len(errors),
-                    1 if complete else 0, user["email"], now,
+                    1 if complete else 0, user["email"], now, user["company_id"],
                 ),
             )
         self.audit(
@@ -3618,14 +3649,14 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 INSERT INTO distributed_documents(
                   id, certificate_id, environment, state_code, nsu, schema_name,
                   document_type, access_key, direction, status, result_encrypted,
-                  xml_encrypted, synced_by, received_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  xml_encrypted, synced_by, received_at, company_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result["id"], certificate["id"], environment, state_code, nsu,
                     schema_name, result.get("model", ""), result.get("accessKey", ""),
                     result.get("direction", "Relacionada"), result.get("status", "Documento localizado"),
-                    encoded_result, encrypted_xml, user["email"], result["consultedAt"],
+                    encoded_result, encrypted_xml, user["email"], result["consultedAt"], user["company_id"],
                 ),
             )
         return result, True
@@ -3635,7 +3666,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", month):
             raise ValueError("Selecione um mês válido para gerar o lote de XML.")
         certificate_id = str(payload.get("certificateId", "")).strip()
-        certificate = self.certificate_row(certificate_id)
+        certificate = self.certificate_row(certificate_id, user)
         if certificate is None:
             raise ValueError("Selecione um certificado ativo para identificar a empresa do lote.")
         environment = str(payload.get("environment") or certificate["environment"] or "production")
@@ -3658,11 +3689,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         query_values: list[str] = [certificate_id, environment]
         distributed_where = ["certificate_id = ?", "environment = ?"]
         distributed_values: list[str] = [certificate_id, environment]
-        if user["role"] != "Administrador":
-            query_where.append("consulted_by = ?")
-            query_values.append(user["email"])
-            distributed_where.append("synced_by = ?")
-            distributed_values.append(user["email"])
+        if not self.is_super_admin(user):
+            query_where.append("company_id = ?")
+            query_values.append(user["company_id"])
+            distributed_where.append("company_id = ?")
+            distributed_values.append(user["company_id"])
         with connect() as database:
             query_rows = database.execute(
                 f"SELECT * FROM fiscal_queries WHERE {' AND '.join(query_where)} ORDER BY consulted_at DESC LIMIT 5000",
@@ -3891,14 +3922,22 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         except ValueError:
             page_size = 25
 
-        is_admin = user["role"] == "Administrador"
+        is_super_admin = self.is_super_admin(user)
         with connect() as database:
-            certificates = {row["id"]: row for row in database.execute("SELECT * FROM fiscal_certificates").fetchall()}
+            if is_super_admin:
+                certificates = {row["id"]: row for row in database.execute("SELECT * FROM fiscal_certificates").fetchall()}
+            else:
+                certificates = {
+                    row["id"]: row
+                    for row in database.execute(
+                        "SELECT * FROM fiscal_certificates WHERE company_id = ?", (user["company_id"],)
+                    ).fetchall()
+                }
             query_where, query_values = ["1 = 1"], []
             if certificate_id:
                 query_where.append("certificate_id = ?"); query_values.append(certificate_id)
-            if not is_admin:
-                query_where.append("consulted_by = ?"); query_values.append(user["email"])
+            if not is_super_admin:
+                query_where.append("company_id = ?"); query_values.append(user["company_id"])
             query_rows = database.execute(
                 f"SELECT * FROM fiscal_queries WHERE {' AND '.join(query_where)} ORDER BY consulted_at DESC LIMIT 5000",
                 query_values,
@@ -3906,8 +3945,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             distributed_where, distributed_values = ["1 = 1"], []
             if certificate_id:
                 distributed_where.append("certificate_id = ?"); distributed_values.append(certificate_id)
-            if not is_admin:
-                distributed_where.append("synced_by = ?"); distributed_values.append(user["email"])
+            if not is_super_admin:
+                distributed_where.append("company_id = ?"); distributed_values.append(user["company_id"])
             distributed_rows = database.execute(
                 f"SELECT * FROM distributed_documents WHERE {' AND '.join(distributed_where)} ORDER BY received_at DESC LIMIT 5000",
                 distributed_values,
@@ -4007,34 +4046,48 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             raise ValueError("Selecione ao menos um documento para baixar.")
         if len(requested) > MAX_XML_BATCH_DOCUMENTS:
             raise ValueError(f"Selecione no máximo {MAX_XML_BATCH_DOCUMENTS} documentos por lote.")
-        is_admin = user["role"] == "Administrador"
+        is_super_admin = self.is_super_admin(user)
         query_ids = [str(item.get("id", "")) for item in requested if item.get("source") == "query" and item.get("id")]
         distributed_ids = [str(item.get("id", "")) for item in requested if item.get("source") == "distribution" and item.get("id")]
 
         with connect() as database:
-            certificates = {row["id"]: row for row in database.execute("SELECT * FROM fiscal_certificates").fetchall()}
+            if is_super_admin:
+                certificates = {row["id"]: row for row in database.execute("SELECT * FROM fiscal_certificates").fetchall()}
+            else:
+                certificates = {
+                    row["id"]: row
+                    for row in database.execute(
+                        "SELECT * FROM fiscal_certificates WHERE company_id = ?", (user["company_id"],)
+                    ).fetchall()
+                }
             query_rows = []
             if query_ids:
                 placeholders = ",".join(["?"] * len(query_ids))
-                query_rows = database.execute(f"SELECT * FROM fiscal_queries WHERE id IN ({placeholders})", query_ids).fetchall()
+                company_clause = "" if is_super_admin else " AND company_id = ?"
+                company_params = [] if is_super_admin else [user["company_id"]]
+                query_rows = database.execute(
+                    f"SELECT * FROM fiscal_queries WHERE id IN ({placeholders}){company_clause}",
+                    query_ids + company_params,
+                ).fetchall()
             distributed_rows = []
             if distributed_ids:
                 placeholders = ",".join(["?"] * len(distributed_ids))
-                distributed_rows = database.execute(f"SELECT * FROM distributed_documents WHERE id IN ({placeholders})", distributed_ids).fetchall()
+                company_clause = "" if is_super_admin else " AND company_id = ?"
+                company_params = [] if is_super_admin else [user["company_id"]]
+                distributed_rows = database.execute(
+                    f"SELECT * FROM distributed_documents WHERE id IN ({placeholders}){company_clause}",
+                    distributed_ids + company_params,
+                ).fetchall()
 
         fernet = get_fernet()
         records: list[dict] = []
         for row in query_rows:
-            if not is_admin and row["consulted_by"] != user["email"]:
-                continue
             cert = certificates.get(row["certificate_id"])
             record = decrypt_and_normalize_record(row, "query", digits(cert["document"]) if cert else "", fernet)
             if record and record["hasXml"]:
                 record["company"] = row["company"] or (cert["company"] if cert else "")
                 records.append(record)
         for row in distributed_rows:
-            if not is_admin and row["synced_by"] != user["email"]:
-                continue
             cert = certificates.get(row["certificate_id"])
             record = decrypt_and_normalize_record(row, "distribution", digits(cert["document"]) if cert else "", fernet)
             if record and record["hasXml"]:
@@ -4078,7 +4131,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         }
 
     def perform_distribution_sync(self, payload: dict, user: sqlite3.Row) -> dict:
-        certificate = self.certificate_row(str(payload.get("certificateId", "")))
+        certificate = self.certificate_row(str(payload.get("certificateId", "")), user)
         if certificate is None:
             raise ValueError("Certificado não encontrado ou removido.")
         if certificate_status(certificate["valid_until"]) == "Vencido":
@@ -4118,8 +4171,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 """
                 INSERT INTO distribution_state(
                   certificate_id, environment, state_code, last_nsu, max_nsu,
-                  official_code, motive, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  official_code, motive, updated_at, company_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(certificate_id, environment, state_code) DO UPDATE SET
                   last_nsu = excluded.last_nsu, max_nsu = excluded.max_nsu,
                   official_code = excluded.official_code, motive = excluded.motive,
@@ -4127,7 +4180,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 """,
                 (
                     certificate["id"], environment, state_code, official["last_nsu"],
-                    official["max_nsu"], official["official_code"], official["motive"], now,
+                    official["max_nsu"], official["official_code"], official["motive"], now, user["company_id"],
                 ),
             )
         self.audit(
@@ -4150,7 +4203,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         environment = str(payload.get("environment", "production"))
         if environment not in {"production", "homologation"}:
             raise ValueError("Ambiente fiscal inválido.")
-        certificate = self.certificate_row(str(payload.get("certificateId", "")))
+        certificate = self.certificate_row(str(payload.get("certificateId", "")), user)
         if certificate is None:
             raise ValueError("Certificado não encontrado ou removido.")
         if certificate_status(certificate["valid_until"]) == "Vencido":
@@ -4217,7 +4270,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         environment = str(payload.get("environment", "production"))
         if environment not in NFSE_ENDPOINTS:
             raise ValueError("Ambiente fiscal inválido.")
-        certificate = self.certificate_row(str(payload.get("certificateId", "")))
+        certificate = self.certificate_row(str(payload.get("certificateId", "")), user)
         if certificate is None:
             raise ValueError("Certificado não encontrado ou removido.")
         if certificate_status(certificate["valid_until"]) == "Vencido":
@@ -4591,8 +4644,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             target_id = user_permissions_match.group(1)
             with connect() as database:
-                target = database.execute("SELECT id, perfil_id FROM users WHERE id = ?", (target_id,)).fetchone()
-                if target is None:
+                target = database.execute("SELECT id, perfil_id, company_id FROM users WHERE id = ?", (target_id,)).fetchone()
+                if target is None or not self.owns_company_row(target["company_id"], administrator):
                     self.send_json({"error": "Usuário não encontrado."}, HTTPStatus.NOT_FOUND)
                     return
                 role_rows = database.execute(
@@ -4758,10 +4811,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             permissions = self.permissions_for(user)
             params = parse_qs(parsed_url.query)
+            is_super_admin = self.is_super_admin(user)
             where, values = ["1 = 1"], []
-            if user["role"] != "Administrador":
-                where.append("consulted_by = ?")
-                values.append(user["email"])
+            if not is_super_admin:
+                where.append("company_id = ?")
+                values.append(user["company_id"])
             filters = {
                 "company": ("company LIKE ?", lambda value: f"%{value[:100]}%"),
                 "model": ("model = ?", lambda value: value[:20]),
@@ -4776,9 +4830,15 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     values.append(normalizer(value))
             condition_sql = " AND ".join(where)
             with connect() as database:
-                certificates = database.execute(
-                    "SELECT * FROM fiscal_certificates WHERE active = 1 ORDER BY company, branch, valid_until"
-                ).fetchall()
+                if is_super_admin:
+                    certificates = database.execute(
+                        "SELECT * FROM fiscal_certificates WHERE active = 1 ORDER BY company, branch, valid_until"
+                    ).fetchall()
+                else:
+                    certificates = database.execute(
+                        "SELECT * FROM fiscal_certificates WHERE active = 1 AND company_id = ? ORDER BY company, branch, valid_until",
+                        (user["company_id"],),
+                    ).fetchall()
                 history_rows = []
                 distributed_rows = []
                 if "view_history" in permissions:
@@ -4786,8 +4846,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         f"SELECT id, access_key, model, company, environment, status, risk_level, official_code, consulted_by, consulted_at FROM fiscal_queries WHERE {condition_sql} ORDER BY consulted_at DESC LIMIT 250",
                         values,
                     ).fetchall()
-                    distributed_user_filter = "WHERE d.synced_by = ?" if user["role"] != "Administrador" else ""
-                    distributed_values = [user["email"]] if user["role"] != "Administrador" else []
+                    distributed_user_filter = "WHERE d.company_id = ?" if not is_super_admin else ""
+                    distributed_values = [user["company_id"]] if not is_super_admin else []
                     distributed_rows = database.execute(
                         f"""
                         SELECT d.id, d.nsu, d.schema_name, d.document_type, d.access_key,
@@ -4800,17 +4860,21 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         """,
                         distributed_values,
                     ).fetchall()
+                distribution_filter = "WHERE s.company_id = ?" if not is_super_admin else ""
+                distribution_values = [user["company_id"]] if not is_super_admin else []
                 distribution_rows = database.execute(
-                    """
+                    f"""
                     SELECT s.certificate_id, s.environment, s.state_code, s.last_nsu,
                            s.max_nsu, s.official_code, s.motive, s.updated_at, c.company
                     FROM distribution_state s
                     JOIN fiscal_certificates c ON c.id = s.certificate_id
+                    {distribution_filter}
                     ORDER BY s.updated_at DESC
-                    """
+                    """,
+                    distribution_values,
                 ).fetchall()
-                import_user_filter = "WHERE imported_by = ?" if user["role"] != "Administrador" else ""
-                import_values = [user["email"]] if user["role"] != "Administrador" else []
+                import_user_filter = "WHERE company_id = ?" if not is_super_admin else ""
+                import_values = [user["company_id"]] if not is_super_admin else []
                 nfse_import_rows = database.execute(
                     f"""
                     SELECT id, certificate_id, environment, month, source_filename,
@@ -4823,16 +4887,32 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     """,
                     import_values,
                 ).fetchall()
-                stats_where = "consulted_by = ?" if user["role"] != "Administrador" else "1 = 1"
-                stats_values = [user["email"]] if user["role"] != "Administrador" else []
+                stats_where = "company_id = ?" if not is_super_admin else "1 = 1"
+                stats_values = [user["company_id"]] if not is_super_admin else []
                 stats_rows = database.execute(
                     f"SELECT status, risk_level, COUNT(*) AS amount FROM fiscal_queries WHERE {stats_where} GROUP BY status, risk_level",
                     stats_values,
                 ).fetchall()
                 users, permission_matrix = [], []
                 if user["role"] == "Administrador":
-                    users = [dict(row) for row in database.execute("SELECT email, name, role FROM users WHERE active = 1 ORDER BY name").fetchall()]
-                    permission_rows = database.execute("SELECT email, permission FROM user_sefaz_permissions WHERE allowed = 1 ORDER BY email, permission").fetchall()
+                    if is_super_admin:
+                        user_rows = database.execute("SELECT email, name, role FROM users WHERE active = 1 ORDER BY name").fetchall()
+                        permission_rows = database.execute("SELECT email, permission FROM user_sefaz_permissions WHERE allowed = 1 ORDER BY email, permission").fetchall()
+                    else:
+                        user_rows = database.execute(
+                            "SELECT email, name, role FROM users WHERE active = 1 AND company_id = ? ORDER BY name",
+                            (user["company_id"],),
+                        ).fetchall()
+                        permission_rows = database.execute(
+                            """
+                            SELECT p.email, p.permission FROM user_sefaz_permissions p
+                            JOIN users u ON u.email = p.email
+                            WHERE p.allowed = 1 AND u.company_id = ?
+                            ORDER BY p.email, p.permission
+                            """,
+                            (user["company_id"],),
+                        ).fetchall()
+                    users = [dict(row) for row in user_rows]
                     grouped: dict[str, list[str]] = {}
                     for row in permission_rows:
                         grouped.setdefault(row["email"], []).append(row["permission"])
@@ -4911,15 +4991,21 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             if not self.require_permission(user, "view_history"):
                 return
-            is_admin = user["role"] == "Administrador"
+            is_super_admin = self.is_super_admin(user)
             month_start = dt.datetime.now().astimezone().replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
             model_key_map = {"NF-e": "nfe", "NFC-e": "nfce", "CT-e": "cte", "CT-e OS": "cte", "MDF-e": "mdfe", "NFS-e": "nfse"}
             with connect() as database:
-                certificates = database.execute(
-                    "SELECT * FROM fiscal_certificates WHERE active = 1 ORDER BY company, branch"
-                ).fetchall()
-                dd_filter = "" if is_admin else " AND synced_by = ?"
-                dd_values = [] if is_admin else [user["email"]]
+                if is_super_admin:
+                    certificates = database.execute(
+                        "SELECT * FROM fiscal_certificates WHERE active = 1 ORDER BY company, branch"
+                    ).fetchall()
+                else:
+                    certificates = database.execute(
+                        "SELECT * FROM fiscal_certificates WHERE active = 1 AND company_id = ? ORDER BY company, branch",
+                        (user["company_id"],),
+                    ).fetchall()
+                dd_filter = "" if is_super_admin else " AND company_id = ?"
+                dd_values = [] if is_super_admin else [user["company_id"]]
                 distributed_counts = database.execute(
                     f"SELECT certificate_id, document_type, COUNT(*) AS amount FROM distributed_documents WHERE 1 = 1{dd_filter} GROUP BY certificate_id, document_type",
                     dd_values,
@@ -4928,8 +5014,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     f"SELECT certificate_id, COUNT(*) AS amount FROM distributed_documents WHERE received_at >= ?{dd_filter} GROUP BY certificate_id",
                     [month_start] + dd_values,
                 ).fetchall()
-                fq_filter = "" if is_admin else " AND consulted_by = ?"
-                fq_values = [] if is_admin else [user["email"]]
+                fq_filter = "" if is_super_admin else " AND company_id = ?"
+                fq_values = [] if is_super_admin else [user["company_id"]]
                 query_counts = database.execute(
                     f"SELECT certificate_id, model, COUNT(*) AS amount FROM fiscal_queries WHERE certificate_id IS NOT NULL{fq_filter} GROUP BY certificate_id, model",
                     fq_values,
@@ -4938,8 +5024,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     f"SELECT certificate_id, COUNT(*) AS amount FROM fiscal_queries WHERE certificate_id IS NOT NULL AND consulted_at >= ?{fq_filter} GROUP BY certificate_id",
                     [month_start] + fq_values,
                 ).fetchall()
-                imp_filter = "" if is_admin else " AND imported_by = ?"
-                imp_values = [] if is_admin else [user["email"]]
+                imp_filter = "" if is_super_admin else " AND company_id = ?"
+                imp_values = [] if is_super_admin else [user["company_id"]]
                 nfse_import_counts = database.execute(
                     f"SELECT certificate_id, COALESCE(SUM(imported_documents), 0) AS amount FROM nfse_monthly_imports WHERE 1 = 1{imp_filter} GROUP BY certificate_id",
                     imp_values,
@@ -5006,7 +5092,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             with connect() as database:
                 row = database.execute("SELECT * FROM fiscal_queries WHERE id = ?", (history_match.group(1),)).fetchone()
-            if row is None or (user["role"] != "Administrador" and row["consulted_by"] != user["email"]):
+            if row is None or not self.owns_company_row(row["company_id"], user):
                 self.send_json({"error": "Consulta não encontrada."}, HTTPStatus.NOT_FOUND)
                 return
             try:
@@ -5045,7 +5131,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     "SELECT * FROM distributed_documents WHERE id = ?",
                     (distributed_match.group(1),),
                 ).fetchone()
-            if row is None:
+            if row is None or not self.owns_company_row(row["company_id"], user):
                 self.send_json({"error": "Documento distribuído não encontrado."}, HTTPStatus.NOT_FOUND)
                 return
             try:
@@ -5262,7 +5348,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             try:
                 with connect() as database:
                     target = database.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-                    if target is None:
+                    if target is None or not self.owns_company_row(target["company_id"], administrator):
                         raise ValueError("Usuário não encontrado.")
                     if target["email"] == administrator["email"] and action in {"inactivate", "block"}:
                         raise ValueError("O administrador da sessão não pode bloquear ou inativar o próprio acesso.")
@@ -5301,7 +5387,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
         if path == "/api/admin/plans":
-            administrator = self.require_admin()
+            administrator = self.require_role("SUPER_ADMIN")
             if administrator is None:
                 return
             try:
@@ -5589,27 +5675,27 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 encrypted_password = fernet.encrypt(password.encode("utf-8")) if save_password else None
                 with connect() as database:
                     database.execute(
-                        "UPDATE fiscal_certificates SET active = 0, updated_at = ? WHERE company = ? AND branch = ? AND environment = ? AND active = 1",
-                        (now, company, branch, environment),
+                        "UPDATE fiscal_certificates SET active = 0, updated_at = ? WHERE company = ? AND branch = ? AND environment = ? AND active = 1 AND company_id = ?",
+                        (now, company, branch, environment, user["company_id"]),
                     )
                     database.execute(
                         """
                         INSERT INTO fiscal_certificates(
                           id, company, branch, document, holder, issuer, serial, valid_from, valid_until,
                           environment, state_code, pfx_encrypted, password_encrypted, save_password,
-                          created_by, created_at, updated_at, active
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                          created_by, created_at, updated_at, active, company_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                         """,
                         (
                             certificate_id, company, branch, document, metadata["holder"], metadata["issuer"],
                             metadata["serial"], metadata["not_before"], metadata["not_after"], environment,
                             state_code, fernet.encrypt(pfx_data), encrypted_password, 1 if save_password else 0,
-                            user["email"], now, now,
+                            user["email"], now, now, user["company_id"],
                         ),
                     )
                 SESSION_CERT_PASSWORDS[(self.session_token(), certificate_id)] = password
                 self.audit(user["email"], "certificate_registered", f"{company} · {branch} · {document[-4:] if document else 'sem documento'}")
-                self.send_json({"message": "Certificado validado, cifrado e associado à empresa.", "certificate": self.certificate_summary(self.certificate_row(certificate_id))}, HTTPStatus.CREATED)
+                self.send_json({"message": "Certificado validado, cifrado e associado à empresa.", "certificate": self.certificate_summary(self.certificate_row(certificate_id, user))}, HTTPStatus.CREATED)
             except (ValueError, RuntimeError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
@@ -5619,7 +5705,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             user = self.require_user()
             if user is None or not self.require_permission(user, "manage_certificates"):
                 return
-            certificate = self.certificate_row(certificate_test.group(1))
+            certificate = self.certificate_row(certificate_test.group(1), user)
             if certificate is None:
                 self.send_json({"error": "Certificado não encontrado."}, HTTPStatus.NOT_FOUND)
                 return
@@ -5737,12 +5823,15 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             try:
                 with connect() as database:
                     target = database.execute("SELECT * FROM users WHERE id = ?", (managed_user_match.group(1),)).fetchone()
-                    if target is None:
+                    if target is None or not self.owns_company_row(target["company_id"], administrator):
                         raise ValueError("Usuário não encontrado.")
                     if target["email"] == administrator["email"]:
                         raise ValueError("Não é possível excluir o usuário da sessão atual.")
                     if target["role"] == "Administrador":
-                        total = database.execute("SELECT COUNT(*) AS total FROM users WHERE role = 'Administrador' AND active = 1 AND status = 'Ativo'").fetchone()["total"]
+                        total = database.execute(
+                            "SELECT COUNT(*) AS total FROM users WHERE role = 'Administrador' AND active = 1 AND status = 'Ativo' AND company_id = ?",
+                            (target["company_id"],),
+                        ).fetchone()["total"]
                         if total <= 1:
                             raise ValueError("Mantenha pelo menos um administrador ativo.")
                     write_access_audit(database, administrator["email"], target["email"], "Administrador excluiu usuário", dict(target), "Registro excluído", self.client_ip())
@@ -5756,7 +5845,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             return
         managed_plan_match = re.fullmatch(r"/api/admin/plans/([a-z0-9-]{1,64})", path)
         if managed_plan_match:
-            administrator = self.require_admin()
+            administrator = self.require_role("SUPER_ADMIN")
             if administrator is None:
                 return
             try:
@@ -5794,7 +5883,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         user = self.require_user()
         if user is None or not self.require_permission(user, "manage_certificates"):
             return
-        certificate = self.certificate_row(match.group(1))
+        certificate = self.certificate_row(match.group(1), user)
         if certificate is None:
             self.send_json({"error": "Certificado não encontrado."}, HTTPStatus.NOT_FOUND)
             return
@@ -5823,8 +5912,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 if not isinstance(exceptions, dict):
                     raise ValueError("Envie 'exceptions' como um objeto {codigo_permissao: true|false}.")
                 with connect() as database:
-                    target = database.execute("SELECT id, email FROM users WHERE id = ?", (target_id,)).fetchone()
-                    if target is None:
+                    target = database.execute("SELECT id, email, company_id FROM users WHERE id = ?", (target_id,)).fetchone()
+                    if target is None or not self.owns_company_row(target["company_id"], administrator):
                         raise ValueError("Usuário não encontrado.")
                     database.execute("DELETE FROM user_permissions WHERE user_id = ?", (target_id,))
                     for codigo, allowed in exceptions.items():
@@ -5940,7 +6029,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             return
         managed_plan_match = re.fullmatch(r"/api/admin/plans/([a-z0-9-]{1,64})", path)
         if managed_plan_match:
-            administrator = self.require_admin()
+            administrator = self.require_role("SUPER_ADMIN")
             if administrator is None:
                 return
             try:
