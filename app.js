@@ -6993,6 +6993,22 @@
       '<div class="field field--full"><button class="primary-button" type="button" data-action="save-stripe-settings">▣ Salvar chaves do Stripe</button></div>' +
       '</form></div></section>';
   }
+  function stripeFormBeingEdited() {
+    var section = document.getElementById('settings-stripe');
+    if (!section) return false;
+    if (section.contains(document.activeElement)) return true;
+    var inputs = section.querySelectorAll('#stripe-settings-form input');
+    for (var i = 0; i < inputs.length; i++) { if (inputs[i].value) return true; }
+    return false;
+  }
+  function refreshStripeSettingsSection() {
+    // Nunca substitui a seção enquanto o usuário está digitando ou com o
+    // foco nela — evita apagar em silêncio o que ele acabou de preencher
+    // quando a resposta do servidor chega depois de ele já ter começado.
+    if (state.route === 'configuracoes' && $('#settings-stripe') && !stripeFormBeingEdited()) {
+      $('#settings-stripe').outerHTML = renderStripeSettingsSection();
+    }
+  }
   function loadStripeSettings() {
     if (!apiEnabled() || !apiToken || stripeSettings.loading) return Promise.resolve();
     stripeSettings.loading = true;
@@ -7002,11 +7018,11 @@
       stripeSettings.publishableKey = payload.publishableKey || '';
       stripeSettings.secretKeyConfigured = !!payload.secretKeyConfigured;
       stripeSettings.webhookSecretConfigured = !!payload.webhookSecretConfigured;
-      if (state.route === 'configuracoes' && $('#settings-stripe')) $('#settings-stripe').outerHTML = renderStripeSettingsSection();
+      refreshStripeSettingsSection();
     }).catch(function (error) {
       stripeSettings.loaded = true;
       stripeSettings.denied = /não autorizado|exclusiva do perfil/i.test(error.message || '');
-      if (state.route === 'configuracoes' && $('#settings-stripe')) $('#settings-stripe').outerHTML = renderStripeSettingsSection();
+      refreshStripeSettingsSection();
     }).finally(function () { stripeSettings.loading = false; });
   }
   function saveStripeSettings() {
