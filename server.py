@@ -436,6 +436,10 @@ def refresh_expired_subscriptions(database: sqlite3.Connection) -> int:
         WHERE role != 'Administrador' AND status = 'Aguardando ativação'
           AND monitoring_start IS NOT NULL AND monitoring_start <= ?
           AND (monitoring_end IS NULL OR monitoring_end >= ?)
+          AND EXISTS (
+            SELECT 1 FROM subscriptions s
+            WHERE s.empresa_id = users.company_id AND s.status = 'ATIVA'
+          )
         """,
         (local_now(), today, today),
     )
