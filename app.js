@@ -8124,16 +8124,12 @@
     submit.innerHTML = 'Criando conta... <span>◌</span>';
     try {
       var registration = await apiRequest('/api/register', { method: 'POST', body: JSON.stringify(data) });
-      var result = await loginUser(data.email, data.password);
-      apiToken = result.token || '';
-      if (apiToken) sessionStorage.setItem('simplescalc.apiToken', apiToken);
-      form.reset(); setSignupDocumentType('CNPJ'); updateSignupActivities(); renderSignupPlans();
-      await showApp(result.user, true);
-      audit('Conta criada', data.email + ' · ' + (registration.user && registration.user.planName || 'Plano contratado'));
-      toast('Conta criada com sucesso', 'Seu período de avaliação foi ativado e você já está dentro da plataforma.');
+      var checkoutUrl = registration.user && registration.user.checkoutUrl;
+      if (!checkoutUrl) throw new Error('Conta criada, mas não foi possível iniciar o pagamento. Entre em contato com o suporte.');
+      toast('Conta criada com sucesso', 'Redirecionando para o pagamento...');
+      window.location.href = checkoutUrl;
     } catch (error) {
       toast('Não foi possível criar a conta', error.message || 'Revise os dados informados.', 'error');
-    } finally {
       submit.disabled = false;
       submit.innerHTML = originalLabel;
     }
