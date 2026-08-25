@@ -4463,6 +4463,40 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        if path == "/api/admin/stripe/resolve-price":
+            # Ajuda quem só tem o Product ID (prod_...) do Stripe em mãos a
+            # encontrar o Price ID (price_...) de fato exigido pelo Checkout —
+            # um Produto pode ter uma ou mais Prices associadas.
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            product_id = parse_qs(parsed_url.query).get("productId", [""])[0].strip()
+            if not product_id.startswith("prod_"):
+                self.send_json({"error": "Informe um Product ID válido do Stripe (começa com 'prod_')."}, HTTPStatus.BAD_REQUEST)
+                return
+            secret_key = stripe_effective_keys()["secret_key"]
+            if not secret_key:
+                self.send_json({"error": "Cadastre a chave secreta do Stripe em Configurações antes de usar esta busca."}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                prices = stripe.Price.list(product=product_id, active=True, limit=10, api_key=secret_key)
+            except stripe.error.StripeError as error:
+                self.send_json({"error": error.user_message or str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({
+                "prices": [
+                    {
+                        "id": price["id"],
+                        "interval": (price.get("recurring") or {}).get("interval"),
+                        "unitAmount": price.get("unit_amount"),
+                        "currency": price.get("currency"),
+                        "nickname": price.get("nickname") or "",
+                    }
+                    for price in prices.get("data", [])
+                ],
+            })
+            return
+
         if path == "/api/subscriptions":
             user = self.require_user()
             if user is None:
