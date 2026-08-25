@@ -612,11 +612,18 @@
     request.headers = Object.assign({ 'Content-Type': 'application/json' }, request.headers || {});
     if (apiToken) request.headers.Authorization = 'Bearer ' + apiToken;
     return fetch(path, request).catch(function () {
-      if (String(path || '').indexOf('/api/sefaz/') === 0) throw new Error('Não foi possível conectar ao servidor seguro. Confirme que iniciar-site.cmd está aberto e acesse http://127.0.0.1:4173.');
-      throw new Error('Falha de comunicação com o servidor.');
+      var networkError = String(path || '').indexOf('/api/sefaz/') === 0
+        ? new Error('Não foi possível conectar ao servidor seguro. Confirme que iniciar-site.cmd está aberto e acesse http://127.0.0.1:4173.')
+        : new Error('Falha de comunicação com o servidor.');
+      networkError.isNetworkError = true;
+      throw networkError;
     }).then(function (response) {
       return response.json().catch(function () { return {}; }).then(function (payload) {
-        if (!response.ok) throw new Error(payload.error || 'Falha de comunicação com o servidor.');
+        if (!response.ok) {
+          var httpError = new Error(payload.error || 'Falha de comunicação com o servidor.');
+          httpError.status = response.status;
+          throw httpError;
+        }
         return payload;
       });
     });
@@ -630,10 +637,18 @@
       });
     }, 350);
   }
+  function hydrateFromServerOnce() {
+    return apiRequest('/api/state');
+  }
   function hydrateFromServer() {
     if (!apiEnabled() || !apiToken) return Promise.resolve();
     hydratingFromServer = true;
-    return apiRequest('/api/state').then(function (payload) {
+    return hydrateFromServerOnce().catch(function (error) {
+      if (error && error.isNetworkError) {
+        return new Promise(function (resolve) { window.setTimeout(resolve, 1500); }).then(hydrateFromServerOnce);
+      }
+      throw error;
+    }).then(function (payload) {
       if (payload.data && Array.isArray(payload.data.clients) && payload.data.clients.length) {
         state.clients = payload.data.clients;
         state.audit = Array.isArray(payload.data.audit) ? payload.data.audit : state.audit;
@@ -657,7 +672,12 @@
         scheduleServerSync();
         return;
       }
-    }).catch(function () {
+    }).catch(function (error) {
+      if (error && error.status === 401) {
+        toast('Sessão expirada', 'Faça login novamente para continuar.', 'warning');
+        logout();
+        return;
+      }
       toast('Modo local ativado', 'O servidor não respondeu; a base persistente do navegador continua disponível.', 'warning');
     }).finally(function () { hydratingFromServer = false; });
   }
