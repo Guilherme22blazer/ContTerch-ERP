@@ -523,6 +523,82 @@ def get_fernet() -> "Fernet":
         raise RuntimeError("GESTAOFISCAL_MASTER_KEY inválida. Informe uma chave Fernet de 32 bytes.") from error
 
 
+def get_platform_stripe_settings() -> dict:
+    """Lê a configuração do Stripe cadastrada pelo SUPER_ADMIN na aba
+    Configurações (tabela platform_settings, linha única id=1). As chaves
+    aqui têm prioridade sobre as variáveis de ambiente STRIPE_* — ver
+    stripe_effective_keys()."""
+    with connect() as database:
+        row = database.execute(
+            "SELECT stripe_publishable_key, stripe_secret_key_encrypted, stripe_webhook_secret_encrypted "
+            "FROM platform_settings WHERE id = 1"
+        ).fetchone()
+    if row is None:
+        return {"publishable_key": "", "secret_key": "", "webhook_secret": ""}
+    fernet = get_fernet()
+
+    def decrypt(blob) -> str:
+        if not blob:
+            return ""
+        try:
+            return fernet.decrypt(bytes(blob)).decode("utf-8")
+        except InvalidToken:
+            return ""
+
+    return {
+        "publishable_key": row["stripe_publishable_key"] or "",
+        "secret_key": decrypt(row["stripe_secret_key_encrypted"]),
+        "webhook_secret": decrypt(row["stripe_webhook_secret_encrypted"]),
+    }
+
+
+def save_platform_stripe_settings(
+    *, publishable_key: str, secret_key: str | None, webhook_secret: str | None, updated_by: str,
+) -> None:
+    """Salva a configuração do Stripe. Chave secreta/segredo do webhook em
+    branco (None ou "") preservam o valor já cifrado no banco — permite
+    atualizar somente a chave publicável sem reenviar a chave secreta."""
+    fernet = get_fernet()
+    with connect() as database:
+        existing = database.execute(
+            "SELECT stripe_secret_key_encrypted, stripe_webhook_secret_encrypted FROM platform_settings WHERE id = 1"
+        ).fetchone()
+        secret_encrypted = (
+            fernet.encrypt(secret_key.encode("utf-8")) if secret_key
+            else (existing["stripe_secret_key_encrypted"] if existing else None)
+        )
+        webhook_encrypted = (
+            fernet.encrypt(webhook_secret.encode("utf-8")) if webhook_secret
+            else (existing["stripe_webhook_secret_encrypted"] if existing else None)
+        )
+        database.execute(
+            """
+            INSERT INTO platform_settings(id, stripe_publishable_key, stripe_secret_key_encrypted, stripe_webhook_secret_encrypted, updated_by, updated_at)
+            VALUES (1, ?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET
+              stripe_publishable_key = EXCLUDED.stripe_publishable_key,
+              stripe_secret_key_encrypted = EXCLUDED.stripe_secret_key_encrypted,
+              stripe_webhook_secret_encrypted = EXCLUDED.stripe_webhook_secret_encrypted,
+              updated_by = EXCLUDED.updated_by,
+              updated_at = EXCLUDED.updated_at
+            """,
+            (publishable_key or None, secret_encrypted, webhook_encrypted, updated_by, local_now()),
+        )
+
+
+def stripe_effective_keys() -> dict:
+    """Chaves do Stripe realmente em uso: o valor configurado pelo
+    SUPER_ADMIN na aba Configurações tem prioridade; a variável de
+    ambiente STRIPE_* é usada apenas como reserva (compatibilidade com
+    quem já configurava via Railway)."""
+    stored = get_platform_stripe_settings()
+    return {
+        "secret_key": stored["secret_key"] or STRIPE_SECRET_KEY,
+        "publishable_key": stored["publishable_key"] or STRIPE_PUBLISHABLE_KEY,
+        "webhook_secret": stored["webhook_secret"] or STRIPE_WEBHOOK_SECRET,
+    }
+
+
 def decode_base64_field(value: str, limit: int, label: str) -> bytes:
     try:
         data = base64.b64decode(str(value or ""), validate=True)
@@ -2699,10 +2775,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
     ) -> str:
         """Cria a Stripe Checkout Session (mode=subscription) para o plano
         escolhido e devolve a URL para onde o frontend deve redirecionar."""
-        if not STRIPE_SECRET_KEY:
+        secret_key = stripe_effective_keys()["secret_key"]
+        if not secret_key:
             raise ValueError(
-                "Pagamentos ainda não configurados. Defina STRIPE_SECRET_KEY, "
-                "STRIPE_PUBLISHABLE_KEY e STRIPE_WEBHOOK_SECRET no servidor."
+                "Pagamentos ainda não configurados. Cadastre a chave secreta do Stripe "
+                "em Configurações → Pagamentos (Stripe), ou defina STRIPE_SECRET_KEY no servidor."
             )
         price_column = "stripe_price_id_yearly" if billing_cycle == "Anual" else "stripe_price_id_monthly"
         price_id = plan[price_column]
@@ -2729,6 +2806,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 success_url=f"{APP_URL}/pagamento/sucesso?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=f"{APP_URL}/pagamento/cancelado",
                 metadata=checkout_metadata,
+                api_key=secret_key,
             )
         except stripe.error.StripeError as error:
             raise ValueError(f"Não foi possível iniciar o pagamento: {error.user_message or str(error)}") from error
@@ -2755,8 +2833,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
 
     def handle_stripe_webhook(self) -> None:
         """POST /api/stripe/webhook — recebe eventos oficiais do Stripe.
-        A assinatura (Stripe-Signature) é sempre validada com
-        STRIPE_WEBHOOK_SECRET antes de qualquer processamento."""
+        A assinatura (Stripe-Signature) é sempre validada com o segredo do
+        webhook (configurado via Configurações ou STRIPE_WEBHOOK_SECRET)
+        antes de qualquer processamento."""
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > 2_000_000:
@@ -2765,12 +2844,13 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         except ValueError as error:
             self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
-        if not STRIPE_WEBHOOK_SECRET:
-            self.send_json({"error": "STRIPE_WEBHOOK_SECRET não configurado."}, HTTPStatus.SERVICE_UNAVAILABLE)
+        keys = stripe_effective_keys()
+        if not keys["webhook_secret"]:
+            self.send_json({"error": "Segredo do webhook do Stripe não configurado."}, HTTPStatus.SERVICE_UNAVAILABLE)
             return
         signature = self.headers.get("Stripe-Signature", "")
         try:
-            event = stripe.Webhook.construct_event(raw_body, signature, STRIPE_WEBHOOK_SECRET)
+            event = stripe.Webhook.construct_event(raw_body, signature, keys["webhook_secret"])
         except (stripe.error.SignatureVerificationError, ValueError):
             self.send_json({"error": "Assinatura do webhook inválida."}, HTTPStatus.BAD_REQUEST)
             return
@@ -2785,7 +2865,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     return
                 obj = event["data"]["object"]
                 if event["type"] == "checkout.session.completed":
-                    self._stripe_checkout_completed(database, obj)
+                    self._stripe_checkout_completed(database, obj, keys["secret_key"])
                 elif event["type"] == "invoice.paid":
                     self._stripe_invoice_paid(database, obj)
                 elif event["type"] == "invoice.payment_failed":
@@ -2799,7 +2879,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         except Exception as error:  # nunca deixar o Stripe reenviar por bug interno silencioso
             self.send_json({"error": f"Erro ao processar webhook: {error}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _stripe_checkout_completed(self, database, session: dict) -> None:
+    def _stripe_checkout_completed(self, database, session: dict, secret_key: str) -> None:
         metadata = session.get("metadata") or {}
         subscription_id = metadata.get("subscriptionId") or session.get("client_reference_id")
         company_id = metadata.get("companyId")
@@ -2810,7 +2890,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         current_period_start = current_period_end = None
         stripe_price_id = None
         if stripe_subscription_id:
-            stripe_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
+            stripe_subscription = stripe.Subscription.retrieve(stripe_subscription_id, api_key=secret_key)
             current_period_start = self._stripe_timestamp_to_iso(stripe_subscription.get("current_period_start"))
             current_period_end = self._stripe_timestamp_to_iso(stripe_subscription.get("current_period_end"))
             items = stripe_subscription.get("items", {}).get("data", [])
@@ -4367,6 +4447,22 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             self.send_json({"companies": [dict(row) for row in rows]})
             return
 
+        if path == "/api/settings/stripe":
+            user = self.require_role("SUPER_ADMIN")
+            if user is None:
+                return
+            stored = get_platform_stripe_settings()
+            self.send_json({
+                "publishableKey": stored["publishable_key"],
+                "secretKeyConfigured": bool(stored["secret_key"]) or bool(STRIPE_SECRET_KEY),
+                "webhookSecretConfigured": bool(stored["webhook_secret"]) or bool(STRIPE_WEBHOOK_SECRET),
+                "usingEnvFallback": {
+                    "secretKey": not stored["secret_key"] and bool(STRIPE_SECRET_KEY),
+                    "webhookSecret": not stored["webhook_secret"] and bool(STRIPE_WEBHOOK_SECRET),
+                },
+            })
+            return
+
         if path == "/api/subscriptions":
             user = self.require_user()
             if user is None:
@@ -5061,7 +5157,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             if user is None:
                 return
             try:
-                if not STRIPE_SECRET_KEY:
+                secret_key = stripe_effective_keys()["secret_key"]
+                if not secret_key:
                     raise ValueError("Pagamentos ainda não configurados.")
                 with connect() as database:
                     subscription = database.execute(
@@ -5073,6 +5170,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     raise ValueError("Nenhum cliente Stripe encontrado para esta conta.")
                 portal_session = stripe.billing_portal.Session.create(
                     customer=subscription["stripe_customer_id"], return_url=f"{APP_URL}/#minha-assinatura",
+                    api_key=secret_key,
                 )
                 self.send_json({"ok": True, "portalUrl": portal_session.url})
             except (ValueError, stripe.error.StripeError) as error:
@@ -5675,6 +5773,35 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     write_access_audit(database, administrator["email"], target["email"], "Permissões individuais atualizadas", "", exceptions, self.client_ip())
                 self.audit(administrator["email"], "user_permissions_updated", target["email"])
                 self.send_json({"ok": True})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/settings/stripe":
+            administrator = self.require_role("SUPER_ADMIN")
+            if administrator is None:
+                return
+            try:
+                payload = self.read_json()
+                publishable_key = str(payload.get("publishableKey", "")).strip()
+                secret_key = str(payload.get("secretKey", "") or "").strip()
+                webhook_secret = str(payload.get("webhookSecret", "") or "").strip()
+                if secret_key and not secret_key.startswith(("sk_", "rk_")):
+                    raise ValueError("Chave secreta do Stripe inválida (deve começar com 'sk_' ou 'rk_').")
+                if publishable_key and not publishable_key.startswith("pk_"):
+                    raise ValueError("Chave publicável do Stripe inválida (deve começar com 'pk_').")
+                save_platform_stripe_settings(
+                    publishable_key=publishable_key, secret_key=secret_key or None,
+                    webhook_secret=webhook_secret or None, updated_by=administrator["email"],
+                )
+                self.audit(administrator["email"], "stripe_settings_updated", "")
+                stored = get_platform_stripe_settings()
+                self.send_json({
+                    "ok": True,
+                    "publishableKey": stored["publishable_key"],
+                    "secretKeyConfigured": bool(stored["secret_key"]) or bool(STRIPE_SECRET_KEY),
+                    "webhookSecretConfigured": bool(stored["webhook_secret"]) or bool(STRIPE_WEBHOOK_SECRET),
+                })
             except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return

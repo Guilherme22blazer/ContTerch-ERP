@@ -17,6 +17,7 @@
   var apiToken = sessionStorage.getItem('simplescalc.apiToken') || '';
   var syncTimer = null;
   var hydratingFromServer = false;
+  var stripeSettings = { loaded: false, loading: false, denied: false, publishableKey: '', secretKeyConfigured: false, webhookSecretConfigured: false };
   var signupPlans = [
     { id: 'erp-start', name: 'ERP Start', monthlyValue: 197, annualValue: 1970, trialDays: 7 },
     { id: 'erp-profissional', name: 'ERP Profissional ⭐', monthlyValue: 397, annualValue: 3970, trialDays: 14 },
@@ -3748,6 +3749,7 @@
     bindViewControls();
     if (state.route === 'sefaz-portal') loadSefazData();
     if (state.route === 'captador-notas-fiscais') { loadCaptadorCompanies(); if (captadorSection() === 'documentos') loadCaptadorDocuments(); }
+    if (state.route === 'configuracoes') loadStripeSettings();
     if (state.route === 'gestao-usuarios' && window.UserAccessManager) window.UserAccessManager.mount(main, { user: currentUser, syncUsers: function (users) { state.users = (users || []).map(function (user) { return Object.assign({}, user, { active: user.status !== 'Inativo' }); }); storageSet(KEYS.users, state.users); } });
   }
 
@@ -6951,12 +6953,72 @@
     route();
   }
 
+  function renderStripeSettingsSection() {
+    if (stripeSettings.denied) {
+      return '<section class="card" id="settings-stripe"><header class="card-header"><h2>💳 Pagamentos (Stripe)</h2></header><div class="card-body"><p class="subtle">Esta área é exclusiva do administrador da plataforma (SUPER_ADMIN).</p></div></section>';
+    }
+    var secretStatus = stripeSettings.secretKeyConfigured
+      ? '<span class="tag tag--success">Chave secreta configurada</span>'
+      : '<span class="tag tag--warning">Chave secreta não configurada</span>';
+    var webhookStatus = stripeSettings.webhookSecretConfigured
+      ? '<span class="tag tag--success">Segredo do webhook configurado</span>'
+      : '<span class="tag tag--warning">Segredo do webhook não configurado</span>';
+    var webhookUrl = location.origin + '/api/stripe/webhook';
+    return '<section class="card" id="settings-stripe"><header class="card-header"><div><h2>💳 Pagamentos (Stripe)</h2><p class="subtle" style="margin:3px 0 0">Configure as chaves da sua conta Stripe para liberar o checkout de assinaturas pagas, sem depender de variáveis de ambiente.</p></div>' + secretStatus + ' ' + webhookStatus + '</header><div class="card-body">' +
+      '<div class="info-banner info-banner--blue" style="margin-bottom:14px"><span>i</span><div><strong>Onde encontrar.</strong> No painel do Stripe, acesse Desenvolvedores → Chaves de API para a chave publicável e a chave secreta. Para o segredo do webhook, cadastre um endpoint apontando para <code>' + esc(webhookUrl) + '</code> em Desenvolvedores → Webhooks e copie o "Signing secret" gerado.</div></div>' +
+      '<form id="stripe-settings-form" class="form-grid">' +
+      '<label class="field field--full"><span>Chave publicável (pk_...)</span><input name="publishableKey" placeholder="pk_live_..." value="' + esc(stripeSettings.publishableKey || '') + '"></label>' +
+      '<label class="field field--full"><span>Chave secreta (sk_...)</span><input name="secretKey" type="password" autocomplete="off" placeholder="' + (stripeSettings.secretKeyConfigured ? 'Já configurada — deixe em branco para manter' : 'sk_live_...') + '"></label>' +
+      '<label class="field field--full"><span>Segredo do webhook (whsec_...)</span><input name="webhookSecret" type="password" autocomplete="off" placeholder="' + (stripeSettings.webhookSecretConfigured ? 'Já configurado — deixe em branco para manter' : 'whsec_...') + '"></label>' +
+      '<div class="field field--full"><button class="primary-button" type="button" data-action="save-stripe-settings">▣ Salvar chaves do Stripe</button></div>' +
+      '</form></div></section>';
+  }
+  function loadStripeSettings() {
+    if (!apiEnabled() || !apiToken || stripeSettings.loading) return Promise.resolve();
+    stripeSettings.loading = true;
+    return apiRequest('/api/settings/stripe').then(function (payload) {
+      stripeSettings.loaded = true;
+      stripeSettings.denied = false;
+      stripeSettings.publishableKey = payload.publishableKey || '';
+      stripeSettings.secretKeyConfigured = !!payload.secretKeyConfigured;
+      stripeSettings.webhookSecretConfigured = !!payload.webhookSecretConfigured;
+      if (state.route === 'configuracoes' && $('#settings-stripe')) $('#settings-stripe').outerHTML = renderStripeSettingsSection();
+    }).catch(function (error) {
+      stripeSettings.loaded = true;
+      stripeSettings.denied = /não autorizado|exclusiva do perfil/i.test(error.message || '');
+      if (state.route === 'configuracoes' && $('#settings-stripe')) $('#settings-stripe').outerHTML = renderStripeSettingsSection();
+    }).finally(function () { stripeSettings.loading = false; });
+  }
+  function saveStripeSettings() {
+    var form = $('#stripe-settings-form');
+    if (!form) return;
+    var data = Object.fromEntries(new FormData(form).entries());
+    var button = form.querySelector('[data-action="save-stripe-settings"]');
+    var originalLabel = button ? button.innerHTML : '';
+    if (button) { button.disabled = true; button.innerHTML = 'Salvando... <span>◌</span>'; }
+    apiRequest('/api/settings/stripe', {
+      method: 'PUT',
+      body: JSON.stringify({ publishableKey: data.publishableKey, secretKey: data.secretKey, webhookSecret: data.webhookSecret })
+    }).then(function (payload) {
+      stripeSettings.publishableKey = payload.publishableKey || '';
+      stripeSettings.secretKeyConfigured = !!payload.secretKeyConfigured;
+      stripeSettings.webhookSecretConfigured = !!payload.webhookSecretConfigured;
+      if ($('#settings-stripe')) $('#settings-stripe').outerHTML = renderStripeSettingsSection();
+      audit('Configurações do Stripe atualizadas', 'Chaves de pagamento salvas');
+      toast('Chaves do Stripe salvas', 'O checkout de pagamento já pode usar as novas chaves.');
+    }).catch(function (error) {
+      toast('Não foi possível salvar', error.message || 'Confira as chaves informadas.', 'error');
+      if (button) { button.disabled = false; button.innerHTML = originalLabel; }
+    });
+  }
+
   function renderSettings() {
     return [
       pageHeading('Configurações', 'Administre preferências, segurança, conteúdo legal e ciclo de vida dos dados.', '<button class="primary-button" data-action="save-settings">▣ Salvar configurações</button>'),
-      '<div class="settings-grid"><aside class="card setting-nav"><button class="active" data-action="scroll-settings" data-target="settings-general">⚙ Geral</button><button data-action="scroll-settings" data-target="settings-users">♟ Usuários e perfis</button><button data-action="scroll-settings" data-target="settings-legal">§ Conteúdo legal</button><button data-action="scroll-settings" data-target="settings-backup">▣ Backup e restauração</button><button data-action="scroll-settings" data-target="settings-privacy">🔒 Privacidade e LGPD</button></aside><div class="stack">',
+      '<div class="settings-grid"><aside class="card setting-nav"><button class="active" data-action="scroll-settings" data-target="settings-general">⚙ Geral</button><button data-action="scroll-settings" data-target="settings-users">♟ Usuários e perfis</button><button data-action="scroll-settings" data-target="settings-stripe">💳 Pagamentos (Stripe)</button><button data-action="scroll-settings" data-target="settings-legal">§ Conteúdo legal</button><button data-action="scroll-settings" data-target="settings-backup">▣ Backup e restauração</button><button data-action="scroll-settings" data-target="settings-privacy">🔒 Privacidade e LGPD</button></aside><div class="stack">',
         '<section class="card" id="settings-general"><header class="card-header"><h2>⚙ Preferências gerais</h2></header><div class="card-body form-grid"><label class="field"><span>Nome da organização</span><input id="setting-company" value="' + esc(state.settings.company || '') + '"></label><label class="field"><span>Bloqueio por inatividade (minutos)</span><input id="setting-inactivity" type="number" min="5" value="' + esc(state.settings.inactivity || 30) + '"></label><label class="field"><span>Base legal conferida em</span><input id="setting-legal-date" value="' + esc(state.settings.legalBaseChecked || TODAY) + '"></label><label class="field"><span>Perfil atual</span><input value="' + esc(currentUser.role) + '" disabled></label></div></section>',
         renderSubscriptionManager(),
+        renderStripeSettingsSection(),
         '<section class="card" id="settings-legal"><header class="card-header"><h2>§ Atualização manual do conteúdo legal</h2><span class="tag tag--info">Painel administrativo</span></header><div class="card-body"><p class="subtle" style="margin-top:0">Cadastre uma norma ou orientação publicada após a última conferência. O item aparecerá na biblioteca e no histórico.</p><form id="legal-form" class="form-grid"><label class="field"><span>Título *</span><input name="title" required placeholder="Ex.: Resolução CGSN nº ..."></label><label class="field"><span>Número da norma *</span><input name="number" required></label><label class="field"><span>Área</span><select name="area"><option>Simples Nacional</option><option>MEI</option><option>IBS e CBS</option><option>Obrigações Acessórias</option></select></label><label class="field"><span>Órgão oficial</span><input name="issuer" placeholder="Receita Federal"></label><label class="field"><span>Data de publicação</span><input name="publication" placeholder="dd/mm/aaaa"></label><label class="field"><span>Última atualização</span><input name="updated" placeholder="dd/mm/aaaa"></label><label class="field field--full"><span>Link oficial *</span><input name="url" type="url" required placeholder="https://www.gov.br/..."></label><label class="field field--full"><span>Resumo *</span><textarea name="summary" required></textarea></label><div class="field field--full"><button class="primary-button" type="submit">＋ Adicionar atualização</button></div></form></div></section>',
         '<section class="card" id="settings-backup"><header class="card-header"><h2>▣ Portabilidade e proteção</h2></header><div class="card-body"><div class="page-actions" style="justify-content:flex-start"><button class="secondary-button" data-action="backup">▣ Gerar backup completo</button><button class="secondary-button" data-action="restore-backup">↥ Restaurar backup</button><button class="secondary-button" data-action="export-all">↧ Exportar clientes</button></div><div class="info-banner info-banner--blue" id="settings-privacy" style="margin:14px 0 0"><span>🔒</span><div><strong>LGPD.</strong> Defina base legal, finalidade, controle de acesso, retenção, resposta a incidentes e direitos do titular antes da publicação. O protótipo não transmite dados e mantém tudo no armazenamento local.</div></div></div></section>',
       '</div></div>'
@@ -7513,6 +7575,7 @@
     else if (action === 'export-audit') { downloadFile('erp-gestao-fiscal-auditoria.json', JSON.stringify({ schema: 'simplescalc.audit.v1', exportedAt: nowISO(), audit: state.audit }, null, 2)); toast('Auditoria exportada', 'O histórico de ações foi salvo em JSON.'); }
     else if (action === 'export-parameters') { downloadFile('erp-gestao-fiscal-parametros-2026.json', JSON.stringify({ schema: 'simplescalc.parameters.2026', checkedAt: TODAY, sources: OFFICIAL_SOURCES }, null, 2)); toast('Parâmetros exportados', 'Fontes e metadados foram incluídos no JSON.'); }
     else if (action === 'save-settings') saveSettings();
+    else if (action === 'save-stripe-settings') saveStripeSettings();
     else if (action === 'icms-consult-benefits') {
       updateTaxBenefitsPanel();
       storageSet(KEYS.settings, state.settings);
