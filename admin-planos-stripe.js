@@ -17,9 +17,9 @@ async function resolvePriceFromProduct(productId, wantedInterval) {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Falha ao consultar o Stripe.');
-  const prices = data.prices || [];
-  const match = prices.find((p) => p.interval === wantedInterval) || prices[0];
-  if (!match) throw new Error('Nenhuma price ativa encontrada para este Product ID.');
+  const recurringPrices = (data.prices || []).filter((p) => p.interval);
+  const match = recurringPrices.find((p) => p.interval === wantedInterval) || recurringPrices[0];
+  if (!match) throw new Error('Este Product ID não tem nenhuma price recorrente (assinatura) ativa no Stripe — ele só tem price(s) avulsa(s) (one-time). Crie uma price do tipo "Recorrente" para este produto no painel do Stripe.');
   return match.id;
 }
 

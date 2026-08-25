@@ -3222,11 +3222,42 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             write_access_audit(database, administrator["email"], email, action, previous, {"name": name, "role": role, "status": status, "planId": plan_id, "modules": modules}, self.client_ip())
         return user_id
 
+    def validate_recurring_stripe_price(self, price_id: str | None, expected_interval: str, label: str) -> None:
+        """Impede salvar um Price ID que não serve para o Checkout em modo
+        assinatura — a causa mais comum do erro "You must provide at least
+        one recurring price in `subscription` mode" é cadastrar aqui uma
+        Price do tipo avulso (one-time) criada por engano no Stripe."""
+        if not price_id:
+            return
+        secret_key = stripe_effective_keys()["secret_key"]
+        if not secret_key:
+            return
+        try:
+            price = stripe.Price.retrieve(price_id, api_key=secret_key)
+        except stripe.error.StripeError as error:
+            raise ValueError(f"Price ID {label} inválido: {error.user_message or str(error)}") from error
+        recurring = price.get("recurring")
+        if not recurring:
+            raise ValueError(
+                f"O Price ID {label} ({price_id}) é uma cobrança avulsa (one-time) no Stripe, mas o sistema usa "
+                f"assinaturas recorrentes. No painel do Stripe, crie uma Price do tipo 'Recorrente' "
+                f"({'Mensal' if expected_interval == 'month' else 'Anual'}) para este produto e use o Price ID dela aqui."
+            )
+        if recurring.get("interval") != expected_interval:
+            raise ValueError(
+                f"O Price ID {label} ({price_id}) está configurado como recorrência "
+                f"'{recurring.get('interval')}', mas aqui deveria ser '{expected_interval}'."
+            )
+
     def save_access_plan(self, payload: dict, administrator: sqlite3.Row, plan_id: str = "") -> str:
         name = str(payload.get("name", "")).strip()
         if not name:
             raise ValueError("Informe o nome do plano.")
         modules = normalized_modules(payload.get("modules", []))
+        stripe_price_id_monthly = str(payload.get("stripePriceIdMonthly", "")).strip() or None
+        stripe_price_id_yearly = str(payload.get("stripePriceIdYearly", "")).strip() or None
+        self.validate_recurring_stripe_price(stripe_price_id_monthly, "month", "mensal")
+        self.validate_recurring_stripe_price(stripe_price_id_yearly, "year", "anual")
         now = local_now()
         with connect() as database:
             if plan_id:
@@ -3240,8 +3271,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     plan_id = uuid.uuid4().hex
             stripe_fields = (
                 str(payload.get("stripeProductId", "")).strip() or None,
-                str(payload.get("stripePriceIdMonthly", "")).strip() or None,
-                str(payload.get("stripePriceIdYearly", "")).strip() or None,
+                stripe_price_id_monthly,
+                stripe_price_id_yearly,
             )
             values = (
                 name, str(payload.get("description", "")).strip(), float(payload.get("monthlyValue", 0) or 0),
