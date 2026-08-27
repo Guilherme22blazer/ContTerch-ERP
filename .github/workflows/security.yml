@@ -1,0 +1,52 @@
+name: Security checks
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pip-audit
+
+      - name: Syntax check (server.py / db.py)
+        run: |
+          python -m py_compile server.py db.py
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: pip-audit -r requirements.txt
+
+      - name: Secret scan (tracked files, current revision)
+        run: |
+          set -euo pipefail
+          PATTERN='(sk_live_[A-Za-z0-9]{10,}|sk_test_[A-Za-z0-9]{20,}|rk_live_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{10,}|AKIA[0-9A-Z]{12,}|ghp_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{15,}|-----BEGIN[ A-Z]*PRIVATE KEY-----|AIza[0-9A-Za-z_-]{30,})'
+          if git grep -InE "$PATTERN" -- . ':(exclude)icp-brasil-roots.pem' ':(exclude).github/workflows/security.yml'; then
+            echo "::error::Possível segredo encontrado no repositório — veja as linhas acima. Corrija antes de prosseguir."
+            exit 1
+          fi
+          echo "Nenhum padrão de segredo conhecido encontrado."
+
+      - name: Block committed .env
+        run: |
+          if git ls-files | grep -E '^\.env$|^\.env\.[^e]'; then
+            echo "::error::Um arquivo .env real está versionado no repositório."
+            exit 1
+          fi
+          echo ".env não está versionado (correto)."

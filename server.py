@@ -89,8 +89,14 @@ if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 # Assinaturas com status nestes valores não têm acesso liberado ao ERP.
 BLOCKED_SUBSCRIPTION_STATUSES = {"CANCELADA", "BLOQUEADA", "VENCIDA"}
+VALID_COMPANY_STATUSES = {"ATIVA", "AGUARDANDO_PAGAMENTO", "CANCELADA", "BLOQUEADA", "VENCIDA"}
 MASTER_KEY_PATH = DATA_DIR / ".gestao-fiscal.key"
 SESSION_CERT_PASSWORDS: dict[tuple[str, str], str] = {}
+# Rate limit em memória por IP (bucket, ip) -> lista de timestamps recentes.
+# Suficiente para este processo único; reinicia a cada deploy, o que é
+# aceitável para o objetivo (conter automação/força bruta em rajada).
+RATE_LIMIT_BUCKETS: dict[tuple[str, str], list[float]] = {}
+RATE_LIMIT_LOCK = threading.Lock()
 CNPJ_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
 CNPJ_PROFILE_CACHE_SECONDS = 15 * 60
 SERPRO_TOKEN_CACHE: dict[str, object] = {"access_token": "", "expires_at": 0.0}
@@ -2269,6 +2275,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 "frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
             )
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if PRODUCTION_MODE:
+            # HSTS só é honrado pelo navegador em respostas realmente
+            # entregues por HTTPS — inofensivo enviá-lo sempre em produção,
+            # mesmo atrás de um proxy/plataforma que já termina TLS.
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         super().end_headers()
 
     def send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
@@ -2444,6 +2455,46 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
     def client_ip(self) -> str:
         forwarded = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
         return forwarded or (self.client_address[0] if self.client_address else "")
+
+    def enforce_rate_limit(self, bucket: str, limit: int, window_seconds: int) -> bool:
+        """Limite simples por IP (janela deslizante). Retorna True e já
+        registra a tentativa quando dentro do limite; retorna False (e não
+        registra) quando o limite foi excedido — quem chamar deve responder
+        429 nesse caso. Usado para conter força bruta/automação em rotas
+        públicas sensíveis (login, cadastro, reenvio de checkout)."""
+        key = (bucket, self.client_ip())
+        now = time.time()
+        cutoff = now - window_seconds
+        with RATE_LIMIT_LOCK:
+            timestamps = [t for t in RATE_LIMIT_BUCKETS.get(key, ()) if t >= cutoff]
+            if len(timestamps) >= limit:
+                RATE_LIMIT_BUCKETS[key] = timestamps
+                return False
+            timestamps.append(now)
+            RATE_LIMIT_BUCKETS[key] = timestamps
+            return True
+
+    def send_rate_limited(self) -> None:
+        self.send_json(
+            {"error": "Muitas tentativas em pouco tempo. Aguarde alguns instantes e tente novamente."},
+            HTTPStatus.TOO_MANY_REQUESTS,
+        )
+
+    def send_save_error(self, error: Exception) -> None:
+        """Resposta padrão ao salvar um registro: mensagens de ValueError já
+        são texto controlado, escrito por nós, e podem ir direto ao
+        cliente. Um erro de integridade do banco (ex.: violação de chave
+        única) nunca deve — o texto bruto do psycopg pode citar nomes
+        internos de tabela/coluna/constraint. O detalhe completo fica só
+        no log do servidor."""
+        if isinstance(error, db.IntegrityError):
+            print(f"[integrity-error] {error}")
+            self.send_json(
+                {"error": "Não foi possível salvar: verifique se os dados informados já não estão em uso."},
+                HTTPStatus.CONFLICT,
+            )
+            return
+        self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
     def client_device_browser(self) -> tuple[str, str]:
         """Extrai um resumo simples de dispositivo/navegador do User-Agent
@@ -2897,7 +2948,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             self.audit("stripe", f"webhook_{event['type']}", event["id"])
             self.send_json({"ok": True})
         except Exception as error:  # nunca deixar o Stripe reenviar por bug interno silencioso
-            self.send_json({"error": f"Erro ao processar webhook: {error}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            print(f"[stripe-webhook-error] {error!r}")
+            self.send_json({"error": "Erro ao processar webhook."}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _stripe_checkout_completed(self, database, session: dict, secret_key: str) -> None:
         metadata = session.get("metadata") or {}
@@ -5235,6 +5287,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/register":
+            if not self.enforce_rate_limit("register", limit=8, window_seconds=3600):
+                self.send_rate_limited()
+                return
             try:
                 registered_user = self.register_public_user(payload)
                 self.send_json(
@@ -5246,7 +5301,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     HTTPStatus.CREATED,
                 )
             except (ValueError, db.IntegrityError) as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.send_save_error(error)
             return
 
         if path == "/api/checkout/resume":
@@ -5254,6 +5309,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             # pagar, ou quer tentar de novo após um pagamento recusado.
             # Reautentica por e-mail/senha (sem emitir sessão) e gera uma
             # nova Checkout Session apenas se ainda não houver assinatura ativa.
+            if not self.enforce_rate_limit("checkout_resume", limit=10, window_seconds=900):
+                self.send_rate_limited()
+                return
             try:
                 email = str(payload.get("email", "")).strip().lower()
                 password = str(payload.get("password", ""))
@@ -5340,7 +5398,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 user_id = self.save_managed_user(payload, administrator)
                 self.send_json({"ok": True, "id": user_id, "data": self.admin_access_payload(administrator)}, HTTPStatus.CREATED)
             except (ValueError, db.IntegrityError) as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.send_save_error(error)
             return
         user_action = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})/action", path)
         if user_action:
@@ -5398,7 +5456,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 plan_id = self.save_access_plan(payload, administrator)
                 self.send_json({"ok": True, "id": plan_id, "data": self.admin_access_payload(administrator)}, HTTPStatus.CREATED)
             except (ValueError, db.IntegrityError) as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.send_save_error(error)
             return
 
         if path == "/api/companies":
@@ -5409,6 +5467,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 razao_social = str(payload.get("razaoSocial", "")).strip()
                 if not razao_social:
                     raise ValueError("Informe a razão social da empresa.")
+                company_status = str(payload.get("status", "ATIVA")).strip()
+                if company_status not in VALID_COMPANY_STATUSES:
+                    raise ValueError("Status de empresa inválido.")
                 company_id = uuid.uuid4().hex
                 now = local_now()
                 with connect() as database:
@@ -5420,7 +5481,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         (
                             company_id, razao_social, str(payload.get("nomeFantasia", "")).strip() or None,
                             str(payload.get("cnpj", "")).strip() or None, str(payload.get("email", "")).strip() or None,
-                            str(payload.get("telefone", "")).strip() or None, str(payload.get("status", "ATIVA")).strip(),
+                            str(payload.get("telefone", "")).strip() or None, company_status,
                             str(payload.get("planoId", "")).strip() or None, str(payload.get("dataInicio", "")).strip() or None,
                             str(payload.get("dataVencimento", "")).strip() or None, now, now,
                         ),
@@ -5432,7 +5493,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 self.audit(administrator["email"], "company_created", razao_social)
                 self.send_json({"ok": True, "id": company_id}, HTTPStatus.CREATED)
             except (ValueError, db.IntegrityError) as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.send_save_error(error)
             return
 
         if path == "/api/subscriptions":
@@ -5468,10 +5529,13 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 self.audit(administrator["email"], "subscription_created", subscription_id)
                 self.send_json({"ok": True, "id": subscription_id}, HTTPStatus.CREATED)
             except (ValueError, db.IntegrityError) as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.send_save_error(error)
             return
 
         if path == "/api/login":
+            if not self.enforce_rate_limit("login", limit=15, window_seconds=300):
+                self.send_rate_limited()
+                return
             login_identifier = str(payload.get("email", "")).strip().lower()
             password = str(payload.get("password", ""))
             with connect() as database:
@@ -5490,7 +5554,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 if not valid:
                     if user:
                         attempts = int(user["login_attempts"] or 0) + 1
-                        if attempts >= 5 and user["role"] != "Administrador":
+                        if attempts >= 5:
                             database.execute(
                                 "UPDATE users SET login_attempts = ?, status = 'Bloqueado', blocked_at = ?, updated_at = ? WHERE email = ?",
                                 (attempts, local_now(), local_now(), user["email"]),
@@ -5975,6 +6039,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     existing = database.execute("SELECT id FROM companies WHERE id = ?", (companies_match.group(1),)).fetchone()
                     if existing is None:
                         raise ValueError("Empresa não encontrada.")
+                    company_status = str(payload.get("status", "ATIVA")).strip()
+                    if company_status not in VALID_COMPANY_STATUSES:
+                        raise ValueError("Status de empresa inválido.")
                     database.execute(
                         """
                         UPDATE companies SET razao_social = ?, nome_fantasia = ?, cnpj = ?, email = ?, telefone = ?,
@@ -5984,7 +6051,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         (
                             str(payload.get("razaoSocial", "")).strip(), str(payload.get("nomeFantasia", "")).strip() or None,
                             str(payload.get("cnpj", "")).strip() or None, str(payload.get("email", "")).strip() or None,
-                            str(payload.get("telefone", "")).strip() or None, str(payload.get("status", "ATIVA")).strip(),
+                            str(payload.get("telefone", "")).strip() or None, company_status,
                             str(payload.get("planoId", "")).strip() or None, str(payload.get("dataInicio", "")).strip() or None,
                             str(payload.get("dataVencimento", "")).strip() or None, local_now(), companies_match.group(1),
                         ),
@@ -6029,7 +6096,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 user_id = self.save_managed_user(payload, administrator, managed_user_match.group(1))
                 self.send_json({"ok": True, "id": user_id, "data": self.admin_access_payload(administrator)})
             except (ValueError, db.IntegrityError) as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.send_save_error(error)
             return
         managed_plan_match = re.fullmatch(r"/api/admin/plans/([a-z0-9-]{1,64})", path)
         if managed_plan_match:
@@ -6041,7 +6108,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 plan_id = self.save_access_plan(payload, administrator, managed_plan_match.group(1))
                 self.send_json({"ok": True, "id": plan_id, "data": self.admin_access_payload(administrator)})
             except (ValueError, db.IntegrityError) as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.send_save_error(error)
             return
         if path == "/api/sefaz/permissions":
             user = self.require_user()
