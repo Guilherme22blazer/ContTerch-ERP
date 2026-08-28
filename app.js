@@ -1903,7 +1903,8 @@
       });
       Object.keys(blockLetters).sort().forEach(function (letter) {
         var openReg = letter + '001', closeReg = letter + '990';
-        var actualCount = lines.filter(function (l) { return l.reg.charAt(0) === letter && !(letter === '9' && l.reg === '9999'); }).length;
+        var blockLines = lines.filter(function (l) { return l.reg.charAt(0) === letter; });
+        var actualCount = blockLines.length;
         var closeLines = lines.filter(function (l) { return l.reg === closeReg; });
         var openLines = lines.filter(function (l) { return l.reg === openReg; });
         var summary = { block: letter, openFound: openLines.length > 0, closeFound: closeLines.length > 0, actualCount: actualCount, declaredCount: null, ok: true };
@@ -1913,7 +1914,12 @@
           var declared = Number(closeLine.fields[2]);
           summary.declaredCount = declared;
           if (Number.isFinite(declared) && declared !== actualCount) {
-            addError('Bloco ' + letter + ': o registro ' + closeReg + ' (linha ' + closeLine.lineNumber + ') declara ' + declared + ' registro(s), mas o arquivo contém ' + actualCount + ' registro(s) do bloco ' + letter + '.', closeLine.lineNumber);
+            var composition = {};
+            blockLines.forEach(function (l) { composition[l.reg] = (composition[l.reg] || 0) + 1; });
+            var compositionText = Object.keys(composition).sort().map(function (reg) { return reg + ': ' + composition[reg]; }).join(', ');
+            var diff = actualCount - declared;
+            var diffText = diff > 0 ? (diff + ' a mais no arquivo do que o declarado') : ((-diff) + ' a menos no arquivo do que o declarado');
+            addError('Bloco ' + letter + ': o registro ' + closeReg + ' (linha ' + closeLine.lineNumber + ') declara ' + declared + ' registro(s), mas o arquivo contém ' + actualCount + ' registro(s) do bloco ' + letter + ' (' + diffText + '). Composição encontrada no bloco: ' + compositionText + '. Verifique se o arquivo foi gerado por completo (sem cortes/edição manual) e se o campo de quantidade do registro ' + closeReg + ' foi recalculado após a última alteração.', closeLine.lineNumber);
             summary.ok = false;
           }
         });
@@ -1929,17 +1935,17 @@
         Object.keys(regCounts).forEach(function (reg) {
           var declared = declared9900[reg];
           if (!declared) { addWarning('Registro "' + reg + '" aparece ' + regCounts[reg] + ' vez(es) no arquivo, mas não há entrada correspondente no registro 9900.', null); return; }
-          if (Number.isFinite(declared.qty) && declared.qty !== regCounts[reg]) addError('Registro 9900 (linha ' + declared.line + ') declara ' + declared.qty + ' ocorrência(s) de "' + reg + '", mas o arquivo contém ' + regCounts[reg] + '.', declared.line);
+          if (Number.isFinite(declared.qty) && declared.qty !== regCounts[reg]) addError('Registro 9900 (linha ' + declared.line + ') declara ' + declared.qty + ' ocorrência(s) do registro "' + reg + '", mas o arquivo contém ' + regCounts[reg] + '. Verifique se todas as linhas do tipo "' + reg + '" foram mantidas ao gerar/editar o arquivo e recalcule o campo QTD_REG_BLC do registro 9900 correspondente.', declared.line);
         });
         Object.keys(declared9900).forEach(function (reg) {
-          if (!regCounts[reg]) addError('Registro 9900 (linha ' + declared9900[reg].line + ') declara o registro "' + reg + '", que não aparece no arquivo.', declared9900[reg].line);
+          if (!regCounts[reg]) addError('Registro 9900 (linha ' + declared9900[reg].line + ') declara o registro "' + reg + '", que não aparece no arquivo — remova essa linha do Bloco 9 ou reinclua os registros "' + reg + '" que deveriam existir.', declared9900[reg].line);
         });
       } else {
         addWarning('Nenhum registro 9900 encontrado — não foi possível conferir a contagem de registros por tipo (Bloco 9).', null);
       }
       lines.filter(function (l) { return l.reg === '9999'; }).forEach(function (l) {
         var declaredTotal = Number(l.fields[2]);
-        if (Number.isFinite(declaredTotal) && declaredTotal !== lines.length) addError('Registro 9999 (linha ' + l.lineNumber + ') declara ' + declaredTotal + ' linha(s), mas o arquivo contém ' + lines.length + ' linha(s).', l.lineNumber);
+        if (Number.isFinite(declaredTotal) && declaredTotal !== lines.length) addError('Registro 9999 (linha ' + l.lineNumber + ') declara ' + declaredTotal + ' linha(s), mas o arquivo contém ' + lines.length + ' linha(s). O campo do registro 9999 deve conter o total de linhas de todo o arquivo, inclusive ele mesmo — recalcule esse valor após qualquer edição.', l.lineNumber);
       });
     }
     if (params.checkRegisterFormat !== false) {
