@@ -1856,7 +1856,7 @@
     var ui = state.settings.auditorFiscal;
     if (!ui.view) ui.view = 'enviar';
     if (!ui.uploadType) ui.uploadType = '';
-    if (!ui.params || typeof ui.params !== 'object') ui.params = { checkLineFormat: true, checkRequiredRecords: true, checkBlockCounts: true, checkRegisterTotals: true };
+    if (!ui.params || typeof ui.params !== 'object') ui.params = { checkLineFormat: true, checkRequiredRecords: true, checkBlockCounts: true, checkRegisterTotals: true, checkFieldCounts: true, checkRegisterFormat: true, checkBlockLeakage: true };
     if (!Array.isArray(ui.files)) ui.files = [];
     if (typeof ui.recentQuery !== 'string') ui.recentQuery = '';
     if (!ui.recentPage) ui.recentPage = 1;
@@ -1940,6 +1940,61 @@
       lines.filter(function (l) { return l.reg === '9999'; }).forEach(function (l) {
         var declaredTotal = Number(l.fields[2]);
         if (Number.isFinite(declaredTotal) && declaredTotal !== lines.length) addError('Registro 9999 (linha ' + l.lineNumber + ') declara ' + declaredTotal + ' linha(s), mas o arquivo contém ' + lines.length + ' linha(s).', l.lineNumber);
+      });
+    }
+    if (params.checkRegisterFormat !== false) {
+      var regFormatFlagged = 0;
+      lines.forEach(function (line) {
+        if (!line.reg || /^[0-9A-Za-z]\d{3}$/.test(line.reg)) return;
+        regFormatFlagged += 1;
+        if (regFormatFlagged <= 30) addError('Linha ' + line.lineNumber + ': código de registro "' + line.reg + '" fora do padrão SPED (deveria ter 4 caracteres — 1 letra/dígito do bloco seguido de 3 dígitos, ex.: 0000, C100, D100).', line.lineNumber);
+      });
+      if (regFormatFlagged > 30) addWarning('Mais ' + (regFormatFlagged - 30) + ' linha(s) adicional(is) com código de registro fora do padrão não exibida(s) individualmente.', null);
+      ['0000', '9999'].forEach(function (singletonReg) {
+        if (regCounts[singletonReg] > 1) {
+          var occurrences = lines.filter(function (l) { return l.reg === singletonReg; }).map(function (l) { return l.lineNumber; });
+          addError('Registro "' + singletonReg + '" deveria aparecer uma única vez no arquivo, mas aparece ' + regCounts[singletonReg] + ' vezes (linhas ' + occurrences.join(', ') + ').', occurrences[0]);
+        }
+      });
+    }
+    if (params.checkFieldCounts !== false) {
+      var fieldCountsByReg = {};
+      lines.forEach(function (line) {
+        if (!line.reg) return;
+        if (!fieldCountsByReg[line.reg]) fieldCountsByReg[line.reg] = {};
+        fieldCountsByReg[line.reg][line.fields.length] = (fieldCountsByReg[line.reg][line.fields.length] || 0) + 1;
+      });
+      var fieldCountFlagged = 0;
+      Object.keys(fieldCountsByReg).forEach(function (reg) {
+        var counts = fieldCountsByReg[reg];
+        var distinctCounts = Object.keys(counts);
+        if (distinctCounts.length < 2) return;
+        var majorityCount = distinctCounts.reduce(function (best, current) { return counts[current] > counts[best] ? current : best; }, distinctCounts[0]);
+        lines.forEach(function (line) {
+          if (line.reg !== reg || String(line.fields.length) === majorityCount) return;
+          fieldCountFlagged += 1;
+          if (fieldCountFlagged <= 30) addError('Linha ' + line.lineNumber + ': registro "' + reg + '" tem ' + line.fields.length + ' campo(s) delimitados por "|", mas as demais ocorrências desse registro têm ' + majorityCount + ' — possível delimitador "|" ausente ou a mais.', line.lineNumber);
+        });
+      });
+      if (fieldCountFlagged > 30) addWarning('Mais ' + (fieldCountFlagged - 30) + ' linha(s) adicional(is) com quantidade de campos divergente da maioria não exibida(s) individualmente.', null);
+    }
+    if (params.checkBlockLeakage !== false) {
+      var groups = [];
+      lines.forEach(function (line) {
+        var letter = line.reg ? line.reg.charAt(0) : '';
+        if (!letter) return;
+        var lastGroup = groups[groups.length - 1];
+        if (lastGroup && lastGroup.letter === letter) { lastGroup.lastLine = line.lineNumber; }
+        else groups.push({ letter: letter, firstLine: line.lineNumber, lastLine: line.lineNumber });
+      });
+      var groupsByLetter = {};
+      groups.forEach(function (group) { (groupsByLetter[group.letter] = groupsByLetter[group.letter] || []).push(group); });
+      Object.keys(groupsByLetter).sort().forEach(function (letter) {
+        var letterGroups = groupsByLetter[letter];
+        if (letterGroups.length > 1) {
+          var ranges = letterGroups.map(function (g) { return g.firstLine === g.lastLine ? ('linha ' + g.firstLine) : ('linhas ' + g.firstLine + '–' + g.lastLine); });
+          addError('Bloco ' + letter + ': os registros desse bloco aparecem em ' + letterGroups.length + ' trechos não contíguos do arquivo (' + ranges.join('; ') + ') — indício de arquivo truncado, concatenado incorretamente ou fora de ordem.', letterGroups[0].firstLine);
+        }
       });
     }
     return { errors: errors, warnings: warnings, regCounts: regCounts, blockSummaries: blockSummaries, totalLines: lines.length };
@@ -2084,13 +2139,16 @@
       ['checkLineFormat', 'Formato das linhas', 'Cada linha deve iniciar e terminar com o delimitador "|".'],
       ['checkRequiredRecords', 'Registros obrigatórios', 'O arquivo deve iniciar com o registro 0000 e terminar com o 9999.'],
       ['checkBlockCounts', 'Contagem por bloco (X001/X990)', 'Confere se a quantidade declarada no registro de encerramento de cada bloco bate com a quantidade real de linhas do bloco.'],
-      ['checkRegisterTotals', 'Totais do Bloco 9 (9900/9999)', 'Confere a contagem por tipo de registro (9900) e o total geral de linhas do arquivo (9999).']
+      ['checkRegisterTotals', 'Totais do Bloco 9 (9900/9999)', 'Confere a contagem por tipo de registro (9900) e o total geral de linhas do arquivo (9999).'],
+      ['checkRegisterFormat', 'Código de registro e registros únicos', 'Cada código de registro deve ter 4 dígitos; os registros 0000 e 9999 devem aparecer uma única vez no arquivo.'],
+      ['checkFieldCounts', 'Consistência de campos por registro', 'Compara a quantidade de campos entre todas as ocorrências do mesmo tipo de registro, para detectar delimitador "|" ausente ou a mais.'],
+      ['checkBlockLeakage', 'Contiguidade dos blocos', 'Confere se os registros de cada bloco aparecem em um único trecho contínuo do arquivo, sem mistura com registros de outro bloco.']
     ];
     var rows = options.map(function (option) {
       return '<label class="check" style="align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:9px;margin-bottom:8px;display:flex;gap:8px"><input type="checkbox" data-auditor-param="' + option[0] + '"' + (params[option[0]] !== false ? ' checked' : '') + '><span><b style="display:block;font-size:10px">' + option[1] + '</b><small style="color:var(--muted);font-size:9px">' + option[2] + '</small></span></label>';
     }).join('');
     return '<section class="card"><header class="card-header"><h2>Parâmetros de Validação</h2><small>Escolha quais checagens estruturais serão aplicadas às próximas validações</small></header><div class="card-body">' + rows + '</div></section>' +
-      '<div class="info-banner" style="margin-top:14px"><span>i</span><div><strong>Validação estrutural, não substitui a apuração.</strong> Estas checagens conferem a integridade do arquivo SPED — delimitadores, registros obrigatórios (0000/9999) e os contadores declarados pelo próprio arquivo (X001/X990 por bloco, 9900 por tipo de registro) — a mesma primeira camada de conferência usada pelos validadores oficiais do PVA. Elas não recalculam ICMS, IPI, PIS/COFINS ou a apuração declarada; confirme os valores fiscais com o contador responsável.</div></div>';
+      '<div class="info-banner" style="margin-top:14px"><span>i</span><div><strong>Validação estrutural, não substitui a apuração.</strong> Estas checagens conferem a integridade do arquivo SPED — delimitadores, formato e unicidade dos códigos de registro, registros obrigatórios (0000/9999), os contadores declarados pelo próprio arquivo (X001/X990 por bloco, 9900 por tipo de registro), a consistência da quantidade de campos entre ocorrências do mesmo registro e a contiguidade dos blocos — a mesma primeira camada de conferência usada pelos validadores oficiais do PVA. Elas não recalculam ICMS, IPI, PIS/COFINS ou a apuração declarada, nem validam o conteúdo tributário de cada campo (CFOP, CST, NCM, valores etc.); confirme os valores fiscais com o contador responsável.</div></div>';
   }
   function renderAuditorFiscalHistory() {
     var rows = state.audit.filter(function (item) { return /SPED|Auditor Fiscal/i.test(item.action); }).slice(0, 100).map(function (item) {
