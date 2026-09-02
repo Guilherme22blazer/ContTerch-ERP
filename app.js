@@ -200,7 +200,6 @@
 
   var NAV_ITEMS = [
     { route: 'inicio', label: 'Visão Geral da Carteira', icon: '⌂', desc: 'Dashboard profissional com indicadores e andamento de todos os clientes' },
-    { url: 'https://www.econeteditora.com.br/novo/index.php', label: 'Econet Editora', icon: '↗', desc: 'Abre o site da Econet Editora em uma nova aba' },
     { route: 'sefaz-portal', label: 'Consulta SEFAZ e Portal do Contribuinte', icon: '▣', desc: 'Consulta oficial de documentos fiscais e gestão segura de certificados' },
     { route: 'captador-notas-fiscais', label: 'Captador de Notas Fiscais', icon: '⇓', desc: 'Painel por empresa da captação automática de NF-e, NFC-e, CT-e e NFS-e via certificado digital' },
     { route: 'auditor-fiscal', label: 'Auditor Fiscal (SPED/EFD)', icon: '◲', desc: 'Validação estrutural de arquivos SPED — EFD ICMS/IPI, EFD Contribuições, ECF, ECD e Simples Nacional' },
