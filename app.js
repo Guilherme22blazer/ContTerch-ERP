@@ -377,6 +377,10 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char];
     });
   }
+  function csvFormulaGuard(value) {
+    var text = String(value == null ? '' : value);
+    return /^[=+\-@\t\r]/.test(text) ? "'" + text : text;
+  }
   function money(value) { return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
   function number(value) { return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 }); }
   function updateBrazilClock() {
@@ -1462,7 +1466,7 @@
       (result.items || []).forEach(function (item, index) { Object.keys(item).forEach(function (name) { rows.push(['Item ' + (index + 1) + ' — ' + name, item[name]]); }); });
       Object.keys(result.taxes || {}).forEach(function (name) { rows.push(['Tributo — ' + name, result.taxes[name]]); });
       (result.events || []).forEach(function (event, index) { rows.push(['Evento ' + (index + 1), [event.type, event.date, event.protocol, event.description].filter(Boolean).join(' · ')]); });
-      var csv = rows.map(function (row) { return row.map(function (cell) { return '"' + String(cell || '').replace(/"/g, '""') + '"'; }).join(';'); }).join('\r\n');
+      var csv = rows.map(function (row) { return row.map(function (cell) { return '"' + csvFormulaGuard(cell || '').replace(/"/g, '""') + '"'; }).join(';'); }).join('\r\n');
       downloadFile('consulta-fiscal-' + fiscalKeyDigits(result.accessKey, 50) + '.csv', '\ufeff' + csv, 'text/csv;charset=utf-8');
     }
     audit('Consulta fiscal exportada', format.toUpperCase() + ' · ' + result.accessKey);
@@ -1688,7 +1692,7 @@
       return { empresa: c.company, filial: c.branch, cnpj: c.document, certificado: c.status, validoAte: c.validUntil, nfe: counts.nfe, nfce: counts.nfce, cte: counts.cte, mdfe: counts.mdfe, nfse: counts.nfse, documentosNoMes: c.monthDocuments || 0 };
     });
     var header = ['Empresa', 'Filial', 'CNPJ', 'Certificado', 'Válido até', 'NF-e', 'NFC-e', 'CT-e', 'MDF-e', 'NFS-e', 'Documentos no mês'];
-    var csv = [header.join(';')].concat(rows.map(function (r) { return [r.empresa, r.filial, r.cnpj, r.certificado, r.validoAte, r.nfe, r.nfce, r.cte, r.mdfe, r.nfse, r.documentosNoMes].map(function (v) { return String(v == null ? '' : v).replace(/;/g, ','); }).join(';'); })).join('\n');
+    var csv = [header.join(';')].concat(rows.map(function (r) { return [r.empresa, r.filial, r.cnpj, r.certificado, r.validoAte, r.nfe, r.nfce, r.cte, r.mdfe, r.nfse, r.documentosNoMes].map(function (v) { return csvFormulaGuard(String(v == null ? '' : v).replace(/;/g, ',')); }).join(';'); })).join('\n');
     downloadFile('fechamento-mensal-' + todayISO() + '.csv', '﻿' + csv, 'text/csv;charset=utf-8');
     downloadFile('fechamento-mensal-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.captador-fechamento-mensal.v1', generatedAt: nowISO(), monthStart: sefazState.companiesOverviewMonthStart || '', companies: rows }, null, 2));
     audit('Fechamento mensal exportado', rows.length + ' empresa(s) · CSV + JSON');
@@ -2646,7 +2650,7 @@
     var rows = cestFilteredRows(filters);
     if (!rows.length) { toast('Nada para exportar', 'A consulta atual não possui resultados.', 'warning'); return; }
     if (type === 'csv') {
-      var csvCell = function (value) { return '"' + String(value == null ? '' : value).replace(/"/g, '""') + '"'; };
+      var csvCell = function (value) { return '"' + csvFormulaGuard(value).replace(/"/g, '""') + '"'; };
       var csv = ['CEST;NCM/SH;Descrição;Segmento;Anexo'].concat(rows.map(function (item) { return [item.cest, item.ncm, item.description, item.segment + ' - ' + item.segmentName, item.annex].map(csvCell).join(';'); })).join('\r\n');
       downloadFile('consulta-cest-' + todayISO() + '.csv', '\uFEFF' + csv, 'text/csv;charset=utf-8');
     } else {
@@ -3581,7 +3585,7 @@
     store.entries = store.entries.filter(function (item) { return item.id !== id; });
     persist(); audit('Lançamento do MEI excluído', entry.account + ' · ' + money(meiEntryNet(entry))); refreshMeiControl(true); toast('Lançamento excluído', 'Os totais e os gráficos foram atualizados.', 'warning');
   }
-  function meiCsvCell(value) { return '"' + String(value == null ? '' : value).replace(/"/g, '""') + '"'; }
+  function meiCsvCell(value) { return '"' + csvFormulaGuard(value).replace(/"/g, '""') + '"'; }
   function exportMeiControl(format) {
     var ui = meiControlUi(), entries = meiScopeEntries(), summary = meiSummary(entries), monthly = meiMonthlySeries(meiYearEntries());
     if (format === 'json') {

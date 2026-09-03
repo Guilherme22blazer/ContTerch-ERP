@@ -1666,7 +1666,7 @@ officialSync:async function(){try{var cert=document.getElementById('nfxCertifica
  downloadBatch:async function(mode){try{var cert=document.getElementById('nfxCertificate').value,year=document.getElementById('nfxYear').value,month=document.getElementById('nfxMonth').value,type=document.getElementById('nfxType').value;if(!cert)throw new Error('Selecione o certificado cadastrado.');if(!month)throw new Error('Selecione o mês do lote.');var c=apiConfig(),url=c.url+'/api/documents/export.zip?certificateId='+encodeURIComponent(cert)+'&year='+encodeURIComponent(year)+'&month='+encodeURIComponent(month)+'&mode='+encodeURIComponent(mode)+'&documentType='+encodeURIComponent(type);var response;try{response=await fetch(url,{headers:{Authorization:'Bearer '+c.token}})}catch(networkError){throw new Error('Backend fiscal desligado ou inacessível. Execute iniciar-backend.cmd.')}if(!response.ok){var error=await response.json();throw new Error(error.error||'Não foi possível gerar o lote.')}var file=await response.blob(),a=document.createElement('a'),count=response.headers.get('X-Document-Count')||'',label=mode==='emitted'?'emitidas':mode==='received'?'recebidas':'canceladas';a.href=URL.createObjectURL(file);a.download='xml_'+mode+'_'+year+'_'+month+'.zip';a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},1000);backendState(true,'ZIP gerado com '+count+' XML(s) oficiais de notas '+label+' em '+month+'/'+year+'.')}catch(e){backendState(false,e.message)}},
  downloadSelected:function(){var list=docs.filter(function(d){return selected[d.id]&&d.xml});if(!list.length)return alert('Selecione ao menos um XML disponível.');list.forEach(function(d,i){setTimeout(function(){blob(d.type+'_'+d.number+'.xml',xmlText(d),'application/xml')},i*150)});log('Download de XMLs',list.length,'Concluído','Arquivos individuais')},
  zip:function(){var list=docs.filter(function(d){return selected[d.id]&&d.xml});if(!list.length)return alert('Selecione ao menos um XML disponível.');if(window.JSZip){var z=new JSZip();list.forEach(function(d){z.file(d.type+'_'+d.number+'.xml',xmlText(d))});z.generateAsync({type:'blob'}).then(function(b){var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='xml_fiscais.zip';a.click()});log('Geração de ZIP',list.length,'Concluída','XMLs selecionados')}else{blob('xml_fiscais_selecionados.txt',list.map(xmlText).join('\\n\\n'),'text/plain');log('Pacote de XMLs',list.length,'Concluído','Formato compatível; biblioteca ZIP indisponível')}},
- csv:function(){var t=csvRows().map(function(r){return r.map(function(v){return'"'+String(v).replace(/"/g,'""')+'"'}).join(';')}).join('\\n');blob('relatorio_fiscal_completo.csv','\\ufeff'+t,'text/csv;charset=utf-8');log('Relatório CSV',current.length,'Concluído','Filtros aplicados')},
+ csv:function(){var t=csvRows().map(function(r){return r.map(function(v){return'"'+csvFormulaGuard(v).replace(/"/g,'""')+'"'}).join(';')}).join('\\n');blob('relatorio_fiscal_completo.csv','\\ufeff'+t,'text/csv;charset=utf-8');log('Relatório CSV',current.length,'Concluído','Filtros aplicados')},
  excel:function(){var t='<table>'+csvRows().map(function(r,i){return'<tr>'+r.map(function(v){return'<'+(i?'td':'th')+'>'+esc(v)+'</'+(i?'td':'th')+'>'}).join('')+'</tr>'}).join('')+'</table>';blob('relatorio_fiscal_completo.xls','\\ufeff'+t,'application/vnd.ms-excel');log('Relatório Excel',current.length,'Concluído','Filtros aplicados')},
  pdf:function(){if(window.jspdf){var doc=new window.jspdf.jsPDF('l','pt','a4');doc.text('Relatório Fiscal Completo',40,35);doc.text('Gerado em '+new Date().toLocaleString('pt-BR')+' — '+current.length+' documento(s)',40,52);if(doc.autoTable)doc.autoTable({head:[csvRows()[0]],body:csvRows().slice(1),startY:65,styles:{fontSize:5}});doc.save('relatorio_fiscal_completo.pdf');log('Relatório PDF',current.length,'Concluído','Filtros aplicados')}else alert('Biblioteca de PDF não carregada.')}}
 })();
@@ -1812,6 +1812,7 @@ function renderMod(){
 let selAPI='brasilapi';
 function selectAPI(api,el){selAPI=api;window.selAPI=api;document.querySelectorAll('.api-pill').forEach(p=>p.classList.remove('sel'));el.classList.add('sel');}
 function cleanCNPJ(v){return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,14);}
+function csvFormulaGuard(v){const t=String(v==null?'':v);return /^[=+\-@\t\r]/.test(t)?("'"+t):t;}
 function formatCNPJAlfa(value){
   let raw=cleanCNPJ(value),base=raw.slice(0,12),dv=raw.slice(12).replace(/\D/g,'').slice(0,2),v=base+dv;
   if(v.length<=2)return v;
@@ -2179,7 +2180,7 @@ function cfgAdd(){const nid=Math.max(0,...CFG.map(r=>r._id))+1;const n={_id:nid,
 function cfgDel(id){if(!confirm('Excluir esta TES?'))return;CFG=CFG.filter(r=>r._id!==id);cfgSave();cfgSyncDashboard();cfgRender();}
 function cfgReset(){if(!confirm('Restaurar todos os dados originais? Suas edições serão perdidas.'))return;localStorage.removeItem(CFG_KEY);cfgLoad();cfgSyncDashboard();cfgRender();}
 function cfgExport(){const blob=new Blob([JSON.stringify(CFG,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='tes_config.json';a.click();}
-function cfgExportCsv(){const cols=['Filial_Cod','Cod. do Tipo','Tipo do TES','Cod. Fiscal','Categoria','Finalidade'];const esc=v=>`"${String(v==null?'':v).replace(/"/g,'""')}"`;const csv=[cols.join(',')].concat(CFG.map(r=>cols.map(c=>esc(r[c])).join(','))).join('\n');const blob=new Blob(['\ufeff'+csv],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='tes_config.csv';a.click();}
+function cfgExportCsv(){const cols=['Filial_Cod','Cod. do Tipo','Tipo do TES','Cod. Fiscal','Categoria','Finalidade'];const esc=v=>`"${csvFormulaGuard(v).replace(/"/g,'""')}"`;const csv=[cols.join(',')].concat(CFG.map(r=>cols.map(c=>esc(r[c])).join(','))).join('\n');const blob=new Blob(['\ufeff'+csv],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='tes_config.csv';a.click();}
 (function initCfg(){cfgLoad();cfgSyncDashboard();cfgRender();})();
 </script>
 
@@ -3417,8 +3418,8 @@ document.addEventListener('DOMContentLoaded', natInit);
       const emps=(st.empresas||[]).map(id=>cfEmpById(id)).filter(Boolean);
       data.push([dd+'/'+mm+'/'+x.ano, x.ano, MESES_NOME[x.mes], st.uf||'', x.imp, x.desc, x.nat, x.esf, x.reg,
         st.status, st.dataPrevista||dataPrev, st.dataEfetiva||'', info.atraso||'', info.dias||0,
-        st.protocolo||'', st.responsavel||'', st.validada?'Sim':'Não', x.obs,
-        emps.map(e=>e.nome).join(' | '), emps.map(e=>e.cnpj).join(' | ')]);
+        csvFormulaGuard(st.protocolo||''), csvFormulaGuard(st.responsavel||''), st.validada?'Sim':'Não', csvFormulaGuard(x.obs),
+        csvFormulaGuard(emps.map(e=>e.nome).join(' | ')), csvFormulaGuard(emps.map(e=>e.cnpj).join(' | '))]);
     });
     if(typeof XLSX!=='undefined'){
       const wb = XLSX.utils.book_new();
@@ -3427,7 +3428,7 @@ document.addEventListener('DOMContentLoaded', natInit);
       XLSX.utils.book_append_sheet(wb, ws, 'Calendario '+ano);
       // Aba de cadastro de empresas
       const empData=[['ID','Nome','CNPJ','Regime','UF','Ativo']];
-      cfEmpLoad().forEach(e=>empData.push([e.id, e.nome, e.cnpj, e.regime, e.uf||'', e.ativo!==false?'Sim':'Não']));
+      cfEmpLoad().forEach(e=>empData.push([e.id, csvFormulaGuard(e.nome), e.cnpj, e.regime, e.uf||'', e.ativo!==false?'Sim':'Não']));
       const wsE = XLSX.utils.aoa_to_sheet(empData);
       wsE['!cols']=[{wch:8},{wch:32},{wch:22},{wch:20},{wch:5},{wch:6}];
       XLSX.utils.book_append_sheet(wb, wsE, 'Empresas');
@@ -3592,7 +3593,7 @@ document.addEventListener('DOMContentLoaded', natInit);
       const dataPrev = x.ano+'-'+mm+'-'+dd;
       const st = cfGetState(cfKey(x), dataPrev);
       const info = cfCalcAtraso(st.dataPrevista||dataPrev, st.dataEfetiva, st.status);
-      const clean = s => ('"'+String(s==null?'':s).replace(/"/g,'""')+'"');
+      const clean = s => ('"'+csvFormulaGuard(s).replace(/"/g,'""')+'"');
       csv += [d,x.ano,MESES_NOME[x.mes],clean(x.imp),clean(x.desc),x.nat,x.esf,clean(x.reg),clean(st.status),st.dataPrevista||dataPrev,st.dataEfetiva||'',info.atraso||'',info.dias||0,clean(st.protocolo||''),clean(st.responsavel||''),st.validada?'Sim':'Nao',clean(x.obs)].join(';')+'\n';
     });
     const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
@@ -4014,11 +4015,11 @@ document.addEventListener('DOMContentLoaded', natInit);
       'UF': o.uf, 'Município': o.mun,
       'Obrigação': o.imp, 'Descrição': o.desc,
       'Esfera': o.esf, 'Periodicidade': o.per, 'Regime': o.reg,
-      'Base Legal': o.base, 'Responsável': o.resp,
+      'Base Legal': csvFormulaGuard(o.base), 'Responsável': csvFormulaGuard(o.resp),
       'Data Prevista': o.prev? o.prev.split('-').reverse().join('/'):'',
       'Data Efetiva': o.efet? o.efet.split('-').reverse().join('/'):'',
       'Status': o.status, 'Dias em Atraso': calcAtraso(o),
-      'Protocolo': o.prot, 'Observações': o.obs
+      'Protocolo': csvFormulaGuard(o.prot), 'Observações': csvFormulaGuard(o.obs)
     };
   }
   window.gExportXLS = function(){

@@ -482,6 +482,16 @@ def modules_for_email(database: sqlite3.Connection, email: str, role: str, statu
     return {"tab_inicio"}
 
 
+def sanitize_user_snapshot(row: sqlite3.Row) -> dict:
+    """Cópia de uma linha de users(...) sem hash/salt de senha nem o blob
+    binário da foto de perfil — segura para gravar em access_audit, que é
+    lido de volta e exibido inteiro no painel administrativo."""
+    data = dict(row)
+    for key in ("password_hash", "salt", "profile_photo_encrypted"):
+        data.pop(key, None)
+    return data
+
+
 def write_access_audit(
     database: sqlite3.Connection,
     administrator: str,
@@ -2275,6 +2285,8 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 "frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
             )
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         if PRODUCTION_MODE:
             # HSTS só é honrado pelo navegador em respostas realmente
             # entregues por HTTPS — inofensivo enviá-lo sempre em produção,
@@ -4427,7 +4439,11 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             super().do_GET()
             return
         if path == "/api/health":
-            self.send_json({"ok": True, "database": "postgresql", "version": "1.5", "dfeDistribution": True, "nfseNational": True, "nfseMonthlyPackage": True, "cnpjOfficialApi": bool(os.environ.get("SERPRO_CNPJ_CONSUMER_KEY") and os.environ.get("SERPRO_CNPJ_CONSUMER_SECRET"))})
+            # Resposta mínima de propósito: usada só como ping de disponibilidade
+            # (o frontend nem lê o corpo — chama com mode:'no-cors'). Detalhes de
+            # versão, motor de banco e quais integrações estão configuradas não
+            # precisam ser expostos a um chamador anônimo.
+            self.send_json({"ok": True})
             return
         if path == "/api/public/plans":
             with connect() as database:
@@ -5279,6 +5295,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/password-reset/confirm":
+            if not self.enforce_rate_limit("password_reset_confirm", limit=20, window_seconds=900):
+                self.send_rate_limited()
+                return
             try:
                 reset = self.confirm_password_reset(payload)
                 self.send_json({"ok": True, "message": "Senha alterada com sucesso.", "user": reset})
@@ -5657,6 +5676,13 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         "updated_at = ?, updated_by = ? WHERE email = ?",
                         (salt, hashed, algo, local_now(), user["email"], user["email"]),
                     )
+                    # Invalida qualquer outra sessão que já existisse para esta
+                    # conta antes da troca de senha, preservando apenas a sessão
+                    # atual (quem está fazendo esta chamada autenticada).
+                    database.execute(
+                        "DELETE FROM sessions WHERE email = ? AND token != ?",
+                        (user["email"], self.session_token()),
+                    )
                 self.audit(user["email"], "first_access_password_set")
                 self.send_json({"ok": True})
             except ValueError as error:
@@ -5772,6 +5798,9 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         if certificate_test:
             user = self.require_user()
             if user is None or not self.require_permission(user, "manage_certificates"):
+                return
+            if not self.enforce_rate_limit("certificate_test", limit=20, window_seconds=300):
+                self.send_rate_limited()
                 return
             certificate = self.certificate_row(certificate_test.group(1), user)
             if certificate is None:
@@ -5902,7 +5931,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         ).fetchone()["total"]
                         if total <= 1:
                             raise ValueError("Mantenha pelo menos um administrador ativo.")
-                    write_access_audit(database, administrator["email"], target["email"], "Administrador excluiu usuário", dict(target), "Registro excluído", self.client_ip())
+                    write_access_audit(database, administrator["email"], target["email"], "Administrador excluiu usuário", sanitize_user_snapshot(target), "Registro excluído", self.client_ip())
                     database.execute("DELETE FROM sessions WHERE email = ?", (target["email"],))
                     database.execute("DELETE FROM user_sefaz_permissions WHERE email = ?", (target["email"],))
                     database.execute("DELETE FROM user_modules WHERE email = ?", (target["email"],))
