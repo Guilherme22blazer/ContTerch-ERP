@@ -866,8 +866,10 @@
     $('#app-shell').classList.remove('is-hidden');
     setLoginVideoPlayback(false);
     updateHeaderProfile();
-    await hydrateFromServer();
-    await refreshCurrentProfile();
+    // hydrateFromServer() e refreshCurrentProfile() são chamadas
+    // independentes (estado geral e perfil do usuário); rodar em paralelo
+    // corta pela metade a espera do login, em vez de somar as duas.
+    await Promise.all([hydrateFromServer(), refreshCurrentProfile()]);
     if (window.UserAccessManager) window.UserAccessManager.applyMenu(currentUser);
     refreshClientSelect();
     if (forceHome && window.history && window.history.replaceState) window.history.replaceState(null, '', location.href.split('#')[0] + '#inicio');
@@ -3771,9 +3773,12 @@
     }
     $('#main-nav').classList.remove('open');
     var main = $('#main-content');
+    var fiscalPage = $('#fiscal-module-page');
     if (window.UserAccessManager) {
       window.UserAccessManager.applyMenu(currentUser);
       if (!window.UserAccessManager.canRoute(currentUser, state.route)) {
+        fiscalPage.classList.add('is-hidden');
+        main.classList.remove('is-hidden');
         if (apiEnabled() && apiToken && state.permissionRefreshAttemptedRoute !== state.route) {
           state.permissionRefreshAttemptedRoute = state.route;
           main.innerHTML = '<section class="ua-denied"><span>◌</span><h1>Atualizando seu acesso</h1><p>A plataforma está conferindo as permissões desta aba.</p></section>';
@@ -3787,7 +3792,14 @@
       }
       state.permissionRefreshAttemptedRoute = '';
     }
-    if (state.route === 'inicio') main.innerHTML = renderPortfolioDashboard();
+    var isFiscalModuleRoute = !!FISCAL_MODULES[state.route];
+    fiscalPage.classList.toggle('is-hidden', !isFiscalModuleRoute);
+    main.classList.toggle('is-hidden', isFiscalModuleRoute);
+    if (isFiscalModuleRoute) {
+      if ($('#fiscal-module-frame')) updateFiscalModuleView(state.route);
+      else fiscalPage.innerHTML = renderFiscalModule(state.route);
+    }
+    else if (state.route === 'inicio') main.innerHTML = renderPortfolioDashboard();
     else if (state.route === 'sefaz-portal') main.innerHTML = renderSefazPortal();
     else if (state.route === 'captador-notas-fiscais') main.innerHTML = renderCaptadorNotasFiscais();
     else if (state.route === 'auditor-fiscal') main.innerHTML = renderAuditorFiscal();
@@ -3827,12 +3839,8 @@
     else if (state.route === 'gestao-usuarios') main.innerHTML = '<div id="user-access-management"></div>';
     else if (state.route === 'configuracoes') main.innerHTML = renderSettings();
     else if (state.route === 'historico') main.innerHTML = renderHistory();
-    else if (FISCAL_MODULES[state.route]) {
-      if ($('#fiscal-module-frame')) updateFiscalModuleView(state.route);
-      else main.innerHTML = renderFiscalModule(state.route);
-    }
-    else { location.hash = 'inicio'; return; }
-    main.focus({ preventScroll: true });
+    else if (!isFiscalModuleRoute) { location.hash = 'inicio'; return; }
+    (isFiscalModuleRoute ? fiscalPage : main).focus({ preventScroll: true });
     window.scrollTo(0, 0);
     bindViewControls();
     if (state.route === 'sefaz-portal') loadSefazData();
