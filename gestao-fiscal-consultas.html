@@ -11,7 +11,7 @@ window.__gfUser = {nome:"Usuário",id:"local",status:"aprovado"};</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root{--bg:#0e2a6e;--surface:#1a3a8a;--surface2:#1e4099;--border:#2a52b8;--accent:#ffffff;--accent2:#ff6b6b;--accent3:#ffd166;--accent4:#7eb8ff;--text:#e8f0ff;--muted:#8aabdd;--dim:#b8d0f5;--entrada:#ffffff;--saida:#ff6b6b}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -353,14 +353,17 @@ async function fetchCnpjCached(cnpj){
   if(window.__cnpjCache[cacheKey])return window.__cnpjCache[cacheKey];
   var order=['brasilapi','cnpja','receitaws'];
   if(pref&&order.indexOf(pref)!==-1){order=[pref].concat(order.filter(function(x){return x!==pref}));}
+  // Dispara as 3 fontes em paralelo (evita esperar o timeout de uma fonte lenta
+  // antes de sequer começar a próxima), mas ainda resolve respeitando a ordem
+  // de preferência: usa a primeira fonte da lista que responder com sucesso,
+  // mesmo que uma fonte de prioridade menor termine antes.
   var errs=[];
-  for(var i=0;i<order.length;i++){
-    var key=order[i];
-    try{
-      var res=await __cnpjSources[key](cnpj);
-      window.__cnpjCache[cacheKey]=res;
-      return res;
-    }catch(e){errs.push(key+': '+(e&&e.message||e));}
+  var attempts=order.map(function(key){
+    return __cnpjSources[key](cnpj).then(function(res){return{ok:true,res:res};}).catch(function(e){errs.push(key+': '+(e&&e.message||e));return{ok:false};});
+  });
+  for(var i=0;i<attempts.length;i++){
+    var outcome=await attempts[i];
+    if(outcome.ok){window.__cnpjCache[cacheKey]=outcome.res;return outcome.res;}
   }
   throw new Error('Não foi possível consultar o CNPJ em nenhuma das fontes disponíveis. '+errs.join(' | '));
 }
@@ -1719,7 +1722,23 @@ function switchTab(t){
 }
 
 // ══ CHARTS / FILTERS ══
-Chart.defaults.color='#64748b';Chart.defaults.font.family="'DM Mono',monospace";Chart.defaults.font.size=11;
+// Chart.js agora carrega com "defer" (evita travar a leitura do resto da
+// página se o CDN estiver lento) e por isso pode ainda não existir quando
+// este bloco roda; os defaults só são aplicados quando o Chart.js estiver
+// realmente disponível, chamado de forma segura em updCharts() abaixo.
+function ensureChartDefaults(){
+  if(typeof Chart==='undefined'||window.__chartDefaultsSet)return;
+  Chart.defaults.color='#64748b';Chart.defaults.font.family="'DM Mono',monospace";Chart.defaults.font.size=11;
+  window.__chartDefaultsSet=true;
+}
+// A primeira chamada a updCharts() acontece de forma síncrona durante o
+// carregamento da página (via applyF() logo abaixo), antes do Chart.js
+// (agora com "defer") terminar de carregar — nesse momento os gráficos são
+// pulados. Assim que a página termina de carregar tudo, tenta desenhá-los
+// uma vez, já com o Chart.js disponível.
+window.addEventListener('load', function(){
+  if(typeof Chart!=='undefined' && typeof updCharts==='function') updCharts();
+});
 const CC=['rgba(0,212,170,.8)','rgba(78,205,196,.8)','rgba(255,107,107,.8)','rgba(255,209,102,.8)','rgba(167,139,250,.8)','rgba(249,115,22,.8)','rgba(34,197,94,.8)','rgba(236,72,153,.8)','rgba(99,102,241,.8)','rgba(51,65,85,.8)'];
 const FC=['01','02','03','04','05','07','90'];
 const FL=['Apoteose\n(01)','Full Log\n(02)','Tardane\n(03)','EMTEL Loc.\n(04)','EMTEL Veíc.\n(05)','Verde\nAzul(07)','Holding\n(90)'];
@@ -1749,6 +1768,8 @@ function updKPI(){
   document.getElementById('kD').textContent=dd;document.getElementById('kDs').textContent=n?Math.round(dd/n*100)+'% geram duplicata':'';
 }
 function updCharts(){
+  if(typeof Chart==='undefined')return;
+  ensureChartDefaults();
   if(charts.f)charts.f.destroy();
   charts.f=new Chart(document.getElementById('filialChart'),{type:'bar',data:{labels:FL,datasets:[{label:'Entradas',data:FC.map(c=>filtered.filter(d=>d.Filial_Cod===c&&d['Tipo do TES']==='Entrada').length),backgroundColor:'rgba(0,212,170,.7)',borderColor:'rgba(0,212,170,1)',borderWidth:1,borderRadius:2},{label:'Saídas',data:FC.map(c=>filtered.filter(d=>d.Filial_Cod===c&&d['Tipo do TES']==='Saida').length),backgroundColor:'rgba(255,107,107,.7)',borderColor:'rgba(255,107,107,1)',borderWidth:1,borderRadius:2}]},options:{responsive:true,maintainAspectRatio:true,plugins:{legend:{display:false},tooltip:TT},scales:{x:{grid:{color:'rgba(30,45,69,.5)'},ticks:{color:'#64748b',font:{size:9},maxRotation:0}},y:{beginAtZero:true,grid:{color:'rgba(30,45,69,.5)'},ticks:{color:'#64748b'}}}}});
   const cc={};filtered.forEach(d=>{const c=d.Categoria||'Outros';cc[c]=(cc[c]||0)+1;});const cs=Object.entries(cc).sort((a,b)=>b[1]-a[1]).slice(0,10);
@@ -2700,9 +2721,9 @@ async function consultarIE(){
     let ies = [], extra = {};
     if(prov==='cnpjws'){
       let r;
-      try{ r = await fetch('/api/public/cnpj-ws/'+raw); }
-      catch(_e){ r = await fetch('https://publica.cnpj.ws/cnpj/'+raw); }
-      if(!r.ok && r.status!==429){ try{ r = await fetch('https://publica.cnpj.ws/cnpj/'+raw); }catch(_e){} }
+      try{ r = await __fetchTimeout('/api/public/cnpj-ws/'+raw,8000); }
+      catch(_e){ r = await __fetchTimeout('https://publica.cnpj.ws/cnpj/'+raw,8000); }
+      if(!r.ok && r.status!==429){ try{ r = await __fetchTimeout('https://publica.cnpj.ws/cnpj/'+raw,8000); }catch(_e){} }
       if(r.status===429){ throw new Error('Limite de requisições atingido (3/min na API pública). Aguarde 60s ou use um token.'); }
       if(!r.ok) throw new Error('HTTP '+r.status);
       const d = await r.json();
@@ -2724,7 +2745,7 @@ async function consultarIE(){
         fonte:'CNPJ.ws — dados RFB e inscrições estaduais disponíveis', atualizado:est.atualizado_em||d.atualizado_em, consultadoEm:new Date().toISOString()};
     } else if(prov==='cnpja'){
       if(!token) throw new Error('Token CNPJa obrigatório (https://cnpja.com).');
-      const r = await fetch('https://api.cnpja.com/office/'+raw+'?registrations=ALL', {headers:{Authorization:token}});
+      const r = await __fetchTimeout('https://api.cnpja.com/office/'+raw+'?registrations=ALL',8000,{headers:{Authorization:token}});
       if(!r.ok) throw new Error('HTTP '+r.status);
       const d = await r.json();
       ies = (d.registrations||[]).map(x=>({
@@ -2744,7 +2765,7 @@ async function consultarIE(){
         fonte:'CNPJa — Cadastro Centralizado de Contribuintes/Sintegra', atualizado:d.updated, consultadoEm:new Date().toISOString()};
     } else if(prov==='infosimples'){
       if(!token) throw new Error('Token InfoSimples obrigatório (https://infosimples.com).');
-      const r = await fetch('https://api.infosimples.com/api/v2/consultas/sintegra/unificada?token='+encodeURIComponent(token)+'&cnpj='+raw);
+      const r = await __fetchTimeout('https://api.infosimples.com/api/v2/consultas/sintegra/unificada?token='+encodeURIComponent(token)+'&cnpj='+raw,8000);
       if(!r.ok) throw new Error('HTTP '+r.status);
       const d = await r.json();
       const root = (d.data&&d.data[0])||{};
@@ -2754,7 +2775,7 @@ async function consultarIE(){
     } else if(prov==='sintegraws'){
       if(!token) throw new Error('Token Sintegra WS obrigatório (https://sintegraws.com.br).');
       const uf = document.getElementById('ieUF').value || 'SP';
-      const r = await fetch('https://www.sintegraws.com.br/api/v1/execute-api.php?token='+encodeURIComponent(token)+'&cnpj='+raw+'&plugin=RF&uf='+uf);
+      const r = await __fetchTimeout('https://www.sintegraws.com.br/api/v1/execute-api.php?token='+encodeURIComponent(token)+'&cnpj='+raw+'&plugin=RF&uf='+uf,8000);
       if(!r.ok) throw new Error('HTTP '+r.status);
       const d = await r.json();
       ies = d.inscricao_estadual ? [{uf:uf, ie:d.inscricao_estadual, ativo:ieActiveValue(d.situacao_cadastral), situacao:d.situacao_cadastral||'', regime:d.regime_tributario||'', tipo:d.tipo_contribuinte||'Inscrição Estadual', atualizado:d.data_consulta||'', fonte:'Sintegra WS'}] : [];
