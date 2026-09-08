@@ -1085,7 +1085,13 @@
     var target = $('#sefaz-distribution-body');
     if (!target) return;
     var direction = $('#sefaz-distribution-direction') ? $('#sefaz-distribution-direction').value : '';
-    var documents = (sefazState.distributedDocuments || []).filter(function (item) { return !direction || item.direction === direction; });
+    var documentType = $('#sefaz-distribution-document-type') ? $('#sefaz-distribution-document-type').value : '';
+    var documents = (sefazState.distributedDocuments || []).filter(function (item) {
+      if (direction && item.direction !== direction) return false;
+      if (documentType === 'NFS-e' && item.model !== 'NFS-e') return false;
+      if (documentType === 'produto' && item.model === 'NFS-e') return false;
+      return true;
+    });
     target.innerHTML = documents.length ? documents.map(function (item) {
       return '<tr><td><button class="link-button sefaz-key-link" data-action="sefaz-open-distributed" data-id="' + esc(item.id) + '">' + esc(item.keyMasked || item.accessKey || ('NSU ' + item.nsu)) + '</button><small class="subtle">NSU ' + esc(item.nsu) + ' · ' + esc(item.schemaName || '') + '</small></td><td>' + esc(item.company || '—') + '</td><td>' + esc(item.direction || 'Relacionada') + '</td><td>' + esc(item.model || 'Documento fiscal') + '</td><td>' + sefazStatusTag(item.status) + '</td><td>' + esc(item.receivedAt || '') + '</td><td><button class="row-button" data-action="sefaz-open-distributed" data-id="' + esc(item.id) + '" title="Abrir documento">⌕</button></td></tr>';
     }).join('') : '<tr><td colspan="7"><div class="empty-state"><p>Nenhum documento localizado neste filtro.</p><small>Selecione o certificado e use “Sincronizar notas agora”.</small></div></td></tr>';
@@ -1196,11 +1202,11 @@
         '</div></section>',
         '<section class="card"><header class="card-header"><div><h2>◆ Certificados digitais</h2><small>A1 (.pfx ou .p12) por empresa e filial</small></div><div id="sefaz-certificate-actions">' + certButton + '</div></header><div class="card-body"><div id="sefaz-certificate-list"><div class="skeleton-line"></div></div></div></section>',
       '</div>',
-      '<section class="card sefaz-distribution-card"><header class="card-header"><div><h2>⌕ Notas fiscais vinculadas ao certificado</h2><small>Distribuição DF-e oficial · documentos emitidos, recebidos e eventos relacionados ao CPF/CNPJ</small></div><div class="page-actions"><a class="secondary-button" href="https://www.nfe.fazenda.gov.br/portal/" target="_blank" rel="noopener">Ambiente Nacional ↗</a></div></header><div class="card-body">',
-        '<div class="info-banner"><span>i</span><div><strong>Consulta oficial por NSU.</strong> O Ambiente Nacional retorna apenas documentos em que o titular do certificado é ator autorizado. A disponibilidade e o ritmo de entrega seguem as regras oficiais da Distribuição DF-e.</div></div>',
+      '<section class="card sefaz-distribution-card"><header class="card-header"><div><h2>⌕ Notas fiscais vinculadas ao certificado</h2><small>NF-e/CT-e/MDF-e (Distribuição DF-e) e NFS-e (ADN/Sistema Nacional) · documentos emitidos, recebidos e eventos relacionados ao CPF/CNPJ</small></div><div class="page-actions"><a class="secondary-button" href="https://www.nfe.fazenda.gov.br/portal/" target="_blank" rel="noopener">Ambiente Nacional ↗</a></div></header><div class="card-body">',
+        '<div class="info-banner"><span>i</span><div><strong>Consulta oficial por NSU.</strong> Nota de produto (NF-e/CT-e/MDF-e) e nota de serviço (NFS-e) usam dois ambientes oficiais distintos — o mesmo botão sincroniza os dois. Cada um só retorna documentos em que o titular do certificado é ator autorizado, seguindo o ritmo de entrega das regras oficiais.</div></div>',
         '<div class="sefaz-distribution-controls"><label class="field"><span>Certificado / empresa</span><select id="sefaz-distribution-certificate"><option value="">Selecione o certificado</option></select></label><label class="field"><span>Ambiente</span><select id="sefaz-distribution-environment"><option value="production">Produção</option><option value="homologation">Homologação</option></select></label><label class="field"><span>Senha somente para esta sessão</span><input id="sefaz-distribution-password" type="password" autocomplete="off" placeholder="Se a senha não foi salva"></label><button class="primary-button" data-action="sefaz-sync-distribution"' + (!apiEnabled() || !sefazCan('consult_documents') ? ' disabled' : '') + '>↻ Sincronizar notas agora</button></div>',
         '<div class="sefaz-distribution-context" id="sefaz-distribution-context"><span>Selecione um certificado A1 válido para localizar documentos.</span></div>',
-        '<div class="filters sefaz-distribution-filters"><label class="filter-field"><span>Movimento</span><select id="sefaz-distribution-direction"><option value="">Todos</option><option value="Emitida">Emitidas</option><option value="Recebida">Recebidas</option><option value="Relacionada">Relacionadas</option></select></label></div>',
+        '<div class="filters sefaz-distribution-filters"><label class="filter-field"><span>Movimento</span><select id="sefaz-distribution-direction"><option value="">Todos</option><option value="Emitida">Emitidas</option><option value="Recebida">Recebidas</option><option value="Relacionada">Relacionadas</option></select></label><label class="filter-field"><span>Documento</span><select id="sefaz-distribution-document-type"><option value="">Todos</option><option value="produto">Nota de produto (NF-e/CT-e/MDF-e)</option><option value="NFS-e">Nota de serviço (NFS-e)</option></select></label></div>',
         '<div class="table-wrap"><table><thead><tr><th>Chave / NSU</th><th>Empresa</th><th>Movimento</th><th>Documento</th><th>Situação</th><th>Recebimento</th><th></th></tr></thead><tbody id="sefaz-distribution-body"><tr><td colspan="7"><div class="skeleton-line"></div></td></tr></tbody></table></div>',
       '</div></section>',
       '<section class="card sefaz-xml-batch-card"><header class="card-header"><div><h2>▤ Lote mensal de XML</h2><small>Gere um ZIP com notas autorizadas e eventos de cancelamento organizados por mês</small></div><span class="tag tag--success">Arquivo seguro</span></header><div class="card-body">',
@@ -1220,7 +1226,7 @@
       '</div></section>',
       '<section class="sefaz-portals"><a href="https://www.nfe.fazenda.gov.br/portal/consultaRecaptcha.aspx" target="_blank" rel="noopener"><b>NF-e / NFC-e</b><small>Consulta pública oficial</small><span>↗</span></a><a href="https://www.cte.fazenda.gov.br/portal/consultaRecaptcha.aspx" target="_blank" rel="noopener"><b>CT-e</b><small>Portal nacional oficial</small><span>↗</span></a><a href="https://dfe-portal.svrs.rs.gov.br/MDFE" target="_blank" rel="noopener"><b>MDF-e</b><small>Portal SVRS oficial</small><span>↗</span></a><a href="https://www.nfse.gov.br/" target="_blank" rel="noopener"><b>NFS-e</b><small>Portal do Contribuinte</small><span>↗</span></a></section>',
       '<section id="sefaz-result"><div class="empty-state sefaz-result-empty"><span>▣</span><p>O resultado oficial ou a análise do XML aparecerá aqui.</p></div></section>',
-      '<section class="card"><header class="card-header"><div><h2>◷ Histórico de consultas</h2><small>Data, usuário, fonte e resultado oficial</small></div><div class="page-actions"><button class="secondary-button" data-action="sefaz-refresh">↻ Atualizar</button>' + (isAdmin() ? '<button class="secondary-button" data-action="sefaz-permissions">⚿ Permissões</button>' : '') + '</div></header><div class="card-body"><div class="filters sefaz-filters"><label class="filter-field"><span>Empresa</span><input id="sefaz-filter-company" placeholder="Nome ou CNPJ"></label><label class="filter-field"><span>Documento</span><select id="sefaz-filter-model"><option value="">Todos</option><option>NF-e</option><option>NFC-e</option><option>CT-e</option><option>MDF-e</option></select></label><label class="filter-field"><span>Situação</span><select id="sefaz-filter-status"><option value="">Todas</option><option>Autorizada</option><option>Cancelada</option><option>Pendente</option><option>Divergência</option><option>Erro crítico</option></select></label><label class="filter-field"><span>Período inicial</span><input id="sefaz-filter-from" type="date"></label><label class="filter-field"><span>Período final</span><input id="sefaz-filter-to" type="date"></label></div><div class="table-wrap"><table><thead><tr><th>Chave / modelo</th><th>Empresa</th><th>Situação</th><th>Ambiente</th><th>Consulta</th><th></th></tr></thead><tbody id="sefaz-history-body"><tr><td colspan="6"><div class="skeleton-line"></div></td></tr></tbody></table></div></div></section>'
+      '<section class="card"><header class="card-header"><div><h2>◷ Histórico de consultas</h2><small>Data, usuário, fonte e resultado oficial</small></div><div class="page-actions"><button class="secondary-button" data-action="sefaz-refresh">↻ Atualizar</button>' + (isAdmin() ? '<button class="secondary-button" data-action="sefaz-permissions">⚿ Permissões</button>' : '') + '</div></header><div class="card-body"><div class="filters sefaz-filters"><label class="filter-field"><span>Empresa</span><input id="sefaz-filter-company" placeholder="Nome ou CNPJ"></label><label class="filter-field"><span>Documento</span><select id="sefaz-filter-model"><option value="">Todos</option><option>NF-e</option><option>NFC-e</option><option>CT-e</option><option>MDF-e</option><option>NFS-e</option></select></label><label class="filter-field"><span>Situação</span><select id="sefaz-filter-status"><option value="">Todas</option><option>Autorizada</option><option>Cancelada</option><option>Pendente</option><option>Divergência</option><option>Erro crítico</option></select></label><label class="filter-field"><span>Período inicial</span><input id="sefaz-filter-from" type="date"></label><label class="filter-field"><span>Período final</span><input id="sefaz-filter-to" type="date"></label></div><div class="table-wrap"><table><thead><tr><th>Chave / modelo</th><th>Empresa</th><th>Situação</th><th>Ambiente</th><th>Consulta</th><th></th></tr></thead><tbody id="sefaz-history-body"><tr><td colspan="6"><div class="skeleton-line"></div></td></tr></tbody></table></div></div></section>'
     ].join('');
   }
   function readFileAsBase64(file) {
@@ -1337,17 +1343,30 @@
     var certificateId = $('#sefaz-distribution-certificate') ? $('#sefaz-distribution-certificate').value : '';
     var certificate = sefazState.certificates.find(function (item) { return item.id === certificateId; });
     if (!certificate) { toast('Certificado necessário', 'Selecione o certificado da empresa que deseja sincronizar.', 'warning'); return; }
-    if (!certificate.stateCode) { toast('UF necessária', 'Cadastre novamente o certificado informando a UF do estabelecimento.', 'warning'); return; }
+    var environment = $('#sefaz-distribution-environment').value, password = $('#sefaz-distribution-password').value;
     var button = $('[data-action="sefaz-sync-distribution"]');
+    var messages = [], hasError = false;
     try {
-      if (button) { button.disabled = true; button.textContent = 'Sincronizando Ambiente Nacional...'; }
-      var payload = await apiRequest('/api/sefaz/distribution', { method: 'POST', body: JSON.stringify({ certificateId: certificateId, environment: $('#sefaz-distribution-environment').value, stateCode: certificate.stateCode, sessionPassword: $('#sefaz-distribution-password').value }) });
-      var detail = payload.added + ' documento(s) novo(s). NSU ' + payload.lastNsu + ' de ' + payload.maxNsu + '.';
-      if (payload.hasMore) detail += ' Há mais documentos disponíveis; sincronize novamente para avançar.';
-      toast(payload.added ? 'Notas localizadas' : 'Sincronização concluída', detail + (payload.message ? ' ' + payload.message : ''), payload.ok ? '' : 'warning');
+      if (button) { button.disabled = true; button.textContent = 'Sincronizando NF-e e NFS-e...'; }
+      if (certificate.stateCode) {
+        try {
+          var nfePayload = await apiRequest('/api/sefaz/distribution', { method: 'POST', body: JSON.stringify({ certificateId: certificateId, environment: environment, stateCode: certificate.stateCode, sessionPassword: password }) });
+          var nfeDetail = 'NF-e/CT-e/MDF-e: ' + nfePayload.added + ' novo(s), NSU ' + nfePayload.lastNsu + ' de ' + nfePayload.maxNsu + '.';
+          if (nfePayload.hasMore) nfeDetail += ' Há mais — sincronize de novo para avançar.';
+          messages.push(nfeDetail);
+        } catch (error) { hasError = true; messages.push('NF-e/CT-e/MDF-e: ' + error.message); }
+      } else {
+        messages.push('NF-e/CT-e/MDF-e: cadastre a UF do certificado para sincronizar este documento.');
+      }
+      try {
+        var nfsePayload = await apiRequest('/api/nfse-nacional/sync', { method: 'POST', body: JSON.stringify({ certificateId: certificateId, environment: environment, sessionPassword: password }) });
+        var nfseDetail = 'NFS-e: ' + nfsePayload.added + ' novo(s), NSU ' + nfsePayload.lastNsu + ' de ' + nfsePayload.maxNsu + '.';
+        if (nfsePayload.hasMore) nfseDetail += ' Há mais — sincronize de novo para avançar.';
+        messages.push(nfseDetail);
+      } catch (error) { hasError = true; messages.push('NFS-e: ' + error.message); }
+      toast(hasError ? 'Sincronização concluída com pendências' : 'Notas sincronizadas', messages.join(' '), hasError ? 'warning' : '');
       await loadSefazData();
-    } catch (error) { toast('Sincronização não concluída', error.message, 'error'); }
-    finally { if (button) { button.disabled = !sefazCan('consult_documents'); button.textContent = '↻ Sincronizar notas agora'; } }
+    } finally { if (button) { button.disabled = !sefazCan('consult_documents'); button.textContent = '↻ Sincronizar notas agora'; } }
   }
   async function openSefazDistributedDocument(id) {
     try {
@@ -8682,7 +8701,7 @@
     else if (event.target.id === 'sefaz-distribution-certificate') updateSefazDistributionContext();
     else if (event.target.id === 'sefaz-xml-batch-certificate' || event.target.id === 'sefaz-xml-batch-month') updateSefazXmlBatchContext();
     else if (event.target.id === 'sefaz-xml-batch-environment') { event.target.dataset.userSelected = '1'; updateSefazXmlBatchContext(); }
-    else if (event.target.id === 'sefaz-distribution-direction') renderSefazDistributedDocuments();
+    else if (event.target.id === 'sefaz-distribution-direction' || event.target.id === 'sefaz-distribution-document-type') renderSefazDistributedDocuments();
     else if (['sefaz-filter-model', 'sefaz-filter-status', 'sefaz-filter-from', 'sefaz-filter-to'].indexOf(event.target.id) >= 0) loadSefazData();
   });
 

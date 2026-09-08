@@ -5578,6 +5578,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     ).fetchall()
                 history_rows = []
                 distributed_rows = []
+                nfse_distributed_rows = []
                 if "view_history" in permissions:
                     history_rows = database.execute(
                         f"SELECT id, access_key, model, company, environment, status, risk_level, official_code, consulted_by, consulted_at FROM fiscal_queries WHERE {condition_sql} ORDER BY consulted_at DESC LIMIT 250",
@@ -5596,6 +5597,20 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         ORDER BY d.received_at DESC, d.nsu DESC LIMIT 250
                         """,
                         distributed_values,
+                    ).fetchall()
+                    nfse_distributed_filter = "AND fq.company_id = ?" if not is_super_admin else ""
+                    nfse_distributed_values = [user["company_id"]] if not is_super_admin else []
+                    nfse_distributed_rows = database.execute(
+                        f"""
+                        SELECT fq.id, fq.xml_filename, fq.access_key, fq.environment, fq.consulted_at,
+                               fq.result_encrypted, c.company, c.branch, c.state_code
+                        FROM fiscal_queries fq
+                        JOIN fiscal_certificates c ON c.id = fq.certificate_id
+                        WHERE fq.model = 'NFS-e' AND fq.record_origin IN ('adn_distribution_sync', 'official_monthly_import')
+                        {nfse_distributed_filter}
+                        ORDER BY fq.consulted_at DESC LIMIT 250
+                        """,
+                        nfse_distributed_values,
                     ).fetchall()
                 distribution_filter = "WHERE s.company_id = ?" if not is_super_admin else ""
                 distribution_values = [user["company_id"]] if not is_super_admin else []
@@ -5654,7 +5669,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     for row in permission_rows:
                         grouped.setdefault(row["email"], []).append(row["permission"])
                     permission_matrix = [{"email": email, "permissions": assigned} for email, assigned in grouped.items()]
-            stats = {"total": 0, "authorized": 0, "cancelled": 0, "pending": 0, "divergent": 0, "located": len(distributed_rows)}
+            stats = {"total": 0, "authorized": 0, "cancelled": 0, "pending": 0, "divergent": 0, "located": len(distributed_rows) + len(nfse_distributed_rows)}
             for row in stats_rows:
                 amount = row["amount"]
                 stats["total"] += amount
@@ -5698,6 +5713,25 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     "receivedAt": row["received_at"], "company": row["company"],
                     "branch": row["branch"], "state": UF_NAMES.get(row["state_code"] or "", ""),
                 })
+            fernet_for_nfse = get_fernet() if nfse_distributed_rows else None
+            for row in nfse_distributed_rows:
+                try:
+                    result = json.loads(fernet_for_nfse.decrypt(row["result_encrypted"]).decode("utf-8"))
+                except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+                    continue
+                key = row["access_key"] or ""
+                nsu_match = re.search(r"adn-nsu-(\d+)", row["xml_filename"] or "")
+                distributed.append({
+                    "id": row["id"], "nsu": nsu_match.group(1) if nsu_match else "—", "schemaName": "NFS-e (ADN/Sistema Nacional)",
+                    "model": "NFS-e", "accessKey": key if can_sensitive else "",
+                    "keyMasked": key if can_sensitive else (key[:6] + "…" + key[-8:] if key else "Evento sem chave"),
+                    "direction": result.get("direction", "Relacionada"), "status": result.get("status", "Documento localizado"),
+                    "environment": row["environment"],
+                    "environmentLabel": "Produção" if row["environment"] == "production" else "Homologação",
+                    "receivedAt": row["consulted_at"], "company": row["company"],
+                    "branch": row["branch"], "state": UF_NAMES.get(row["state_code"] or "", ""),
+                })
+            distributed.sort(key=lambda item: item["receivedAt"] or "", reverse=True)
             distribution_states = [{
                 "certificateId": row["certificate_id"], "environment": row["environment"],
                 "stateCode": row["state_code"], "state": UF_NAMES.get(row["state_code"] or "", ""),
