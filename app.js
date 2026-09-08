@@ -1093,7 +1093,7 @@
       return true;
     });
     target.innerHTML = documents.length ? documents.map(function (item) {
-      return '<tr><td><button class="link-button sefaz-key-link" data-action="sefaz-open-distributed" data-id="' + esc(item.id) + '">' + esc(item.keyMasked || item.accessKey || ('NSU ' + item.nsu)) + '</button><small class="subtle">NSU ' + esc(item.nsu) + ' · ' + esc(item.schemaName || '') + '</small></td><td>' + esc(item.company || '—') + '</td><td>' + esc(item.direction || 'Relacionada') + '</td><td>' + esc(item.model || 'Documento fiscal') + '</td><td>' + sefazStatusTag(item.status) + '</td><td>' + esc(item.receivedAt || '') + '</td><td><button class="row-button" data-action="sefaz-open-distributed" data-id="' + esc(item.id) + '" title="Abrir documento">⌕</button></td></tr>';
+      return '<tr><td><button class="link-button sefaz-key-link" data-action="sefaz-open-distributed" data-id="' + esc(item.id) + '" data-model="' + esc(item.model || '') + '">' + esc(item.keyMasked || item.accessKey || ('NSU ' + item.nsu)) + '</button><small class="subtle">NSU ' + esc(item.nsu) + ' · ' + esc(item.schemaName || '') + '</small></td><td>' + esc(item.company || '—') + '</td><td>' + esc(item.direction || 'Relacionada') + '</td><td>' + esc(item.model || 'Documento fiscal') + '</td><td>' + sefazStatusTag(item.status) + '</td><td>' + esc(item.receivedAt || '') + '</td><td><button class="row-button" data-action="sefaz-open-distributed" data-id="' + esc(item.id) + '" data-model="' + esc(item.model || '') + '" title="Abrir documento">⌕</button></td></tr>';
     }).join('') : '<tr><td colspan="7"><div class="empty-state"><p>Nenhum documento localizado neste filtro.</p><small>Selecione o certificado e use “Sincronizar notas agora”.</small></div></td></tr>';
   }
   function renderSefazHistory() {
@@ -1368,9 +1368,13 @@
       await loadSefazData();
     } finally { if (button) { button.disabled = !sefazCan('consult_documents'); button.textContent = '↻ Sincronizar notas agora'; } }
   }
-  async function openSefazDistributedDocument(id) {
+  async function openSefazDistributedDocument(id, model) {
     try {
-      var result = await apiRequest('/api/sefaz/distribution/documents/' + encodeURIComponent(id));
+      // NFS-e chegada pelo ADN é gravada em fiscal_queries (mesma tabela da
+      // consulta por chave), não em distributed_documents — usa a rota certa
+      // conforme a origem do registro, igual ao Histórico de consultas.
+      var endpoint = model === 'NFS-e' ? '/api/sefaz/history/' + encodeURIComponent(id) : '/api/sefaz/distribution/documents/' + encodeURIComponent(id);
+      var result = await apiRequest(endpoint);
       renderSefazResult(result);
       $('#sefaz-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (error) { toast('Documento indisponível', error.message, 'error'); }
@@ -8419,7 +8423,7 @@
     else if (action === 'sefaz-sync-distribution') syncSefazDistribution();
     else if (action === 'sefaz-select-nfse-monthly-package') $('#sefaz-nfse-monthly-file').click();
     else if (action === 'sefaz-generate-xml-batch') generateSefazXmlBatch();
-    else if (action === 'sefaz-open-distributed') openSefazDistributedDocument(actionEl.getAttribute('data-id'));
+    else if (action === 'sefaz-open-distributed') openSefazDistributedDocument(actionEl.getAttribute('data-id'), actionEl.getAttribute('data-model'));
     else if (action === 'sefaz-query') consultSefazDocument();
     else if (action === 'sefaz-open-nfse-public') openNfsePublicConsultation();
     else if (action === 'sefaz-clear-query' || action === 'sefaz-new-query') {
