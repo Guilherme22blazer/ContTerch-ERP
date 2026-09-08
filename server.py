@@ -32,6 +32,10 @@ from urllib.request import Request, urlopen
 
 import bcrypt
 import stripe
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 import db
 
@@ -161,6 +165,7 @@ ERP_MODULES = {
     "tab_aliquotas_iss": "Alíquotas do ISS",
     "tab_aliquotas_municipais": "Alíquotas Municipais",
     "tab_emissor_nfe": "Emissor de Nota Fiscal (NFE.io)",
+    "tab_nfse_nacional": "NFS-e Portal Nacional",
     "tab_simulador_locacao": "Simulador de Locação",
     "tab_nbs_cclasstrib": "NBS / cClassTrib",
     "tab_calculadora_tributaria": "Calculadora Tributária",
@@ -190,7 +195,7 @@ FISCAL_TAB_MODULES = {
     "tab_mei_ibs_cbs", "tab_parametros_2026", "tab_consulta_cnpj", "tab_inscricao_estadual",
     "tab_cnae_servicos", "tab_ncm_tipi", "tab_consulta_cest", "tab_cfop", "tab_icms_difal",
     "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_aliquotas_municipais", "tab_simulador_locacao",
-    "tab_nbs_cclasstrib", "tab_calculadora_tributaria", "tab_cnpj_simples", "tab_emissor_nfe",
+    "tab_nbs_cclasstrib", "tab_calculadora_tributaria", "tab_cnpj_simples", "tab_emissor_nfe", "tab_nfse_nacional",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis"}
 TRABALHISTA_TAB_MODULES = {
@@ -214,7 +219,7 @@ DEFAULT_PLAN_MODULES = {
 }
 LEGACY_MODULE_MIGRATIONS = {
     "dashboard": {"tab_inicio", "tab_dashboard", "tab_kanban"},
-    "fiscal": {"tab_dashboard", "tab_icms_difal", "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_aliquotas_municipais", "tab_emissor_nfe"},
+    "fiscal": {"tab_dashboard", "tab_icms_difal", "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_aliquotas_municipais", "tab_emissor_nfe", "tab_nfse_nacional"},
     "contabil": CONTABIL_TAB_MODULES,
     "financeiro": TRABALHISTA_TAB_MODULES,
     "clientes": {"tab_clientes"},
@@ -308,6 +313,20 @@ NFSE_ENDPOINTS = {
 }
 NFSE_DOCUMENTATION = "https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecnica/documentacao-atual/documentacao-atual"
 NFSE_CONTRIBUTOR_API_DOCUMENTATION = "https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecnica/documentacao-atual/manual-contribuintes-apis-adn-sistema-nacional-nfse.pdf"
+# Distribuição em lote (por NSU) do Ambiente de Dados Nacional (ADN) da
+# NFS-e — devolve os documentos em que o CNPJ do certificado aparece como
+# prestador, tomador ou intermediário (equivalente, para NFS-e, à
+# Distribuição DF-e da NF-e). A URL de produção é documentada no Manual do
+# Contribuinte das APIs do ADN (NFSE_CONTRIBUTOR_API_DOCUMENTATION); a de
+# homologação segue por convenção o mesmo padrão já usado acima para
+# sefin.nfse.gov.br / sefin.producaorestrita.nfse.gov.br, mas não pôde ser
+# confirmada de forma independente neste ambiente — vale conferir no
+# primeiro uso real com certificado.
+NFSE_ADN_ENDPOINTS = {
+    "production": "https://adn.nfse.gov.br/contribuintes/DFe/{nsu}",
+    "homologation": "https://adn.producaorestrita.nfse.gov.br/contribuintes/DFe/{nsu}",
+}
+NFSE_NATIONAL_PORTAL_LOGIN = "https://www.nfse.gov.br/EmissorNacional/login"
 
 
 def connect():
@@ -1633,6 +1652,17 @@ def xml_text(node: ET.Element | None, name: str) -> str:
     return ""
 
 
+def format_document_display(value: str) -> str:
+    if "*" in str(value or ""):
+        return value
+    document = digits(value)
+    if len(document) == 14:
+        return f"{document[0:2]}.{document[2:5]}.{document[5:8]}/{document[8:12]}-{document[12:14]}"
+    if len(document) == 11:
+        return f"{document[0:3]}.{document[3:6]}.{document[6:9]}-{document[9:11]}"
+    return value or ""
+
+
 def money_text(value: str) -> str:
     if not value:
         return ""
@@ -1756,6 +1786,92 @@ def nfse_api_query(
             raise RuntimeError(f"A SEFIN Nacional recusou a consulta HTTP {error.code}. {detail[:260]}") from error
         except (URLError, TimeoutError, ssl.SSLError, OSError) as error:
             raise RuntimeError(classify_official_connection_error(error, "A SEFIN Nacional", endpoint, str(cert_path), str(key_path))) from error
+
+
+def nfse_adn_distribution_request(nsu: str, environment: str, pfx_data: bytes, password: str) -> dict:
+    """Consulta em lote (por NSU) o ADN da NFS-e. Ao contrário da Distribuição
+    DF-e da NF-e (SOAP/XML com nomes de campo fixos e documentados), esta é
+    uma API REST/JSON cujo formato exato do envelope de resposta não pôde
+    ser confirmado de forma independente neste ambiente (sem acesso de rede
+    a gov.br) — por isso o parsing abaixo é deliberadamente tolerante a
+    variações de nome de campo, reaproveitando extract_nfse_xml (já usado
+    para a consulta por chave da SEFIN Nacional) para localizar o XML de
+    cada documento dentro do envelope, seja qual for o nome do campo."""
+    if environment not in NFSE_ADN_ENDPOINTS:
+        raise ValueError("Ambiente fiscal inválido.")
+    normalized_nsu = digits(nsu).lstrip("0") or "0"
+    endpoint = NFSE_ADN_ENDPOINTS[environment].format(nsu=normalized_nsu)
+    with tempfile.TemporaryDirectory(prefix="gestao-fiscal-adn-") as temporary:
+        cert_path, key_path = certificate_pem_files(pfx_data, password, Path(temporary))
+        context = build_official_ssl_context()
+        context.load_cert_chain(str(cert_path), str(key_path))
+        request = Request(endpoint, method="GET", headers={"Accept": "application/json", "User-Agent": "ContTechERP/1.0"})
+        try:
+            with urlopen(request, context=context, timeout=35) as response:
+                raw = response.read(20_000_000)
+        except HTTPError as error:
+            if error.code == 404:
+                return {"documents": [], "last_nsu": normalized_nsu, "max_nsu": normalized_nsu, "has_more": False, "endpoint": endpoint}
+            detail = error.read(4000).decode("utf-8", errors="replace")
+            try:
+                parsed_error = json.loads(detail)
+                detail = str(parsed_error.get("mensagem") or parsed_error.get("message") or parsed_error.get("detail") or detail)
+            except json.JSONDecodeError:
+                pass
+            if error.code in {401, 403}:
+                raise ValueError("O certificado não possui autorização para consultar o ADN da NFS-e para este CNPJ.") from error
+            raise RuntimeError(f"O ADN da NFS-e recusou a consulta HTTP {error.code}. {detail[:260]}") from error
+        except (URLError, TimeoutError, ssl.SSLError, OSError) as error:
+            raise RuntimeError(classify_official_connection_error(error, "O Ambiente de Dados Nacional (ADN) da NFS-e", endpoint, str(cert_path), str(key_path))) from error
+    try:
+        envelope = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("O ADN da NFS-e respondeu em formato inesperado.") from error
+
+    def find_list(value: object) -> list | None:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            for key in ("loteDFe", "lote", "documentos", "DFe", "dados", "items", "content", "resultado"):
+                if isinstance(value.get(key), list):
+                    return value[key]
+            for item in value.values():
+                found = find_list(item)
+                if found is not None:
+                    return found
+        return None
+
+    def find_number(value: object, names: set[str]) -> str:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                if normalized in names and re.fullmatch(r"\d+", str(item).strip()):
+                    return str(item).strip()
+            for item in value.values():
+                found = find_number(item, names)
+                if found:
+                    return found
+        return ""
+
+    entries = find_list(envelope) or []
+    max_nsu_reported = find_number(envelope, {"maiornsu", "maxnsu", "nsumax", "ultimonsu", "maiornsudolote"})
+    documents = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_nsu = find_number(entry, {"nsu", "numeronsu"}) or normalized_nsu
+        try:
+            xml_data, _ = extract_nfse_xml(json.dumps(entry).encode("utf-8"), "application/json")
+        except RuntimeError:
+            continue
+        documents.append({"nsu": entry_nsu, "xml": xml_data})
+    documents.sort(key=lambda item: int(item["nsu"]))
+    last_nsu = documents[-1]["nsu"] if documents else normalized_nsu
+    max_nsu = max(int(max_nsu_reported or 0), int(last_nsu))
+    return {
+        "documents": documents, "last_nsu": str(last_nsu), "max_nsu": str(max_nsu),
+        "has_more": int(last_nsu) < max_nsu, "endpoint": endpoint,
+    }
 
 
 def parse_nfse_xml(xml_data: bytes, access_key: str) -> dict:
@@ -4133,6 +4249,207 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "coverage": manifest["coverage"],
         }
 
+    def build_nfse_nacional_rows(self, params: dict, user: sqlite3.Row) -> list[dict]:
+        """Lê as NFS-e do padrão nacional já sincronizadas (via ADN ou
+        importação manual do pacote mensal) e devolve uma lista normalizada,
+        pronta tanto para a prévia em tela quanto para a exportação em
+        Excel — uma única fonte de verdade para os dois modelos de
+        relatório (Simples/Completo)."""
+        def qp(name: str, default: str = "") -> str:
+            values = params.get(name)
+            return str(values[0]).strip() if values else default
+
+        direction_filter = qp("tipo", "all")
+        date_from, date_to = qp("dateFrom"), qp("dateTo")
+        certificate_id = qp("certificateId")
+        can_sensitive = "view_sensitive" in self.permissions_for(user)
+        is_super_admin = self.is_super_admin(user)
+        with connect() as database:
+            if is_super_admin:
+                certificates = {row["id"]: row for row in database.execute("SELECT * FROM fiscal_certificates").fetchall()}
+            else:
+                certificates = {
+                    row["id"]: row
+                    for row in database.execute("SELECT * FROM fiscal_certificates WHERE company_id = ?", (user["company_id"],)).fetchall()
+                }
+            where, values = ["model = 'NFS-e'"], []
+            if not is_super_admin:
+                where.append("company_id = ?"); values.append(user["company_id"])
+            if certificate_id:
+                where.append("certificate_id = ?"); values.append(certificate_id)
+            rows = database.execute(
+                f"SELECT * FROM fiscal_queries WHERE {' AND '.join(where)} ORDER BY consulted_at DESC LIMIT 5000",
+                values,
+            ).fetchall()
+        fernet = get_fernet()
+        records = []
+        for row in rows:
+            certificate = certificates.get(row["certificate_id"])
+            record = decrypt_and_normalize_record(row, "query", digits(certificate["document"]) if certificate else "", fernet)
+            if record is None:
+                continue
+            issue_date = (record["issuedAt"] or "")[:10]
+            if date_from and (not issue_date or issue_date < date_from):
+                continue
+            if date_to and (not issue_date or issue_date > date_to):
+                continue
+            direction_label = str(record["direction"] or "").casefold()
+            if direction_filter == "emitidas" and "emitida" not in direction_label:
+                continue
+            if direction_filter == "recebidas" and "recebida" not in direction_label:
+                continue
+            result = record["result"]
+            summary = result.get("summary") or {}
+            issuer = result.get("issuer") or {}
+            recipient = result.get("recipient") or {}
+            taxes = result.get("taxes") or {}
+            items = result.get("items") or [{}]
+            panel = result.get("nationalPanel") or {}
+            issuer_document, recipient_document = issuer.get("document", ""), recipient.get("document", "")
+            issuer_name, recipient_name = issuer.get("name", ""), recipient.get("name", "")
+            if not can_sensitive:
+                issuer_document = "*" * max(0, len(digits(issuer_document)) - 4) + digits(issuer_document)[-4:]
+                recipient_document = "*" * max(0, len(digits(recipient_document)) - 4) + digits(recipient_document)[-4:]
+                issuer_name = "Dados protegidos" if issuer_name else ""
+                recipient_name = "Dados protegidos" if recipient_name else ""
+            records.append({
+                "id": record["id"], "accessKey": record["key"] if can_sensitive else (record["key"][:6] + "…" + record["key"][-8:] if record["key"] else ""),
+                "direction": record["direction"],
+                "status": record["status"], "issuedAt": record["issuedAt"],
+                "number": summary.get("number", ""), "competence": summary.get("competence", ""),
+                "issuerName": issuer_name, "issuerDocument": issuer_document,
+                "issuerAddress": issuer.get("address", "") if can_sensitive else "", "issuerCity": issuer.get("city", ""),
+                "recipientName": recipient_name, "recipientDocument": recipient_document,
+                "recipientAddress": recipient.get("address", "") if can_sensitive else "", "recipientCity": recipient.get("city", ""),
+                "serviceDescription": (items[0] or {}).get("description", ""),
+                "serviceCode": (items[0] or {}).get("code", ""),
+                "serviceValue": taxes.get("Total dos serviços", ""), "taxes": taxes,
+                "netValue": taxes.get("Valor líquido", "") or (result.get("billing") or {}).get("netValue", ""),
+                "identification": panel.get("identification", {}), "service": panel.get("service", {}),
+                "municipalTax": panel.get("municipalTax", {}), "federalTax": panel.get("federalTax", {}),
+                "ibsCbs": panel.get("ibsCbs", {}), "totals": panel.get("totals", {}), "additional": panel.get("additional", {}),
+            })
+        return records
+
+    def build_nfse_nacional_consulta(self, params: dict, user: sqlite3.Row) -> dict:
+        records = self.build_nfse_nacional_rows(params, user)
+
+        def qp(name: str, default: str = "") -> str:
+            values = params.get(name)
+            return str(values[0]).strip() if values else default
+
+        try:
+            page = max(1, int(qp("page", "1") or "1"))
+        except ValueError:
+            page = 1
+        try:
+            page_size = min(200, max(1, int(qp("pageSize", "25") or "25")))
+        except ValueError:
+            page_size = 25
+        stats = {
+            "total": len(records), "processadas": len(records),
+            "emitidas": sum(1 for record in records if "emitida" in record["direction"].casefold()),
+            "recebidas": sum(1 for record in records if "recebida" in record["direction"].casefold()),
+            "canceladas": sum(1 for record in records if "cancel" in record["status"].casefold()),
+        }
+        start = (page - 1) * page_size
+        items = [
+            {
+                "id": record["id"], "number": record["number"], "issuedAt": record["issuedAt"],
+                "issuerName": record["issuerName"], "issuerDocument": record["issuerDocument"],
+                "recipientName": record["recipientName"], "recipientDocument": record["recipientDocument"],
+                "serviceDescription": record["serviceDescription"], "serviceCode": record["serviceCode"],
+                "serviceValue": record["serviceValue"], "netValue": record["netValue"],
+                "status": record["status"], "direction": record["direction"],
+            }
+            for record in records[start:start + page_size]
+        ]
+        return {"items": items, "total": len(records), "page": page, "pageSize": page_size, "stats": stats}
+
+    def build_nfse_nacional_xlsx(self, records: list[dict], report_model: str) -> bytes:
+        """Gera o .xlsx (Simples ou Completo) a partir dos mesmos registros
+        normalizados usados na prévia em tela — cabeçalho com destaque,
+        filtro automático, largura de coluna e formatação de valores/datas,
+        conforme pedido."""
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "NFS-e Simples" if report_model == "simples" else "NFS-e Completo"
+        if report_model == "simples":
+            headers = [
+                "Número da nota", "Data de emissão", "Prestador", "CNPJ/CPF do prestador",
+                "Tomador", "CNPJ/CPF do tomador", "Descrição resumida do serviço", "Código do serviço",
+                "Valor do serviço", "Impostos", "Valor líquido", "Situação da NFS-e",
+            ]
+            rows = []
+            for record in records:
+                taxes_text = "; ".join(f"{label}: {value}" for label, value in (record["taxes"] or {}).items() if label not in {"Total dos serviços", "Valor líquido"})
+                rows.append([
+                    record["number"], record["issuedAt"][:10] if record["issuedAt"] else "",
+                    record["issuerName"], format_document_display(record["issuerDocument"]),
+                    record["recipientName"], format_document_display(record["recipientDocument"]),
+                    record["serviceDescription"], record["serviceCode"],
+                    record["serviceValue"], taxes_text, record["netValue"], record["status"],
+                ])
+        else:
+            headers = [
+                "Número da NFS-e", "Data e hora de emissão", "Competência", "Chave de identificação",
+                "Prestador — Nome", "Prestador — CNPJ/CPF", "Prestador — Endereço", "Prestador — Município",
+                "Tomador — Nome", "Tomador — CNPJ/CPF", "Tomador — Endereço", "Tomador — Município",
+                "Local da prestação", "Código de tributação nacional", "Descrição da tributação nacional",
+                "Código de tributação municipal", "Descrição completa do serviço",
+                "Valor dos serviços", "Desconto incondicionado", "Deduções / reduções",
+                "Base de cálculo do ISSQN", "Alíquota aplicada", "ISSQN apurado", "ISSQN retido",
+                "IRRF retido", "Contribuição previdenciária (INSS) retida", "PIS retido", "COFINS retida", "CSLL retida",
+                "Total das retenções federais", "Valor líquido da NFS-e",
+                "Situação da NFS-e", "Direção", "Informações complementares",
+            ]
+            rows = []
+            for record in records:
+                service, municipal, federal, identification, additional = (
+                    record["service"], record["municipalTax"], record["federalTax"],
+                    record["identification"], record["additional"],
+                )
+                rows.append([
+                    record["number"], record["issuedAt"], identification.get("Competência da NFS-e", ""),
+                    record["accessKey"],
+                    record["issuerName"], format_document_display(record["issuerDocument"]),
+                    record["issuerAddress"], record["issuerCity"],
+                    record["recipientName"], format_document_display(record["recipientDocument"]),
+                    record["recipientAddress"], record["recipientCity"],
+                    service.get("Local da prestação", ""), service.get("Código de tributação nacional", ""),
+                    service.get("Descrição da tributação nacional", ""), service.get("Código de tributação municipal", ""),
+                    record["serviceDescription"],
+                    municipal.get("Valor do serviço", ""), municipal.get("Desconto incondicionado", ""),
+                    municipal.get("Deduções / reduções", ""), municipal.get("Base de cálculo do ISSQN", ""),
+                    municipal.get("Alíquota aplicada", ""), municipal.get("ISSQN apurado", ""), municipal.get("ISSQN retido", ""),
+                    federal.get("IRRF retido", ""), federal.get("Contribuição previdenciária retida", ""),
+                    federal.get("PIS retido", ""), federal.get("COFINS retida", ""), federal.get("CSLL retida", ""),
+                    federal.get("Total das retenções federais", ""), record["totals"].get("Valor líquido da NFS-e", "") or record["netValue"],
+                    record["status"], record["direction"], additional.get("Informações complementares", ""),
+                ])
+        sheet.append(headers)
+        header_fill = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = header_fill
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        for row in rows:
+            sheet.append(row)
+        last_row = max(len(rows) + 1, 2)
+        last_col = get_column_letter(len(headers))
+        table_range = f"A1:{last_col}{last_row}"
+        table = Table(displayName="NFSeDados", ref=table_range)
+        table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+        sheet.add_table(table)
+        for index, header in enumerate(headers, start=1):
+            column_letter = get_column_letter(index)
+            width = max(14, min(42, len(header) + 4))
+            sheet.column_dimensions[column_letter].width = width
+        sheet.freeze_panes = "A2"
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue()
+
     def build_documents_explorer(self, params: dict, user: sqlite3.Row) -> dict:
         def qp(name: str, default: str = "") -> str:
             values = params.get(name)
@@ -4507,6 +4824,109 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "received": len(official["documents"]), "added": added,
             "hasMore": int(official["last_nsu"] or 0) < int(official["max_nsu"] or 0),
             "documents": documents, "sourceUrl": DISTRIBUTION_PORTAL,
+        }
+
+    def perform_nfse_adn_sync(self, payload: dict, user: sqlite3.Row) -> dict:
+        """Baixa um lote (por NSU) do ADN da NFS-e para o certificado
+        selecionado. Espelha perform_distribution_sync (NF-e): cada chamada
+        avança o cursor de NSU e devolve hasMore — o front-end chama de novo
+        até esgotar o lote, alimentando a barra de progresso. Usa
+        distribution_state com state_code='NAC' (pseudo-UF nacional, já que
+        o ADN é um único ambiente nacional, sem distinção por UF) e grava os
+        documentos reconhecidos em fiscal_queries, reaproveitando
+        nfse_import_result — a mesma função já usada pela importação manual
+        do pacote mensal oficial, o que garante que os dois caminhos
+        produzam exatamente a mesma classificação de Emitida/Recebida."""
+        certificate = self.certificate_row(str(payload.get("certificateId", "")), user)
+        if certificate is None:
+            raise ValueError("Certificado não encontrado ou removido.")
+        if certificate_status(certificate["valid_until"]) == "Vencido":
+            raise ValueError("O certificado selecionado está vencido.")
+        environment = str(payload.get("environment") or certificate["environment"] or "production")
+        if environment not in NFSE_ADN_ENDPOINTS:
+            raise ValueError("Ambiente fiscal inválido.")
+        holder_document = digits(certificate["document"])
+        if len(holder_document) not in {11, 14}:
+            raise ValueError("O certificado não possui CPF/CNPJ identificável para consultar o ADN.")
+        pfx_data, password = self.certificate_credentials(certificate, str(payload.get("sessionPassword", "")))
+        with connect() as database:
+            state = database.execute(
+                "SELECT last_nsu, max_nsu FROM distribution_state WHERE certificate_id = ? AND environment = ? AND state_code = 'NAC'",
+                (certificate["id"], environment),
+            ).fetchone()
+        last_nsu = state["last_nsu"] if state else "0"
+        official = nfse_adn_distribution_request(last_nsu, environment, pfx_data, password)
+        fernet = get_fernet()
+        with connect() as database:
+            existing_hashes = {
+                row["xml_sha256"]
+                for row in database.execute(
+                    "SELECT xml_sha256 FROM fiscal_queries WHERE certificate_id = ? AND environment = ? AND xml_sha256 IS NOT NULL",
+                    (certificate["id"], environment),
+                ).fetchall()
+            }
+        now = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        batch_id = uuid.uuid4().hex
+        added, duplicates, cancellations, errors, documents = 0, 0, 0, [], []
+        with connect() as database:
+            for item in official["documents"]:
+                sha256 = hashlib.sha256(item["xml"]).hexdigest()
+                try:
+                    parsed = nfse_import_result(item["xml"], holder_document, environment)
+                except LookupError:
+                    continue
+                except ValueError as error:
+                    errors.append(str(error))
+                    continue
+                result = parsed["result"]
+                if parsed["cancelled"]:
+                    cancellations += 1
+                documents.append({"nsu": item["nsu"], "accessKey": result["accessKey"], "direction": result.get("direction", ""), "status": result["status"]})
+                if sha256 in existing_hashes:
+                    duplicates += 1
+                    continue
+                existing_hashes.add(sha256)
+                result["id"] = uuid.uuid4().hex
+                result["consultedAt"] = now
+                result["consultedBy"] = user["email"]
+                result["company"] = certificate["company"]
+                result["importBatchId"] = batch_id
+                encoded_result = fernet.encrypt(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+                encrypted_xml = fernet.encrypt(item["xml"])
+                database.execute(
+                    """
+                    INSERT INTO fiscal_queries(
+                      id, access_key, model, company, certificate_id, environment, status,
+                      risk_level, official_code, source_name, source_url, result_encrypted,
+                      xml_encrypted, xml_filename, xml_sha256, record_origin, import_batch_id,
+                      consulted_by, consulted_at, company_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        result["id"], result["accessKey"], "NFS-e", certificate["company"], certificate["id"],
+                        environment, result["status"], result["riskLevel"], result["officialCode"],
+                        result["sourceName"], result["sourceUrl"], encoded_result, encrypted_xml,
+                        f"adn-nsu-{item['nsu']}.xml", sha256, "adn_distribution_sync", batch_id,
+                        user["email"], now, user["company_id"],
+                    ),
+                )
+                added += 1
+            database.execute(
+                """
+                INSERT INTO distribution_state(certificate_id, environment, state_code, last_nsu, max_nsu, official_code, motive, updated_at, company_id)
+                VALUES (?, ?, 'NAC', ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(certificate_id, environment, state_code) DO UPDATE SET
+                  last_nsu = excluded.last_nsu, max_nsu = excluded.max_nsu,
+                  official_code = excluded.official_code, motive = excluded.motive, updated_at = excluded.updated_at
+                """,
+                (certificate["id"], environment, official["last_nsu"], official["max_nsu"], "200", "; ".join(errors)[:400] or "Lote processado", now, user["company_id"]),
+            )
+        self.audit(user["email"], "nfse_adn_sync", f"{certificate['company']} · NSU {last_nsu}>{official['last_nsu']} · {added} novo(s)")
+        return {
+            "added": added, "duplicates": duplicates, "cancellations": cancellations,
+            "processed": len(official["documents"]), "errors": errors,
+            "lastNsu": official["last_nsu"], "maxNsu": official["max_nsu"], "hasMore": official["has_more"],
+            "documents": documents,
         }
 
     def perform_fiscal_query(self, payload: dict, user: sqlite3.Row) -> dict:
@@ -5495,6 +5915,33 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             self.send_json(self.build_aliquotas_municipais_consulta(parse_qs(parsed_url.query)))
             return
+        if path == "/api/nfse-nacional/info":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_nfse_nacional"):
+                return
+            with connect() as database:
+                certificates = database.execute(
+                    "SELECT id, company, branch, document, environment, valid_until FROM fiscal_certificates WHERE company_id = ? AND active = 1 ORDER BY company, branch",
+                    (user["company_id"],),
+                ).fetchall()
+            self.send_json({
+                "certificates": [
+                    {
+                        "id": c["id"], "label": f"{c['company']} · {c['branch']}", "document": c["document"],
+                        "environment": c["environment"], "status": certificate_status(c["valid_until"]),
+                    }
+                    for c in certificates
+                ],
+                "nationalPortalLogin": NFSE_NATIONAL_PORTAL_LOGIN,
+                "documentationUrl": NFSE_DOCUMENTATION,
+            })
+            return
+        if path == "/api/nfse-nacional/consulta":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_nfse_nacional"):
+                return
+            self.send_json(self.build_nfse_nacional_consulta(parse_qs(parsed_url.query), user))
+            return
         if path == "/api/nfeio/settings":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_emissor_nfe"):
@@ -6244,6 +6691,39 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 self.send_json(self.import_nfse_monthly_package(payload, user))
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/nfse-nacional/sync":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_nfse_nacional"):
+                return
+            if not self.enforce_rate_limit("nfse_nacional_sync", limit=60, window_seconds=300):
+                self.send_rate_limited()
+                return
+            try:
+                self.send_json(self.perform_nfse_adn_sync(payload, user))
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/nfse-nacional/export":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_nfse_nacional"):
+                return
+            try:
+                report_model = str(payload.get("reportModel", "simples")).strip().lower()
+                if report_model not in {"simples", "completo"}:
+                    raise ValueError("Selecione o modelo do relatório: Simples ou Completo.")
+                params = {key: [str(value)] for key, value in payload.items() if key != "reportModel" and value not in (None, "")}
+                records = self.build_nfse_nacional_rows(params, user)
+                if not records:
+                    raise ValueError("Nenhuma NFS-e encontrada para os filtros selecionados.")
+                xlsx_bytes = self.build_nfse_nacional_xlsx(records, report_model)
+                filename = f"nfse-nacional-{report_model}-{dt.date.today().isoformat()}.xlsx"
+                self.audit(user["email"], "nfse_nacional_export", f"{report_model} · {len(records)} nota(s)")
+                self.send_json({"filename": filename, "dataBase64": base64.b64encode(xlsx_bytes).decode("ascii"), "count": len(records)})
             except (ValueError, RuntimeError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return

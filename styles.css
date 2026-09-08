@@ -431,6 +431,8 @@
 .nfeio-item-row{display:grid;grid-template-columns:1fr 2.4fr .7fr 1fr auto;gap:6px;align-items:center}
 .nfeio-item-row input{padding:8px;font-size:10px}
 .nfeio-item-row--header{font-size:8px;text-transform:uppercase;letter-spacing:.05em;color:#666c72;font-weight:800}
+.nfsen-progress-bar{height:8px;border-radius:4px;background:#e8ebee;overflow:hidden}
+.nfsen-progress-fill{height:100%;background:var(--green-700,#0f7a4b);transition:width .3s ease}
 .check-panel{border-color:#9eb6d7;background:#edf2f8;color:#324967}
 .check-panel input{accent-color:#003685}.check-panel b{color:#243b5a}
 .annex-label{border-color:#6282ae;color:#002c6b;background:#f3f7fb}

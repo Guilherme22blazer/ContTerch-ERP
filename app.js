@@ -45,6 +45,13 @@
     results: { items: [], total: 0, page: 1, pageSize: 50 },
     loading: false,
   };
+  var nfseNacionalState = {
+    info: { certificates: [], nationalPortalLogin: '', documentationUrl: '' }, loaded: false,
+    filters: { certificateId: '', tipo: 'emitidas', dateFrom: todayISO(), dateTo: todayISO(), quickPeriod: 'personalizado', reportModel: 'simples', environment: 'production' },
+    sync: { running: false, processed: 0, added: 0, duplicates: 0, cancellations: 0, errors: [], hasMore: false, started: false, iterations: 0 },
+    consulta: { items: [], total: 0, page: 1, pageSize: 25, stats: {} },
+    generating: false,
+  };
   var nfeioState = {
     loaded: false,
     settings: { configured: false, nfeioCompanyId: '', certificateId: '', certificateSyncedAt: null, certificateValidUntil: null, environment: 'production', company: null, availableCertificates: [] },
@@ -258,6 +265,7 @@
     { route: 'aliquotas-iss', label: 'Alíquotas do ISS', icon: '‰', desc: 'Consulta dos 200 serviços da LC 116 nas 27 capitais brasileiras' },
     { route: 'aliquotas-municipais', label: 'Alíquotas Municipais', icon: '⛭', desc: 'Consulta de alíquotas de ISS por estado, município e faixa de percentual' },
     { route: 'emissor-nfe', label: 'Emissor de Nota Fiscal (NFE.io)', icon: '▤', desc: 'Emissão de NFe, NFCe e CFe com certificado digital, integrada à API da NFE.io' },
+    { route: 'nfse-nacional', label: 'NFS-e Portal Nacional', icon: '⇓', desc: 'Consulta, importação e relatório em Excel das NFS-e emitidas e recebidas no Portal Nacional' },
     { route: 'simulador-locacao', label: 'Simulador de Locação', icon: '⌂', desc: 'Projeção de IBS e CBS para locação de bens imóveis e móveis' },
     { route: 'nbs-cclasstrib', label: 'NBS / cClassTrib', icon: '§', desc: 'Correlação de serviços e classificação IBS/CBS' },
     { route: 'calculadora-tributaria', label: 'Calculadora Tributária', icon: '▣', desc: 'Comparação entre regimes tributários' },
@@ -2861,6 +2869,185 @@
     loadNfeioInvoices();
   }
 
+  function nfseNacionalQuickPeriodRange(key) {
+    var today = new Date();
+    var iso = function (d) { return d.toISOString().slice(0, 10); };
+    if (key === 'hoje') return { from: iso(today), to: iso(today) };
+    if (key === '7dias') { var d7 = new Date(today); d7.setDate(d7.getDate() - 6); return { from: iso(d7), to: iso(today) }; }
+    if (key === 'mesatual') { var first = new Date(today.getFullYear(), today.getMonth(), 1); return { from: iso(first), to: iso(today) }; }
+    if (key === 'mespassado') { var firstPrev = new Date(today.getFullYear(), today.getMonth() - 1, 1); var lastPrev = new Date(today.getFullYear(), today.getMonth(), 0); return { from: iso(firstPrev), to: iso(lastPrev) }; }
+    if (key === 'anoatual') { var firstYear = new Date(today.getFullYear(), 0, 1); return { from: iso(firstYear), to: iso(today) }; }
+    return null;
+  }
+  function renderNfseNacional() {
+    if (!apiEnabled()) {
+      return [
+        pageHeading('NFS-e Portal Nacional', 'Consulta, importação e relatório em Excel das NFS-e do Sistema Nacional NFS-e.', ''),
+        '<div class="info-banner info-banner--warning"><span>!</span><div><strong>Ative o modo seguro para consultar o Portal Nacional da NFS-e.</strong></div></div>'
+      ].join('');
+    }
+    var info = nfseNacionalState.info;
+    var f = nfseNacionalState.filters;
+    var sync = nfseNacionalState.sync;
+    var consulta = nfseNacionalState.consulta;
+    var certOptions = '<option value="">Selecione um certificado</option>' + (info.certificates || []).map(function (c) {
+      return '<option value="' + esc(c.id) + '"' + (f.certificateId === c.id ? ' selected' : '') + (c.status === 'Vencido' ? ' disabled' : '') + '>' + esc(c.label) + (c.status === 'Vencido' ? ' (vencido)' : '') + '</option>';
+    }).join('');
+    var quickOptions = [['personalizado', 'Personalizado'], ['hoje', 'Hoje'], ['7dias', 'Últimos 7 dias'], ['mesatual', 'Este mês'], ['mespassado', 'Mês passado'], ['anoatual', 'Este ano']]
+      .map(function (pair) { return '<option value="' + pair[0] + '"' + (f.quickPeriod === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'; }).join('');
+    var progressPct = sync.hasMore || !sync.started ? (sync.running ? 60 : (sync.started ? 90 : 0)) : 100;
+    return [
+      pageHeading('NFS-e Portal Nacional', 'Consulta, importação e geração de relatório (Simples ou Completo) das NFS-e emitidas e recebidas no Sistema Nacional NFS-e, com download oficial via certificado digital.', ''),
+      '<div class="info-banner"><span>i</span><div><strong>Acesso oficial, sem captcha, por certificado digital.</strong> O download em lote (sem digitar cada chave) é feito pela API oficial do Ambiente de Dados Nacional (ADN) da NFS-e, autenticada pelo mesmo certificado A1/A3 já cadastrado no Captador de Notas. O acesso via GOV.BR é o portal manual do governo — abra-o para consultas avulsas ou para conferência humana; ele não substitui o certificado para o download automático em lote.</div></div>',
+      '<section class="card"><header class="card-header"><h2>① Acesso</h2></header><div class="card-body">' +
+        '<div class="filters" style="grid-template-columns:repeat(3,1fr)">' +
+          '<label class="filter-field"><span>Certificado digital</span><select id="nfsen-certificate" data-nfsen-input>' + certOptions + '</select></label>' +
+          '<label class="filter-field"><span>Senha do certificado (nesta sessão)</span><input id="nfsen-password" type="password" placeholder="Necessária apenas se ainda não informada"></label>' +
+          '<label class="filter-field"><span>Ambiente</span><select id="nfsen-environment" data-nfsen-input><option value="production"' + (f.environment === 'homologation' ? '' : ' selected') + '>Produção</option><option value="homologation"' + (f.environment === 'homologation' ? ' selected' : '') + '>Homologação</option></select></label>' +
+        '</div>' +
+        '<div class="page-actions" style="margin-top:8px"><a class="secondary-button" href="' + esc(info.nationalPortalLogin || 'https://www.nfse.gov.br/EmissorNacional/login') + '" target="_blank" rel="noopener noreferrer">↗ Acessar com GOV.BR (portal oficial)</a></div>' +
+      '</div></section>',
+      '<section class="card"><header class="card-header"><h2>② Tipo de NFS-e</h2></header><div class="card-body"><div class="captador-tab-group">' +
+        '<button type="button" class="segment' + (f.tipo === 'emitidas' ? ' active' : '') + '" data-action="nfsen-tipo" data-tipo="emitidas">⬆ Emitidas</button>' +
+        '<button type="button" class="segment' + (f.tipo === 'recebidas' ? ' active' : '') + '" data-action="nfsen-tipo" data-tipo="recebidas">⬇ Recebidas</button>' +
+      '</div></div></section>',
+      '<section class="card"><header class="card-header"><h2>③ Período de geração</h2></header><div class="card-body">' +
+        '<div class="filters" style="grid-template-columns:repeat(3,1fr)">' +
+          '<label class="filter-field"><span>Data inicial</span><input id="nfsen-date-from" type="date" data-nfsen-input value="' + esc(f.dateFrom) + '"></label>' +
+          '<label class="filter-field"><span>Data final</span><input id="nfsen-date-to" type="date" data-nfsen-input value="' + esc(f.dateTo) + '"></label>' +
+          '<label class="filter-field"><span>Período rápido</span><select id="nfsen-quick-period" data-nfsen-input>' + quickOptions + '</select></label>' +
+        '</div></div></section>',
+      '<section class="card"><header class="card-header"><h2>④ Gerar relação</h2></header><div class="card-body"><div class="captador-tab-group">' +
+        '<button type="button" class="segment' + (f.reportModel === 'simples' ? ' active' : '') + '" data-action="nfsen-report-model" data-model="simples">☰ Simples</button>' +
+        '<button type="button" class="segment' + (f.reportModel === 'completo' ? ' active' : '') + '" data-action="nfsen-report-model" data-model="completo">▤ Completa</button>' +
+      '</div></div></section>',
+      '<section class="card"><header class="card-header"><h2>Consultar NFS-e</h2></header><div class="card-body">' +
+        '<div class="page-actions"><button class="primary-button" data-action="nfsen-consultar"' + (sync.running ? ' disabled' : '') + '>' + (sync.running ? '↻ Consultando…' : '⌕ Consultar NFS-e') + '</button></div>' +
+        (sync.started ? '<div class="nfsen-progress" style="margin-top:10px"><div class="nfsen-progress-bar"><div class="nfsen-progress-fill" style="width:' + progressPct + '%"></div></div></div>' : '') +
+        (sync.started ? '<div class="nfeio-status-grid" style="margin-top:10px">' +
+          '<div><small>Total processadas</small><b>' + number(sync.processed) + '</b></div>' +
+          '<div><small>Notas novas</small><b>' + number(sync.added) + '</b></div>' +
+          '<div><small>Já sincronizadas</small><b>' + number(sync.duplicates) + '</b></div>' +
+          '<div><small>Canceladas</small><b>' + number(sync.cancellations) + '</b></div>' +
+          '<div><small>Erros</small><b>' + number(sync.errors.length) + '</b></div>' +
+        '</div>' : '') +
+        (sync.errors.length ? '<p class="subtle" style="margin-top:8px">' + esc(sync.errors.slice(0, 3).join(' · ')) + '</p>' : '') +
+      '</div></section>',
+      '<section class="card"><header class="card-header"><h2>Resultado (' + (f.tipo === 'emitidas' ? 'Emitidas' : 'Recebidas') + ' · ' + esc(f.dateFrom) + ' a ' + esc(f.dateTo) + ')</h2><div class="page-actions"><button class="secondary-button" data-action="nfsen-export"' + (consulta.total ? '' : ' disabled') + '>' + (nfseNacionalState.generating ? '↻ Gerando…' : '↧ Gerar Relatório em Excel') + '</button></div></header><div class="card-body">' +
+        '<div class="table-summary" style="margin-bottom:10px"><span>' + number(consulta.total) + ' NFS-e encontrada(s) no período · ' + number((consulta.stats || {}).canceladas || 0) + ' cancelada(s)</span></div>' +
+        '<div id="nfsen-table-wrap">' + nfseNacionalTableHtml() + '</div>' +
+      '</div></section>'
+    ].join('');
+  }
+  function nfseNacionalTableHtml() {
+    var payload = nfseNacionalState.consulta || { items: [], total: 0, page: 1, pageSize: 25 };
+    var items = payload.items || [];
+    var totalPages = Math.max(1, Math.ceil(payload.total / payload.pageSize));
+    var rows = items.length ? items.map(function (item) {
+      return '<tr><td>' + esc(item.number || '—') + '</td><td>' + esc(dateBR(item.issuedAt)) + '</td><td>' + esc(item.issuerName || '—') + '<br><small class="subtle">' + esc(formatCnpjDisplay(item.issuerDocument)) + '</small></td><td>' + esc(item.recipientName || '—') + '<br><small class="subtle">' + esc(formatCnpjDisplay(item.recipientDocument)) + '</small></td><td>' + esc(item.serviceDescription || '—') + '</td><td>' + esc(item.serviceValue || '—') + '</td><td>' + esc(item.netValue || '—') + '</td><td>' + nfeioStatusTagGeneric(item.status) + '</td></tr>';
+    }).join('') : '<tr><td colspan="8"><div class="empty-state"><i>⌕</i><h3>Nenhuma NFS-e encontrada</h3><p>Clique em "Consultar NFS-e" para baixar as notas do período pela API oficial.</p></div></td></tr>';
+    return '<div class="table-wrap"><table><thead><tr><th>Número</th><th>Emissão</th><th>Prestador</th><th>Tomador</th><th>Serviço</th><th>Valor</th><th>Líquido</th><th>Situação</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="table-summary captador-pager"><span>' + number(payload.total) + ' nota(s)</span><div class="captador-pager-controls">' +
+      '<button class="row-button" data-action="nfsen-page" data-page="' + (payload.page - 1) + '"' + (payload.page <= 1 ? ' disabled' : '') + '>‹</button><button class="row-button" data-action="nfsen-page" data-page="' + (payload.page + 1) + '"' + (payload.page >= totalPages ? ' disabled' : '') + '>›</button></div></div>';
+  }
+  function nfeioStatusTagGeneric(status) {
+    var kind = /cancel/i.test(status || '') ? 'danger' : /autoriz/i.test(status || '') ? 'success' : 'warning';
+    return '<span class="tag tag--' + kind + '">' + esc(status || '—') + '</span>';
+  }
+  function loadNfseNacionalInfo() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    return apiRequest('/api/nfse-nacional/info').then(function (payload) {
+      nfseNacionalState.info = payload;
+      nfseNacionalState.loaded = true;
+      if (state.route === 'nfse-nacional') route();
+    }).catch(function (error) { toast('Não foi possível carregar os certificados', error.message, 'error'); });
+  }
+  function loadNfseNacionalConsulta() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var f = nfseNacionalState.filters, params = new URLSearchParams();
+    params.set('tipo', f.tipo); params.set('dateFrom', f.dateFrom); params.set('dateTo', f.dateTo);
+    if (f.certificateId) params.set('certificateId', f.certificateId);
+    params.set('page', nfseNacionalState.consulta.page || 1);
+    params.set('pageSize', nfseNacionalState.consulta.pageSize || 25);
+    return apiRequest('/api/nfse-nacional/consulta?' + params.toString()).then(function (payload) {
+      nfseNacionalState.consulta = payload;
+      var wrap = $('#nfsen-table-wrap');
+      if (wrap) wrap.innerHTML = nfseNacionalTableHtml();
+    }).catch(function (error) { toast('Não foi possível consultar as NFS-e', error.message, 'error'); });
+  }
+  function updateNfseNacionalFilters() {
+    var f = nfseNacionalState.filters;
+    var field = function (id) { var el = $('#' + id); return el ? el.value : undefined; };
+    f.certificateId = field('nfsen-certificate') || '';
+    f.environment = field('nfsen-environment') || 'production';
+    var quickPeriod = field('nfsen-quick-period') || 'personalizado';
+    f.quickPeriod = quickPeriod;
+    var range = nfseNacionalQuickPeriodRange(quickPeriod);
+    if (range) { f.dateFrom = range.from; f.dateTo = range.to; }
+    else { f.dateFrom = field('nfsen-date-from') || f.dateFrom; f.dateTo = field('nfsen-date-to') || f.dateTo; }
+    route();
+  }
+  function setNfseNacionalTipo(tipo) {
+    nfseNacionalState.filters.tipo = tipo;
+    route();
+  }
+  function setNfseNacionalReportModel(model) {
+    nfseNacionalState.filters.reportModel = model;
+    route();
+  }
+  function setNfseNacionalPage(page) {
+    nfseNacionalState.consulta.page = Math.max(1, Number(page) || 1);
+    loadNfseNacionalConsulta();
+  }
+  async function consultarNfseNacional() {
+    var f = nfseNacionalState.filters;
+    var sync = nfseNacionalState.sync;
+    if (!f.certificateId) { toast('Selecione o certificado', 'Escolha o certificado digital cadastrado no Captador de Notas.', 'warning'); return; }
+    sync.running = true; sync.started = true; sync.processed = 0; sync.added = 0; sync.duplicates = 0; sync.cancellations = 0; sync.errors = []; sync.iterations = 0;
+    route();
+    var password = ($('#nfsen-password') || {}).value || '';
+    var hasMore = true;
+    try {
+      while (hasMore && sync.iterations < 50) {
+        var result = await apiRequest('/api/nfse-nacional/sync', {
+          method: 'POST',
+          body: JSON.stringify({ certificateId: f.certificateId, environment: f.environment || 'production', sessionPassword: password }),
+        });
+        password = '';
+        sync.processed += result.processed; sync.added += result.added; sync.duplicates += result.duplicates;
+        sync.cancellations += result.cancellations; sync.errors = sync.errors.concat(result.errors || []);
+        hasMore = result.hasMore; sync.hasMore = hasMore; sync.iterations += 1;
+        var el = $('#nfsen-table-wrap') ? $('.nfeio-status-grid') : null;
+        if (el) route();
+      }
+      audit('Consulta ao Portal Nacional da NFS-e', f.tipo + ' · ' + sync.added + ' nota(s) nova(s)');
+      toast('Consulta concluída', sync.added + ' nota(s) nova(s) sincronizada(s)' + (hasMore ? ' (ainda há mais — clique novamente para continuar).' : '.'));
+    } catch (error) {
+      toast('Não foi possível consultar', error.message, 'error');
+    } finally {
+      sync.running = false;
+      route();
+      await loadNfseNacionalConsulta();
+    }
+  }
+  async function exportNfseNacional() {
+    var f = nfseNacionalState.filters;
+    nfseNacionalState.generating = true; route();
+    try {
+      var result = await apiRequest('/api/nfse-nacional/export', {
+        method: 'POST',
+        body: JSON.stringify({ tipo: f.tipo, dateFrom: f.dateFrom, dateTo: f.dateTo, certificateId: f.certificateId, reportModel: f.reportModel }),
+      });
+      downloadFile(result.filename, base64ToBytes(result.dataBase64), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      audit('Relatório de NFS-e exportado em Excel', f.reportModel + ' · ' + result.count + ' nota(s)');
+      toast('Relatório gerado', result.count + ' nota(s) exportada(s) em Excel.');
+    } catch (error) {
+      toast('Não foi possível gerar o relatório', error.message, 'error');
+    } finally {
+      nfseNacionalState.generating = false; route();
+    }
+  }
+
   function cestNormalize(value) {
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
   }
@@ -4145,6 +4332,7 @@
     else if (state.route === 'aliquotas-iss') main.innerHTML = renderIssRates();
     else if (state.route === 'aliquotas-municipais') main.innerHTML = renderAliquotasMunicipais();
     else if (state.route === 'emissor-nfe') main.innerHTML = renderEmissorNfe();
+    else if (state.route === 'nfse-nacional') main.innerHTML = renderNfseNacional();
     else if (state.route === 'consulta-cest') main.innerHTML = renderCestConsultation();
     else if (state.route === 'simulador-locacao') main.innerHTML = renderRentalSimulator();
     else if (state.route === 'conttech-simples-nacional') main.innerHTML = renderSnSimulator();
@@ -4159,6 +4347,7 @@
     if (state.route === 'captador-notas-fiscais') { loadCaptadorCompanies(); if (captadorSection() === 'documentos') loadCaptadorDocuments(); }
     if (state.route === 'aliquotas-municipais') { loadAliquotasMunicipaisEstados(); loadAliquotasMunicipaisConsulta(); }
     if (state.route === 'emissor-nfe') { if (!nfeioState.loaded) loadNfeioSettings(); loadNfeioInvoices(); }
+    if (state.route === 'nfse-nacional') { if (!nfseNacionalState.loaded) loadNfseNacionalInfo(); if (!nfseNacionalState.sync.running) loadNfseNacionalConsulta(); }
     if (state.route === 'configuracoes') loadStripeSettings();
     if (state.route === 'gestao-usuarios' && window.UserAccessManager) window.UserAccessManager.mount(main, { user: currentUser, syncUsers: function (users) { state.users = (users || []).map(function (user) { return Object.assign({}, user, { active: user.status !== 'Inativo' }); }); storageSet(KEYS.users, state.users); } });
   }
@@ -8215,6 +8404,11 @@
     else if (action === 'nfeio-consultar') consultarNfeio(actionEl.getAttribute('data-id'));
     else if (action === 'nfeio-cancelar') cancelarNfeio(actionEl.getAttribute('data-id'));
     else if (action === 'nfeio-page') setNfeioPage(actionEl.getAttribute('data-page'));
+    else if (action === 'nfsen-tipo') setNfseNacionalTipo(actionEl.getAttribute('data-tipo'));
+    else if (action === 'nfsen-report-model') setNfseNacionalReportModel(actionEl.getAttribute('data-model'));
+    else if (action === 'nfsen-consultar') consultarNfseNacional();
+    else if (action === 'nfsen-export') exportNfseNacional();
+    else if (action === 'nfsen-page') setNfseNacionalPage(actionEl.getAttribute('data-page'));
     else if (action === 'auditor-view') setAuditorFiscalView(actionEl.getAttribute('data-view'));
     else if (action === 'auditor-select-type') selectAuditorFiscalType(actionEl.getAttribute('data-type'));
     else if (action === 'auditor-select-files') { var auditorInput = $('#auditor-sped-files'); if (auditorInput) auditorInput.click(); }
@@ -8423,6 +8617,7 @@
     else if (event.target.matches('[data-am-input]')) updateAliquotasMunicipaisFilters();
     else if (event.target.id === 'nfeio-kind') updateNfeioEmitField('kind', event.target.value, true);
     else if (event.target.matches('[data-nfeio-field]')) updateNfeioEmitField(event.target.getAttribute('data-nfeio-field'), event.target.value, false);
+    else if (event.target.matches('[data-nfsen-input]')) updateNfseNacionalFilters();
     else if (event.target.id === 'cd-select-all') toggleAllCaptadorDocumentSelection(event.target.checked);
     else if (event.target.matches('[data-cd-select]')) toggleCaptadorDocumentSelection(event.target.getAttribute('data-cd-select'), event.target.checked);
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
