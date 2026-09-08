@@ -421,6 +421,16 @@
 .official-link,.value-line b{color:#002c6b}
 .info-banner,.info-banner--blue{border-color:#9eb6d7;background:#edf2f8;color:#283e5c}
 .info-banner strong{color:#172d4a}
+.nfeio-feature-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}
+.nfeio-feature{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:10px;background:#f8fafb}
+.nfeio-feature span{color:var(--green-700);font-weight:900}
+.nfeio-status-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
+.nfeio-status-grid>div{border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.nfeio-status-grid small{display:block;font-size:8px;text-transform:uppercase;letter-spacing:.05em;color:#666c72;font-weight:800;margin-bottom:3px}
+.nfeio-items{display:grid;gap:6px}
+.nfeio-item-row{display:grid;grid-template-columns:1fr 2.4fr .7fr 1fr auto;gap:6px;align-items:center}
+.nfeio-item-row input{padding:8px;font-size:10px}
+.nfeio-item-row--header{font-size:8px;text-transform:uppercase;letter-spacing:.05em;color:#666c72;font-weight:800}
 .check-panel{border-color:#9eb6d7;background:#edf2f8;color:#324967}
 .check-panel input{accent-color:#003685}.check-panel b{color:#243b5a}
 .annex-label{border-color:#6282ae;color:#002c6b;background:#f3f7fb}

@@ -160,6 +160,7 @@ ERP_MODULES = {
     "tab_aliquotas_beneficios": "Alíquotas e Benefícios",
     "tab_aliquotas_iss": "Alíquotas do ISS",
     "tab_aliquotas_municipais": "Alíquotas Municipais",
+    "tab_emissor_nfe": "Emissor de Nota Fiscal (NFE.io)",
     "tab_simulador_locacao": "Simulador de Locação",
     "tab_nbs_cclasstrib": "NBS / cClassTrib",
     "tab_calculadora_tributaria": "Calculadora Tributária",
@@ -189,7 +190,7 @@ FISCAL_TAB_MODULES = {
     "tab_mei_ibs_cbs", "tab_parametros_2026", "tab_consulta_cnpj", "tab_inscricao_estadual",
     "tab_cnae_servicos", "tab_ncm_tipi", "tab_consulta_cest", "tab_cfop", "tab_icms_difal",
     "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_aliquotas_municipais", "tab_simulador_locacao",
-    "tab_nbs_cclasstrib", "tab_calculadora_tributaria", "tab_cnpj_simples",
+    "tab_nbs_cclasstrib", "tab_calculadora_tributaria", "tab_cnpj_simples", "tab_emissor_nfe",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis"}
 TRABALHISTA_TAB_MODULES = {
@@ -213,7 +214,7 @@ DEFAULT_PLAN_MODULES = {
 }
 LEGACY_MODULE_MIGRATIONS = {
     "dashboard": {"tab_inicio", "tab_dashboard", "tab_kanban"},
-    "fiscal": {"tab_dashboard", "tab_icms_difal", "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_aliquotas_municipais"},
+    "fiscal": {"tab_dashboard", "tab_icms_difal", "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_aliquotas_municipais", "tab_emissor_nfe"},
     "contabil": CONTABIL_TAB_MODULES,
     "financeiro": TRABALHISTA_TAB_MODULES,
     "clientes": {"tab_clientes"},
@@ -618,6 +619,143 @@ def stripe_effective_keys() -> dict:
         "publishable_key": stored["publishable_key"] or STRIPE_PUBLISHABLE_KEY,
         "webhook_secret": stored["webhook_secret"] or STRIPE_WEBHOOK_SECRET,
     }
+
+
+# Integração com a API oficial da NFE.io (https://nfe.io/docs/rest-api/)
+# para emissão de nota fiscal de produto (NFe/NFCe). A API Key é uma
+# credencial da conta NFE.io de cada empresa cliente — não é gerada por
+# este sistema, e fica cifrada em repouso (mesmo padrão do Stripe acima).
+NFEIO_API_BASE = "https://api.nfse.io/v2"
+
+
+def get_nfeio_settings(company_id: str) -> dict:
+    with connect() as database:
+        row = database.execute(
+            """
+            SELECT api_key_encrypted, nfeio_company_id, certificate_id, certificate_synced_at,
+                   certificate_valid_until, environment, updated_at
+            FROM nfeio_settings WHERE company_id = ?
+            """,
+            (company_id,),
+        ).fetchone()
+    if row is None:
+        return {
+            "api_key": "", "nfeio_company_id": "", "certificate_id": "",
+            "certificate_synced_at": None, "certificate_valid_until": None,
+            "environment": "production", "updated_at": None,
+        }
+    fernet = get_fernet()
+    api_key = ""
+    if row["api_key_encrypted"]:
+        try:
+            api_key = fernet.decrypt(bytes(row["api_key_encrypted"])).decode("utf-8")
+        except InvalidToken:
+            api_key = ""
+    return {
+        "api_key": api_key,
+        "nfeio_company_id": row["nfeio_company_id"] or "",
+        "certificate_id": row["certificate_id"] or "",
+        "certificate_synced_at": row["certificate_synced_at"],
+        "certificate_valid_until": row["certificate_valid_until"],
+        "environment": row["environment"] or "production",
+        "updated_at": row["updated_at"],
+    }
+
+
+def save_nfeio_settings(
+    company_id: str, *, api_key: str | None, nfeio_company_id: str | None,
+    certificate_id: str | None, environment: str | None, updated_by: str,
+) -> None:
+    """Salva a configuração da integração NFE.io. Campos em branco (None ou
+    "") preservam o valor já salvo — permite, por exemplo, atualizar apenas
+    o certificado vinculado sem reenviar a API Key."""
+    fernet = get_fernet()
+    with connect() as database:
+        existing = database.execute(
+            "SELECT api_key_encrypted, nfeio_company_id, certificate_id, environment FROM nfeio_settings WHERE company_id = ?",
+            (company_id,),
+        ).fetchone()
+        api_key_encrypted = (
+            fernet.encrypt(api_key.encode("utf-8")) if api_key
+            else (existing["api_key_encrypted"] if existing else None)
+        )
+        resolved_nfeio_company_id = nfeio_company_id if nfeio_company_id is not None else (existing["nfeio_company_id"] if existing else None)
+        resolved_certificate_id = certificate_id if certificate_id is not None else (existing["certificate_id"] if existing else None)
+        resolved_environment = environment or (existing["environment"] if existing else "production")
+        database.execute(
+            """
+            INSERT INTO nfeio_settings(company_id, api_key_encrypted, nfeio_company_id, certificate_id, environment, updated_by, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (company_id) DO UPDATE SET
+              api_key_encrypted = EXCLUDED.api_key_encrypted,
+              nfeio_company_id = EXCLUDED.nfeio_company_id,
+              certificate_id = EXCLUDED.certificate_id,
+              environment = EXCLUDED.environment,
+              updated_by = EXCLUDED.updated_by,
+              updated_at = EXCLUDED.updated_at
+            """,
+            (company_id, api_key_encrypted, resolved_nfeio_company_id, resolved_certificate_id, resolved_environment, updated_by, local_now()),
+        )
+
+
+def nfeio_request(method: str, path: str, api_key: str, body: dict | None = None, timeout: int = 25) -> tuple[int, dict]:
+    """Chama a API oficial da NFE.io (https://api.nfse.io/v2). Autenticação
+    por header X-NFE-APIKEY, conforme documentado em
+    https://nfe.io/docs/documentacao/nossa-plataforma/chaves-de-autenticacao/.
+    Nunca engole o erro: em caso de rejeição, propaga a mensagem original da
+    NFE.io para quem chamou, para que o usuário veja o motivo real."""
+    if not api_key:
+        raise RuntimeError("Configure a API Key da sua conta NFE.io antes de usar esta função.")
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = Request(
+        NFEIO_API_BASE + path,
+        data=data,
+        method=method,
+        headers={
+            "X-NFE-APIKEY": api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "ContTechERP/1.0",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            status = response.status
+    except HTTPError as error:
+        raw = error.read()
+        status = error.code
+        try:
+            error_payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            error_payload = {}
+        message = error_payload.get("message") or error_payload.get("error") or (raw.decode("utf-8", "ignore")[:400] if raw else f"HTTP {status}")
+        raise RuntimeError(f"NFE.io recusou a requisição ({status}): {message}") from error
+    except (URLError, TimeoutError) as error:
+        raise RuntimeError(f"Não foi possível conectar à NFE.io: {error}") from error
+    if not raw:
+        return status, {}
+    try:
+        return status, json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return status, {}
+
+
+def nfeio_multipart_body(boundary: str, fields: dict, files: dict) -> bytes:
+    """Monta um corpo multipart/form-data (upload do certificado A1 para a
+    NFE.io). O stdlib do Python não tem um encoder pronto para isso."""
+    parts = []
+    for name, value in fields.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode("utf-8")
+        )
+    for name, (filename, data, content_type) in files.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n'.encode("utf-8")
+            + data + b"\r\n"
+        )
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(parts)
 
 
 def decode_base64_field(value: str, limit: int, label: str) -> bytes:
@@ -3439,6 +3577,36 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
         SESSION_CERT_PASSWORDS[(self.session_token(), row["id"])] = password
         return pfx_data, password
 
+    def nfeio_invoice_row(self, invoice_id: str, user: sqlite3.Row) -> sqlite3.Row | None:
+        with connect() as database:
+            row = database.execute("SELECT * FROM nfeio_invoices WHERE id = ?", (invoice_id,)).fetchone()
+        if row is None or not self.owns_company_row(row["company_id"], user):
+            return None
+        return row
+
+    def nfeio_invoice_summary(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "kind": row["kind"], "nfeioId": row["nfeio_id"] or "",
+            "status": row["status"], "statusReason": row["status_reason"] or "",
+            "buyerName": row["buyer_name"] or "", "buyerDocument": row["buyer_document"] or "",
+            "totalValue": row["total_value"], "pdfUrl": row["pdf_url"] or "", "xmlUrl": row["xml_url"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def save_nfeio_invoice_snapshot(self, invoice_id: str, *, status: str, status_reason: str, nfeio_response: dict) -> None:
+        fernet = get_fernet()
+        pdf_url = str(nfeio_response.get("pdf", {}).get("url", "") if isinstance(nfeio_response.get("pdf"), dict) else nfeio_response.get("pdfUrl", "") or "")
+        xml_url = str(nfeio_response.get("xml", {}).get("url", "") if isinstance(nfeio_response.get("xml"), dict) else nfeio_response.get("xmlUrl", "") or "")
+        with connect() as database:
+            database.execute(
+                """
+                UPDATE nfeio_invoices SET status = ?, status_reason = ?, pdf_url = COALESCE(NULLIF(?, ''), pdf_url),
+                  xml_url = COALESCE(NULLIF(?, ''), xml_url), response_encrypted = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, status_reason, pdf_url, xml_url, fernet.encrypt(json.dumps(nfeio_response, ensure_ascii=False).encode("utf-8")), local_now(), invoice_id),
+            )
+
     def redact_result(self, result: dict, user: sqlite3.Row) -> dict:
         if "view_sensitive" in self.permissions_for(user):
             return result
@@ -5327,6 +5495,70 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 return
             self.send_json(self.build_aliquotas_municipais_consulta(parse_qs(parsed_url.query)))
             return
+        if path == "/api/nfeio/settings":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_emissor_nfe"):
+                return
+            settings = get_nfeio_settings(user["company_id"])
+            with connect() as database:
+                certificates = database.execute(
+                    "SELECT id, company, branch, document, valid_until FROM fiscal_certificates WHERE company_id = ? AND active = 1 ORDER BY company, branch",
+                    (user["company_id"],),
+                ).fetchall()
+                company = database.execute(
+                    "SELECT razao_social, nome_fantasia, cnpj, email, telefone FROM companies WHERE id = ?",
+                    (user["company_id"],),
+                ).fetchone()
+            self.send_json({
+                "configured": bool(settings["api_key"]),
+                "nfeioCompanyId": settings["nfeio_company_id"],
+                "certificateId": settings["certificate_id"],
+                "certificateSyncedAt": settings["certificate_synced_at"],
+                "certificateValidUntil": settings["certificate_valid_until"],
+                "environment": settings["environment"],
+                "updatedAt": settings["updated_at"],
+                "company": dict(company) if company else None,
+                "availableCertificates": [
+                    {"id": c["id"], "label": f"{c['company']} · {c['branch']}", "document": c["document"], "validUntil": c["valid_until"]}
+                    for c in certificates
+                ],
+            })
+            return
+        if path == "/api/nfeio/notas":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_emissor_nfe"):
+                return
+            params = parse_qs(parsed_url.query)
+            def qp(name, default=""):
+                values = params.get(name)
+                return str(values[0]).strip() if values else default
+            try:
+                page = max(1, int(qp("page", "1") or "1"))
+            except ValueError:
+                page = 1
+            try:
+                page_size = min(100, max(1, int(qp("pageSize", "25") or "25")))
+            except ValueError:
+                page_size = 25
+            where, values = ["company_id = ?"], [user["company_id"]]
+            kind_filter = qp("kind")
+            if kind_filter in {"nfe", "nfce", "cfe"}:
+                where.append("kind = ?"); values.append(kind_filter)
+            status_filter = qp("status")
+            if status_filter:
+                where.append("status = ?"); values.append(status_filter)
+            condition_sql = " AND ".join(where)
+            with connect() as database:
+                total = database.execute(f"SELECT COUNT(*) AS amount FROM nfeio_invoices WHERE {condition_sql}", values).fetchone()["amount"]
+                rows = database.execute(
+                    f"SELECT * FROM nfeio_invoices WHERE {condition_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    values + [page_size, (page - 1) * page_size],
+                ).fetchall()
+            self.send_json({
+                "items": [self.nfeio_invoice_summary(row) for row in rows],
+                "total": total, "page": page, "pageSize": page_size,
+            })
+            return
         if path == "/api/state":
             user = self.require_user()
             if user is None:
@@ -6014,6 +6246,270 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 self.send_json(self.import_nfse_monthly_package(payload, user))
             except (ValueError, RuntimeError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/nfeio/settings":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_emissor_nfe"):
+                return
+            try:
+                api_key = str(payload.get("apiKey", "")).strip()[:200]
+                certificate_id = str(payload.get("certificateId", "")).strip()
+                environment = str(payload.get("environment", "")).strip() or None
+                if certificate_id:
+                    certificate = self.certificate_row(certificate_id, user)
+                    if certificate is None:
+                        raise ValueError("Certificado selecionado não encontrado.")
+                if environment and environment not in {"production", "homologation"}:
+                    raise ValueError("Ambiente inválido.")
+                save_nfeio_settings(
+                    user["company_id"], api_key=api_key or None, nfeio_company_id=None,
+                    certificate_id=certificate_id or None, environment=environment, updated_by=user["email"],
+                )
+                self.audit(user["email"], "nfeio_settings_saved", "API Key/certificado/ambiente atualizados")
+                settings = get_nfeio_settings(user["company_id"])
+                self.send_json({
+                    "ok": True,
+                    "configured": bool(settings["api_key"]),
+                    "nfeioCompanyId": settings["nfeio_company_id"],
+                    "certificateId": settings["certificate_id"],
+                    "environment": settings["environment"],
+                })
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/nfeio/company/sync":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_emissor_nfe"):
+                return
+            try:
+                settings = get_nfeio_settings(user["company_id"])
+                if not settings["api_key"]:
+                    raise ValueError("Configure a API Key da sua conta NFE.io antes de sincronizar a empresa.")
+                with connect() as database:
+                    company = database.execute("SELECT * FROM companies WHERE id = ?", (user["company_id"],)).fetchone()
+                if company is None:
+                    raise ValueError("Empresa não encontrada.")
+                cnpj_number = digits(company["cnpj"] or "")
+                if len(cnpj_number) != 14:
+                    raise ValueError("Cadastre o CNPJ da empresa (14 dígitos) antes de sincronizar com a NFE.io.")
+                body = {
+                    "tradeName": company["nome_fantasia"] or company["razao_social"],
+                    "name": company["razao_social"],
+                    "federalTaxNumber": int(cnpj_number),
+                }
+                if company["email"]:
+                    body["email"] = company["email"]
+                if company["telefone"]:
+                    body["phone"] = digits(company["telefone"])
+                if settings["nfeio_company_id"]:
+                    _, response = nfeio_request("PUT", f"/companies/{settings['nfeio_company_id']}", settings["api_key"], body)
+                    nfeio_company_id = settings["nfeio_company_id"]
+                else:
+                    _, response = nfeio_request("POST", "/companies", settings["api_key"], body)
+                    nfeio_company_id = str(response.get("id", ""))
+                if not nfeio_company_id:
+                    raise RuntimeError("A NFE.io não retornou o identificador da empresa na resposta.")
+                save_nfeio_settings(
+                    user["company_id"], api_key=None, nfeio_company_id=nfeio_company_id,
+                    certificate_id=None, environment=None, updated_by=user["email"],
+                )
+                self.audit(user["email"], "nfeio_company_sync", f"{company['razao_social']} · {nfeio_company_id}")
+                self.send_json({"ok": True, "nfeioCompanyId": nfeio_company_id})
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/nfeio/certificate/sync":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_emissor_nfe"):
+                return
+            if not self.require_permission(user, "manage_certificates"):
+                return
+            try:
+                settings = get_nfeio_settings(user["company_id"])
+                if not settings["api_key"]:
+                    raise ValueError("Configure a API Key da sua conta NFE.io antes de enviar o certificado.")
+                if not settings["nfeio_company_id"]:
+                    raise ValueError("Sincronize a empresa com a NFE.io antes de enviar o certificado.")
+                certificate_id = str(payload.get("certificateId", ""))
+                certificate = self.certificate_row(certificate_id, user)
+                if certificate is None:
+                    raise ValueError("Certificado não encontrado.")
+                pfx_data, password = self.certificate_credentials(certificate, str(payload.get("password", "")))
+                boundary = uuid.uuid4().hex
+                body = nfeio_multipart_body(boundary, {"password": password}, {"file": ("certificado.pfx", pfx_data, "application/x-pkcs12")})
+                request = Request(
+                    NFEIO_API_BASE + f"/companies/{settings['nfeio_company_id']}/certificates",
+                    data=body, method="POST",
+                    headers={
+                        "X-NFE-APIKEY": settings["api_key"],
+                        "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        "Accept": "application/json",
+                        "User-Agent": "ContTechERP/1.0",
+                    },
+                )
+                try:
+                    with urlopen(request, timeout=30) as response:
+                        raw = response.read()
+                except HTTPError as error:
+                    raw_error = error.read()
+                    try:
+                        error_payload = json.loads(raw_error.decode("utf-8")) if raw_error else {}
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        error_payload = {}
+                    message = error_payload.get("message") or error_payload.get("error") or (raw_error.decode("utf-8", "ignore")[:400] if raw_error else f"HTTP {error.code}")
+                    raise RuntimeError(f"NFE.io recusou o certificado ({error.code}): {message}") from error
+                except (URLError, TimeoutError) as error:
+                    raise RuntimeError(f"Não foi possível conectar à NFE.io: {error}") from error
+                response_payload = json.loads(raw.decode("utf-8")) if raw else {}
+                valid_until = str(response_payload.get("validTo") or response_payload.get("validUntil") or "")
+                with connect() as database:
+                    database.execute(
+                        "UPDATE nfeio_settings SET certificate_id = ?, certificate_synced_at = ?, certificate_valid_until = ?, updated_by = ?, updated_at = ? WHERE company_id = ?",
+                        (certificate_id, local_now(), valid_until or None, user["email"], local_now(), user["company_id"]),
+                    )
+                self.audit(user["email"], "nfeio_certificate_sync", certificate["company"])
+                self.send_json({"ok": True, "validUntil": valid_until})
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/nfeio/emitir":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_emissor_nfe"):
+                return
+            if not self.enforce_rate_limit("nfeio_emitir", limit=30, window_seconds=300):
+                self.send_rate_limited()
+                return
+            try:
+                kind = str(payload.get("kind", "")).strip().lower()
+                if kind == "cfe":
+                    raise ValueError("A emissão de CFe (SAT) não está disponível: essa tecnologia foi descontinuada na maioria dos estados brasileiros e substituída pela NFCe. Emita como NFCe.")
+                if kind not in {"nfe", "nfce"}:
+                    raise ValueError("Selecione o tipo de documento: NFe ou NFCe.")
+                settings = get_nfeio_settings(user["company_id"])
+                if not settings["api_key"]:
+                    raise ValueError("Configure a API Key da sua conta NFE.io antes de emitir notas.")
+                if not settings["nfeio_company_id"]:
+                    raise ValueError("Sincronize sua empresa com a NFE.io antes de emitir notas.")
+                operation_nature = str(payload.get("operationNature", "Venda de mercadoria")).strip()[:200] or "Venda de mercadoria"
+                buyer_name = str(payload.get("buyerName", "")).strip()[:200]
+                buyer_document = digits(payload.get("buyerDocument", ""))
+                raw_items = payload.get("items", [])
+                if not isinstance(raw_items, list) or not raw_items:
+                    raise ValueError("Informe pelo menos um item da nota.")
+                items, total_value = [], 0.0
+                for raw_item in raw_items[:50]:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    description = str(raw_item.get("description", "")).strip()[:500]
+                    code = str(raw_item.get("code", "")).strip()[:60] or "0"
+                    try:
+                        quantity = float(raw_item.get("quantity", 0) or 0)
+                        unit_amount = float(raw_item.get("unitAmount", 0) or 0)
+                    except (TypeError, ValueError):
+                        raise ValueError("Quantidade e valor unitário devem ser numéricos.")
+                    if not description or quantity <= 0 or unit_amount <= 0:
+                        raise ValueError("Cada item precisa de descrição, quantidade e valor unitário maiores que zero.")
+                    items.append({"code": code, "description": description, "quantity": quantity, "unitAmount": unit_amount})
+                    total_value += quantity * unit_amount
+                if not items:
+                    raise ValueError("Informe pelo menos um item válido.")
+                payment_method = str(payload.get("paymentMethod", "Cash")).strip() or "Cash"
+                body = {
+                    "operationNature": operation_nature,
+                    "operationType": "Outgoing",
+                    "items": items,
+                    "payment": [{"paymentDetail": [{"method": payment_method, "amount": round(total_value, 2)}]}],
+                }
+                if buyer_name:
+                    buyer = {"name": buyer_name}
+                    if buyer_document:
+                        buyer["federalTaxNumber"] = int(buyer_document)
+                    body["buyer"] = buyer
+                if kind == "nfe" and not buyer_document:
+                    raise ValueError("Informe o CPF/CNPJ do comprador para emitir NFe.")
+                resource = "productinvoices" if kind == "nfe" else "consumerinvoices"
+                _, response = nfeio_request("POST", f"/companies/{settings['nfeio_company_id']}/{resource}", settings["api_key"], body)
+                invoice_id = uuid.uuid4().hex
+                now = local_now()
+                fernet = get_fernet()
+                with connect() as database:
+                    database.execute(
+                        """
+                        INSERT INTO nfeio_invoices(
+                          id, company_id, kind, nfeio_id, status, status_reason, buyer_name, buyer_document,
+                          total_value, request_encrypted, response_encrypted, created_by, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            invoice_id, user["company_id"], kind, str(response.get("id", "")) or None,
+                            str(response.get("status", "Pending") or "Pending"), str(response.get("flowStatus", "") or ""),
+                            buyer_name, buyer_document, round(total_value, 2),
+                            fernet.encrypt(json.dumps(body, ensure_ascii=False).encode("utf-8")),
+                            fernet.encrypt(json.dumps(response, ensure_ascii=False).encode("utf-8")),
+                            user["email"], now, now,
+                        ),
+                    )
+                self.audit(user["email"], "nfeio_emitir", f"{kind} · {buyer_name or 'consumidor final'} · R$ {total_value:.2f}")
+                self.send_json({"invoice": self.nfeio_invoice_summary(self.nfeio_invoice_row(invoice_id, user))}, HTTPStatus.CREATED)
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        nfeio_action_match = re.fullmatch(r"/api/nfeio/notas/([a-f0-9]{32})/(consultar|cancelar)", path)
+        if nfeio_action_match:
+            invoice_id, action = nfeio_action_match.group(1), nfeio_action_match.group(2)
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_emissor_nfe"):
+                return
+            invoice = self.nfeio_invoice_row(invoice_id, user)
+            if invoice is None:
+                self.send_json({"error": "Nota não encontrada."}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                settings = get_nfeio_settings(user["company_id"])
+                if not settings["api_key"] or not settings["nfeio_company_id"]:
+                    raise ValueError("Configuração da NFE.io incompleta.")
+                if not invoice["nfeio_id"]:
+                    raise ValueError("Esta nota ainda não possui identificador da NFE.io — aguarde o processamento.")
+                resource = "productinvoices" if invoice["kind"] == "nfe" else "consumerinvoices"
+                method = "GET" if action == "consultar" else "DELETE"
+                _, response = nfeio_request(method, f"/companies/{settings['nfeio_company_id']}/{resource}/{invoice['nfeio_id']}", settings["api_key"])
+                new_status = str(response.get("status", "") or ("Cancelled" if action == "cancelar" else invoice["status"]))
+                status_reason = str(response.get("flowStatus", "") or "")
+                self.save_nfeio_invoice_snapshot(invoice_id, status=new_status, status_reason=status_reason, nfeio_response=response)
+                self.audit(user["email"], f"nfeio_{action}", f"{invoice['kind']} · {invoice['nfeio_id']}")
+                self.send_json({"invoice": self.nfeio_invoice_summary(self.nfeio_invoice_row(invoice_id, user))})
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/nfeio/webhook":
+            try:
+                nfeio_id = str(payload.get("id") or payload.get("nfeId") or "").strip()
+                status = str(payload.get("status") or payload.get("nfeStatus") or "").strip()
+                if not nfeio_id or not status:
+                    self.send_json({"ok": True, "ignored": True})
+                    return
+                idempotency_key = f"nfeio:{nfeio_id}:{status}"
+                with connect() as database:
+                    inserted = database.execute(
+                        "INSERT INTO webhook_events(id, provider, event_type, processed_at) VALUES (?, 'nfeio', ?, ?) ON CONFLICT (id) DO NOTHING",
+                        (idempotency_key, status, local_now()),
+                    ).rowcount
+                    if not inserted:
+                        self.send_json({"ok": True, "duplicate": True})
+                        return
+                    row = database.execute("SELECT id FROM nfeio_invoices WHERE nfeio_id = ?", (nfeio_id,)).fetchone()
+                if row is not None:
+                    status_reason = str(payload.get("flowStatus") or payload.get("nfeMotivoStatus") or "")
+                    self.save_nfeio_invoice_snapshot(row["id"], status=status, status_reason=status_reason, nfeio_response=payload)
+                self.send_json({"ok": True})
+            except (ValueError, RuntimeError):
+                self.send_json({"ok": True})
             return
 
         self.send_json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)

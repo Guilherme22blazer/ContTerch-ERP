@@ -45,6 +45,12 @@
     results: { items: [], total: 0, page: 1, pageSize: 50 },
     loading: false,
   };
+  var nfeioState = {
+    loaded: false,
+    settings: { configured: false, nfeioCompanyId: '', certificateId: '', certificateSyncedAt: null, certificateValidUntil: null, environment: 'production', company: null, availableCertificates: [] },
+    invoices: { items: [], total: 0, page: 1, pageSize: 25 },
+    emitForm: { kind: 'nfe', operationNature: 'Venda de mercadoria', buyerName: '', buyerDocument: '', paymentMethod: 'Cash', items: [{ code: '', description: '', quantity: 1, unitAmount: 0 }] },
+  };
   var SEFAZ_UFS = [
     ['11','RO'],['12','AC'],['13','AM'],['14','RR'],['15','PA'],['16','AP'],['17','TO'],
     ['21','MA'],['22','PI'],['23','CE'],['24','RN'],['25','PB'],['26','PE'],['27','AL'],
@@ -251,6 +257,7 @@
     { route: 'aliquotas-beneficios', label: 'Alíquotas Internas e Benefícios Fiscais', icon: '%', desc: 'Consulta de ICMS, FCP, operações interestaduais e benefícios por UF' },
     { route: 'aliquotas-iss', label: 'Alíquotas do ISS', icon: '‰', desc: 'Consulta dos 200 serviços da LC 116 nas 27 capitais brasileiras' },
     { route: 'aliquotas-municipais', label: 'Alíquotas Municipais', icon: '⛭', desc: 'Consulta de alíquotas de ISS por estado, município e faixa de percentual' },
+    { route: 'emissor-nfe', label: 'Emissor de Nota Fiscal (NFE.io)', icon: '▤', desc: 'Emissão de NFe, NFCe e CFe com certificado digital, integrada à API da NFE.io' },
     { route: 'simulador-locacao', label: 'Simulador de Locação', icon: '⌂', desc: 'Projeção de IBS e CBS para locação de bens imóveis e móveis' },
     { route: 'nbs-cclasstrib', label: 'NBS / cClassTrib', icon: '§', desc: 'Correlação de serviços e classificação IBS/CBS' },
     { route: 'calculadora-tributaria', label: 'Calculadora Tributária', icon: '▣', desc: 'Comparação entre regimes tributários' },
@@ -2651,6 +2658,209 @@
     loadAliquotasMunicipaisConsulta();
   }
 
+  var NFEIO_STATUS_LABELS = {
+    Pending: 'Processando', Authorized: 'Autorizada', Denied: 'Negada',
+    Cancelled: 'Cancelada', CancellationDenied: 'Cancelamento negado', Issued: 'Emitida',
+  };
+  function nfeioStatusTag(status) {
+    var label = NFEIO_STATUS_LABELS[status] || status || 'Pendente';
+    var kind = (status === 'Authorized' || status === 'Issued') ? 'success' : (status === 'Denied' || status === 'CancellationDenied') ? 'danger' : (status === 'Cancelled') ? 'info' : 'warning';
+    return '<span class="tag tag--' + kind + '">' + esc(label) + '</span>';
+  }
+  function renderEmissorNfe() {
+    if (!apiEnabled()) {
+      return [
+        pageHeading('Emissor de Nota Fiscal (NFE.io)', 'Emita notas fiscais eletrônicas de forma simples, rápida e 100% online.', ''),
+        '<div class="info-banner info-banner--warning"><span>!</span><div><strong>Ative o modo seguro para usar o emissor.</strong></div></div>'
+      ].join('');
+    }
+    var s = nfeioState.settings;
+    var f = nfeioState.emitForm;
+    var certOptions = '<option value="">Selecione um certificado já cadastrado</option>' + (s.availableCertificates || []).map(function (c) {
+      return '<option value="' + esc(c.id) + '"' + (s.certificateId === c.id ? ' selected' : '') + '>' + esc(c.label) + '</option>';
+    }).join('');
+    var itemsRows = f.items.map(function (item, index) {
+      return '<div class="nfeio-item-row" data-nfeio-item-index="' + index + '">' +
+        '<input placeholder="Código" data-nfeio-item-field="code" value="' + esc(item.code) + '">' +
+        '<input placeholder="Descrição do item/serviço" data-nfeio-item-field="description" value="' + esc(item.description) + '">' +
+        '<input type="number" min="0" step="0.0001" placeholder="Qtd." data-nfeio-item-field="quantity" value="' + esc(item.quantity) + '">' +
+        '<input type="number" min="0" step="0.01" placeholder="Valor unitário (R$)" data-nfeio-item-field="unitAmount" value="' + esc(item.unitAmount) + '">' +
+        '<button type="button" class="row-button" title="Remover item" data-action="nfeio-remove-item" data-index="' + index + '"' + (f.items.length <= 1 ? ' disabled' : '') + '>✕</button>' +
+      '</div>';
+    }).join('');
+    var totalPreview = f.items.reduce(function (sum, item) { return sum + (Number(item.quantity) || 0) * (Number(item.unitAmount) || 0); }, 0);
+    return [
+      pageHeading('Emissor de Nota Fiscal (NFE.io)', 'Emita notas fiscais eletrônicas de forma simples, rápida e 100% online, com certificado digital A1/A3 e integração oficial com a API da NFE.io.', ''),
+      '<div class="info-banner' + (s.configured ? '' : ' info-banner--warning') + '"><span>' + (s.configured ? 'i' : '!') + '</span><div><strong>' + (s.configured ? 'Integração configurada.' : 'Configure sua conta NFE.io para começar.') + '</strong> A emissão é feita pela API oficial da <a href="https://nfe.io" target="_blank" rel="noopener noreferrer">nfe.io</a>. Você precisa de uma conta própria na NFE.io (com CNPJ, certificado digital A1/A3 vinculado e API Key) — este ERP não gera nem substitui essa conta, apenas se conecta a ela.</div></div>',
+      '<section class="card"><header class="card-header"><h2>★ Funcionalidades</h2></header><div class="card-body"><div class="nfeio-feature-grid">' +
+        ['Emissão de NFe, NFCe e CFe', 'Consulta e Cancelamento', 'Certificado Digital A1 ou A3', 'Envio Automático por Email', 'PDF Danfe Simplificado', 'Ambiente de Homologação', 'API Completa e Documentada', 'Webhooks em Tempo Real']
+          .map(function (label) { return '<div class="nfeio-feature"><span>✓</span>' + label + '</div>'; }).join('') +
+      '</div><p class="subtle" style="margin-top:8px">Observação: a emissão de CFe (SAT) foi descontinuada pela maioria dos estados brasileiros e substituída pela NFCe — use NFCe para vendas no varejo presencial.</p></div></section>',
+      '<section class="card"><header class="card-header"><h2>Configuração da conta NFE.io</h2><small>API Key, empresa e certificado digital</small></header><div class="card-body">' +
+        '<div class="filters" style="grid-template-columns:repeat(2,1fr)">' +
+          '<label class="filter-field"><span>API Key da NFE.io</span><input id="nfeio-api-key" type="password" placeholder="' + (s.configured ? 'Já configurada — deixe em branco para manter' : 'Cole aqui a API Key da sua conta NFE.io') + '"></label>' +
+          '<label class="filter-field"><span>Ambiente</span><select id="nfeio-environment"><option value="production"' + (s.environment === 'production' ? ' selected' : '') + '>Produção</option><option value="homologation"' + (s.environment === 'homologation' ? ' selected' : '') + '>Homologação (testes)</option></select></label>' +
+          '<label class="filter-field"><span>Certificado digital (já cadastrado no Captador de Notas)</span><select id="nfeio-certificate">' + certOptions + '</select></label>' +
+        '</div><div class="page-actions" style="margin-top:10px">' +
+          '<button class="secondary-button" data-action="nfeio-save-settings">Salvar configuração</button>' +
+          '<button class="secondary-button" data-action="nfeio-sync-company"' + (s.configured ? '' : ' disabled') + '>⇄ Sincronizar empresa na NFE.io</button>' +
+          '<button class="secondary-button" data-action="nfeio-sync-certificate"' + (s.configured && s.nfeioCompanyId && s.certificateId ? '' : ' disabled') + '>⇪ Enviar certificado para a NFE.io</button>' +
+        '</div>' +
+        '<div class="nfeio-status-grid" style="margin-top:12px">' +
+          '<div><small>Empresa NFE.io</small><b>' + (s.nfeioCompanyId ? esc(s.nfeioCompanyId) : 'Não sincronizada') + '</b></div>' +
+          '<div><small>Certificado vinculado</small><b>' + (s.certificateId ? 'Selecionado' : 'Nenhum') + '</b></div>' +
+          '<div><small>Certificado enviado à NFE.io em</small><b>' + (s.certificateSyncedAt ? dateTimeBR(s.certificateSyncedAt) : '—') + '</b></div>' +
+          '<div><small>Validade do certificado na NFE.io</small><b>' + (s.certificateValidUntil ? dateBR(s.certificateValidUntil) : '—') + '</b></div>' +
+        '</div>' +
+        (s.company ? '<p class="subtle" style="margin-top:8px">Dados sincronizados a partir do cadastro da empresa: <b>' + esc(s.company.razao_social || '') + '</b> · CNPJ ' + esc(formatCnpjDisplay(s.company.cnpj || '')) + '</p>' : '') +
+      '</div></section>',
+      '<section class="card"><header class="card-header"><h2>Emitir nota fiscal</h2><small>Nota fiscal de produto (NFe) ou nota ao consumidor (NFCe)</small></header><div class="card-body">' +
+        '<div class="filters" style="grid-template-columns:repeat(3,1fr)">' +
+          '<label class="filter-field"><span>Tipo</span><select id="nfeio-kind" data-nfeio-field="kind"><option value="nfe"' + (f.kind === 'nfe' ? ' selected' : '') + '>NFe (produto)</option><option value="nfce"' + (f.kind === 'nfce' ? ' selected' : '') + '>NFCe (consumidor)</option></select></label>' +
+          '<label class="filter-field"><span>Natureza da operação</span><input id="nfeio-operation-nature" data-nfeio-field="operationNature" value="' + esc(f.operationNature) + '"></label>' +
+          '<label class="filter-field"><span>Forma de pagamento</span><select id="nfeio-payment-method" data-nfeio-field="paymentMethod"><option value="Cash"' + (f.paymentMethod === 'Cash' ? ' selected' : '') + '>Dinheiro</option><option value="CreditCard"' + (f.paymentMethod === 'CreditCard' ? ' selected' : '') + '>Cartão de crédito</option><option value="DebitCard"' + (f.paymentMethod === 'DebitCard' ? ' selected' : '') + '>Cartão de débito</option><option value="BankSlip"' + (f.paymentMethod === 'BankSlip' ? ' selected' : '') + '>Boleto</option><option value="Pix"' + (f.paymentMethod === 'Pix' ? ' selected' : '') + '>Pix</option></select></label>' +
+          '<label class="filter-field"><span>Nome do comprador' + (f.kind === 'nfe' ? ' (obrigatório)' : ' (opcional)') + '</span><input id="nfeio-buyer-name" data-nfeio-field="buyerName" value="' + esc(f.buyerName) + '"></label>' +
+          '<label class="filter-field"><span>CPF/CNPJ do comprador' + (f.kind === 'nfe' ? ' (obrigatório)' : ' (opcional)') + '</span><input id="nfeio-buyer-document" data-nfeio-field="buyerDocument" value="' + esc(f.buyerDocument) + '"></label>' +
+        '</div>' +
+        '<div class="nfeio-items" style="margin-top:10px"><div class="nfeio-item-row nfeio-item-row--header"><span>Código</span><span>Descrição</span><span>Qtd.</span><span>Valor unitário</span><span></span></div>' + itemsRows + '</div>' +
+        '<button type="button" class="small-button" data-action="nfeio-add-item" style="margin-top:6px">＋ Adicionar item</button>' +
+        '<div class="table-summary" style="margin-top:10px"><span>Valor total estimado</span><span><b id="nfeio-total-preview">' + money(totalPreview) + '</b></span></div>' +
+        '<div class="page-actions" style="margin-top:10px"><button class="primary-button" data-action="nfeio-emitir"' + (s.configured && s.nfeioCompanyId ? '' : ' disabled') + '>Emitir nota</button></div>' +
+        (s.configured && s.nfeioCompanyId ? '' : '<p class="subtle" style="margin-top:6px">Configure a API Key e sincronize a empresa acima antes de emitir.</p>') +
+      '</div></section>',
+      '<section class="card"><header class="card-header"><h2>Notas emitidas</h2></header><div class="card-body"><div id="nfeio-table-wrap">' + nfeioInvoicesTableHtml() + '</div></div></section>'
+    ].join('');
+  }
+  function nfeioInvoicesTableHtml() {
+    var payload = nfeioState.invoices || { items: [], total: 0, page: 1, pageSize: 25 };
+    var items = payload.items || [];
+    var totalPages = Math.max(1, Math.ceil(payload.total / payload.pageSize));
+    var rows = items.length ? items.map(function (item) {
+      return '<tr><td>' + esc(item.kind.toUpperCase()) + '</td><td>' + esc(item.buyerName || 'Consumidor final') + '<br><small class="subtle">' + esc(formatCnpjDisplay(item.buyerDocument)) + '</small></td><td>' + money(item.totalValue) + '</td><td>' + nfeioStatusTag(item.status) + (item.statusReason ? '<br><small class="subtle">' + esc(item.statusReason) + '</small>' : '') + '</td><td>' + esc(dateTimeBR(item.createdAt)) + '</td><td><div class="row-actions">' +
+        '<button class="row-button" title="Consultar status" data-action="nfeio-consultar" data-id="' + esc(item.id) + '">↻</button>' +
+        (item.pdfUrl ? '<a class="row-button" title="Baixar DANFE" href="' + esc(item.pdfUrl) + '" target="_blank" rel="noopener noreferrer">▤</a>' : '') +
+        (item.xmlUrl ? '<a class="row-button" title="Baixar XML" href="' + esc(item.xmlUrl) + '" target="_blank" rel="noopener noreferrer">↧</a>' : '') +
+        (item.status !== 'Cancelled' && item.status !== 'Denied' ? '<button class="row-button" title="Cancelar" data-action="nfeio-cancelar" data-id="' + esc(item.id) + '">✕</button>' : '') +
+      '</div></td></tr>';
+    }).join('') : '<tr><td colspan="6"><div class="empty-state"><i>▤</i><h3>Nenhuma nota emitida ainda</h3><p>Configure a integração acima e emita sua primeira nota.</p></div></td></tr>';
+    return '<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Comprador</th><th>Valor</th><th>Status</th><th>Emitida em</th><th>Ações</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="table-summary captador-pager"><span>' + number(payload.total) + ' nota(s)</span><div class="captador-pager-controls">' +
+      '<button class="row-button" data-action="nfeio-page" data-page="' + (payload.page - 1) + '"' + (payload.page <= 1 ? ' disabled' : '') + '>‹</button><button class="row-button" data-action="nfeio-page" data-page="' + (payload.page + 1) + '"' + (payload.page >= totalPages ? ' disabled' : '') + '>›</button></div></div>';
+  }
+  function loadNfeioSettings() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    return apiRequest('/api/nfeio/settings').then(function (payload) {
+      nfeioState.settings = payload;
+      nfeioState.loaded = true;
+      if (state.route === 'emissor-nfe') route();
+    }).catch(function (error) { toast('Não foi possível carregar a configuração da NFE.io', error.message, 'error'); });
+  }
+  function loadNfeioInvoices() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var params = new URLSearchParams();
+    params.set('page', nfeioState.invoices.page || 1);
+    params.set('pageSize', nfeioState.invoices.pageSize || 25);
+    return apiRequest('/api/nfeio/notas?' + params.toString()).then(function (payload) {
+      nfeioState.invoices = payload;
+      var wrap = $('#nfeio-table-wrap');
+      if (wrap) wrap.innerHTML = nfeioInvoicesTableHtml();
+    }).catch(function (error) { toast('Não foi possível carregar as notas emitidas', error.message, 'error'); });
+  }
+  async function saveNfeioSettings() {
+    var apiKey = ($('#nfeio-api-key') || {}).value || '';
+    var environment = ($('#nfeio-environment') || {}).value || 'production';
+    var certificateId = ($('#nfeio-certificate') || {}).value || '';
+    try {
+      await apiRequest('/api/nfeio/settings', { method: 'POST', body: JSON.stringify({ apiKey: apiKey, environment: environment, certificateId: certificateId }) });
+      toast('Configuração salva', 'A configuração da NFE.io foi atualizada.');
+      audit('Configuração da NFE.io atualizada', certificateId ? 'Certificado vinculado' : 'Sem certificado vinculado');
+      await loadNfeioSettings();
+    } catch (error) { toast('Não foi possível salvar', error.message, 'error'); }
+  }
+  async function syncNfeioCompany() {
+    try {
+      await apiRequest('/api/nfeio/company/sync', { method: 'POST', body: JSON.stringify({}) });
+      toast('Empresa sincronizada', 'Sua empresa foi sincronizada com a NFE.io.');
+      audit('Empresa sincronizada com a NFE.io', '');
+      await loadNfeioSettings();
+    } catch (error) { toast('Não foi possível sincronizar a empresa', error.message, 'error'); }
+  }
+  async function syncNfeioCertificate() {
+    var certificateId = ($('#nfeio-certificate') || {}).value || '';
+    if (!certificateId) { toast('Selecione um certificado', 'Escolha um certificado digital já cadastrado no Captador de Notas.', 'warning'); return; }
+    var password = window.prompt('Informe a senha do certificado digital para enviá-lo à NFE.io:');
+    if (password == null) return;
+    try {
+      var result = await apiRequest('/api/nfeio/certificate/sync', { method: 'POST', body: JSON.stringify({ certificateId: certificateId, password: password }) });
+      toast('Certificado enviado', 'O certificado foi enviado à NFE.io' + (result.validUntil ? ' (válido até ' + dateBR(result.validUntil) + ').' : '.'));
+      audit('Certificado enviado à NFE.io', certificateId);
+      await loadNfeioSettings();
+    } catch (error) { toast('Não foi possível enviar o certificado', error.message, 'error'); }
+  }
+  function updateNfeioEmitField(fieldName, value, rerender) {
+    nfeioState.emitForm[fieldName] = value;
+    if (rerender) route();
+  }
+  function updateNfeioItemField(index, field, value) {
+    var item = nfeioState.emitForm.items[index];
+    if (!item) return;
+    item[field] = value;
+    refreshNfeioEmitTotals();
+  }
+  function refreshNfeioEmitTotals() {
+    var f = nfeioState.emitForm;
+    var totalPreview = f.items.reduce(function (sum, item) { return sum + (Number(item.quantity) || 0) * (Number(item.unitAmount) || 0); }, 0);
+    var totalEl = $('#nfeio-total-preview');
+    if (totalEl) totalEl.textContent = money(totalPreview);
+  }
+  function addNfeioItem() {
+    nfeioState.emitForm.items.push({ code: '', description: '', quantity: 1, unitAmount: 0 });
+    route();
+  }
+  function removeNfeioItem(index) {
+    if (nfeioState.emitForm.items.length <= 1) return;
+    nfeioState.emitForm.items.splice(index, 1);
+    route();
+  }
+  async function emitirNfeio() {
+    var f = nfeioState.emitForm;
+    try {
+      var result = await apiRequest('/api/nfeio/emitir', {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: f.kind, operationNature: f.operationNature, buyerName: f.buyerName, buyerDocument: f.buyerDocument,
+          paymentMethod: f.paymentMethod, items: f.items,
+        }),
+      });
+      toast('Nota enviada para processamento', 'A NFE.io está processando a emissão. Consulte o status na lista abaixo.');
+      audit('Nota fiscal emitida via NFE.io', f.kind.toUpperCase() + ' · ' + (f.buyerName || 'Consumidor final'));
+      nfeioState.emitForm.items = [{ code: '', description: '', quantity: 1, unitAmount: 0 }];
+      nfeioState.emitForm.buyerName = ''; nfeioState.emitForm.buyerDocument = '';
+      await loadNfeioInvoices();
+      route();
+    } catch (error) { toast('Não foi possível emitir a nota', error.message, 'error'); }
+  }
+  async function consultarNfeio(id) {
+    try {
+      await apiRequest('/api/nfeio/notas/' + id + '/consultar', { method: 'POST', body: JSON.stringify({}) });
+      toast('Status atualizado', 'A situação da nota foi consultada na NFE.io.');
+      await loadNfeioInvoices();
+    } catch (error) { toast('Não foi possível consultar', error.message, 'error'); }
+  }
+  async function cancelarNfeio(id) {
+    if (!window.confirm('Confirma o cancelamento desta nota fiscal na NFE.io? Esta ação não pode ser desfeita.')) return;
+    try {
+      await apiRequest('/api/nfeio/notas/' + id + '/cancelar', { method: 'POST', body: JSON.stringify({}) });
+      toast('Cancelamento solicitado', 'O cancelamento foi enviado à NFE.io.');
+      audit('Cancelamento de nota fiscal solicitado', id);
+      await loadNfeioInvoices();
+    } catch (error) { toast('Não foi possível cancelar', error.message, 'error'); }
+  }
+  function setNfeioPage(page) {
+    nfeioState.invoices.page = Math.max(1, Number(page) || 1);
+    loadNfeioInvoices();
+  }
+
   function cestNormalize(value) {
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
   }
@@ -3934,6 +4144,7 @@
     else if (state.route === 'aliquotas-beneficios') main.innerHTML = renderTaxBenefits();
     else if (state.route === 'aliquotas-iss') main.innerHTML = renderIssRates();
     else if (state.route === 'aliquotas-municipais') main.innerHTML = renderAliquotasMunicipais();
+    else if (state.route === 'emissor-nfe') main.innerHTML = renderEmissorNfe();
     else if (state.route === 'consulta-cest') main.innerHTML = renderCestConsultation();
     else if (state.route === 'simulador-locacao') main.innerHTML = renderRentalSimulator();
     else if (state.route === 'conttech-simples-nacional') main.innerHTML = renderSnSimulator();
@@ -3947,6 +4158,7 @@
     if (state.route === 'sefaz-portal') loadSefazData();
     if (state.route === 'captador-notas-fiscais') { loadCaptadorCompanies(); if (captadorSection() === 'documentos') loadCaptadorDocuments(); }
     if (state.route === 'aliquotas-municipais') { loadAliquotasMunicipaisEstados(); loadAliquotasMunicipaisConsulta(); }
+    if (state.route === 'emissor-nfe') { if (!nfeioState.loaded) loadNfeioSettings(); loadNfeioInvoices(); }
     if (state.route === 'configuracoes') loadStripeSettings();
     if (state.route === 'gestao-usuarios' && window.UserAccessManager) window.UserAccessManager.mount(main, { user: currentUser, syncUsers: function (users) { state.users = (users || []).map(function (user) { return Object.assign({}, user, { active: user.status !== 'Inativo' }); }); storageSet(KEYS.users, state.users); } });
   }
@@ -7994,6 +8206,15 @@
     else if (action === 'cd-download-filtered') downloadCaptadorFilteredDocuments();
     else if (action === 'am-clear-filters') clearAliquotasMunicipaisFilters();
     else if (action === 'am-page') setAliquotasMunicipaisPage(actionEl.getAttribute('data-page'));
+    else if (action === 'nfeio-save-settings') saveNfeioSettings();
+    else if (action === 'nfeio-sync-company') syncNfeioCompany();
+    else if (action === 'nfeio-sync-certificate') syncNfeioCertificate();
+    else if (action === 'nfeio-add-item') addNfeioItem();
+    else if (action === 'nfeio-remove-item') removeNfeioItem(Number(actionEl.getAttribute('data-index')));
+    else if (action === 'nfeio-emitir') emitirNfeio();
+    else if (action === 'nfeio-consultar') consultarNfeio(actionEl.getAttribute('data-id'));
+    else if (action === 'nfeio-cancelar') cancelarNfeio(actionEl.getAttribute('data-id'));
+    else if (action === 'nfeio-page') setNfeioPage(actionEl.getAttribute('data-page'));
     else if (action === 'auditor-view') setAuditorFiscalView(actionEl.getAttribute('data-view'));
     else if (action === 'auditor-select-type') selectAuditorFiscalType(actionEl.getAttribute('data-type'));
     else if (action === 'auditor-select-files') { var auditorInput = $('#auditor-sped-files'); if (auditorInput) auditorInput.click(); }
@@ -8136,6 +8357,9 @@
     } else if (event.target.matches('[data-am-input]') && event.target.tagName !== 'SELECT') {
       window.clearTimeout(state.amFilterTimer);
       state.amFilterTimer = window.setTimeout(updateAliquotasMunicipaisFilters, 300);
+    } else if (event.target.matches('[data-nfeio-item-field]')) {
+      var itemRow = event.target.closest('[data-nfeio-item-index]');
+      if (itemRow) updateNfeioItemField(Number(itemRow.getAttribute('data-nfeio-item-index')), event.target.getAttribute('data-nfeio-item-field'), event.target.value);
     }
   });
 
@@ -8197,6 +8421,8 @@
     else if (event.target.id === 'auditor-sped-files') handleAuditorFiscalFiles(event.target.files);
     else if (event.target.matches('[data-cd-input]')) updateCaptadorDocumentFilters();
     else if (event.target.matches('[data-am-input]')) updateAliquotasMunicipaisFilters();
+    else if (event.target.id === 'nfeio-kind') updateNfeioEmitField('kind', event.target.value, true);
+    else if (event.target.matches('[data-nfeio-field]')) updateNfeioEmitField(event.target.getAttribute('data-nfeio-field'), event.target.value, false);
     else if (event.target.id === 'cd-select-all') toggleAllCaptadorDocumentSelection(event.target.checked);
     else if (event.target.matches('[data-cd-select]')) toggleCaptadorDocumentSelection(event.target.getAttribute('data-cd-select'), event.target.checked);
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
