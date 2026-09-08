@@ -159,6 +159,7 @@ ERP_MODULES = {
     "tab_icms_difal": "ICMS / DIFAL",
     "tab_aliquotas_beneficios": "Alíquotas e Benefícios",
     "tab_aliquotas_iss": "Alíquotas do ISS",
+    "tab_aliquotas_municipais": "Alíquotas Municipais",
     "tab_simulador_locacao": "Simulador de Locação",
     "tab_nbs_cclasstrib": "NBS / cClassTrib",
     "tab_calculadora_tributaria": "Calculadora Tributária",
@@ -187,7 +188,7 @@ FISCAL_TAB_MODULES = {
     "tab_planejamento_tributario", "tab_lei_complementar",
     "tab_mei_ibs_cbs", "tab_parametros_2026", "tab_consulta_cnpj", "tab_inscricao_estadual",
     "tab_cnae_servicos", "tab_ncm_tipi", "tab_consulta_cest", "tab_cfop", "tab_icms_difal",
-    "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_simulador_locacao",
+    "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_aliquotas_municipais", "tab_simulador_locacao",
     "tab_nbs_cclasstrib", "tab_calculadora_tributaria", "tab_cnpj_simples",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis"}
@@ -212,7 +213,7 @@ DEFAULT_PLAN_MODULES = {
 }
 LEGACY_MODULE_MIGRATIONS = {
     "dashboard": {"tab_inicio", "tab_dashboard", "tab_kanban"},
-    "fiscal": {"tab_dashboard", "tab_icms_difal", "tab_aliquotas_beneficios", "tab_aliquotas_iss"},
+    "fiscal": {"tab_dashboard", "tab_icms_difal", "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_aliquotas_municipais"},
     "contabil": CONTABIL_TAB_MODULES,
     "financeiro": TRABALHISTA_TAB_MODULES,
     "clientes": {"tab_clientes"},
@@ -4108,6 +4109,82 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             })
         return {"items": items, "total": len(filtered), "page": page, "pageSize": page_size, "stats": stats}
 
+    def build_aliquotas_municipais_consulta(self, params: dict) -> dict:
+        """Consulta paginada de alíquotas de ISS municipais, resolvendo a
+        vigência atual (maior dt_ini <= hoje cujo período ainda não
+        encerrou) em tempo de consulta — nunca armazenada como valor fixo."""
+        def qp(name: str, default: str = "") -> str:
+            values = params.get(name)
+            return str(values[0]).strip() if values else default
+
+        uf_filter = qp("uf").upper()[:2]
+        municipio_filter = qp("municipio")
+        try:
+            aliquota_min = float(qp("aliquotaMin").replace(",", ".")) if qp("aliquotaMin") else None
+        except ValueError:
+            aliquota_min = None
+        try:
+            aliquota_max = float(qp("aliquotaMax").replace(",", ".")) if qp("aliquotaMax") else None
+        except ValueError:
+            aliquota_max = None
+        try:
+            page = max(1, int(qp("page", "1") or "1"))
+        except ValueError:
+            page = 1
+        try:
+            page_size = min(200, max(1, int(qp("pageSize", "50") or "50")))
+        except ValueError:
+            page_size = 50
+
+        where, values = ["1 = 1"], []
+        if uf_filter:
+            where.append("uf = ?"); values.append(uf_filter)
+        if municipio_filter:
+            where.append("nome_municipio ILIKE ?"); values.append(f"%{municipio_filter[:100]}%")
+        if aliquota_min is not None:
+            where.append("aliquota >= ?"); values.append(aliquota_min)
+        if aliquota_max is not None:
+            where.append("aliquota <= ?"); values.append(aliquota_max)
+        condition_sql = " AND ".join(where)
+
+        base_cte = """
+            WITH current_rates AS (
+                SELECT DISTINCT ON (codigo_ibge, codigo_servico)
+                    codigo_ibge, uf, nome_municipio, codigo_servico, aliquota, dt_ini, dt_fim
+                FROM aliquotas_municipais_iss
+                WHERE dt_ini <= CURRENT_DATE AND (dt_fim IS NULL OR dt_fim >= dt_ini)
+                ORDER BY codigo_ibge, codigo_servico, dt_ini DESC
+            )
+        """
+        with connect() as database:
+            total = database.execute(
+                f"{base_cte} SELECT COUNT(*) AS amount FROM current_rates WHERE {condition_sql}",
+                values,
+            ).fetchone()["amount"]
+            rows = database.execute(
+                f"""
+                {base_cte}
+                SELECT * FROM current_rates WHERE {condition_sql}
+                ORDER BY uf, nome_municipio, codigo_servico
+                LIMIT ? OFFSET ?
+                """,
+                values + [page_size, (page - 1) * page_size],
+            ).fetchall()
+
+        items = [
+            {
+                "codigoIbge": row["codigo_ibge"],
+                "uf": row["uf"],
+                "municipio": row["nome_municipio"],
+                "codigoServico": row["codigo_servico"],
+                "aliquota": row["aliquota"],
+                "vigenteDesde": row["dt_ini"].isoformat() if hasattr(row["dt_ini"], "isoformat") else row["dt_ini"],
+                "vigenteAte": row["dt_fim"].isoformat() if row["dt_fim"] and hasattr(row["dt_fim"], "isoformat") else row["dt_fim"],
+            }
+            for row in rows
+        ]
+        return {"items": items, "total": total, "page": page, "pageSize": page_size}
+
     def build_documents_zip(self, payload: dict, user: sqlite3.Row) -> dict:
         requested = payload.get("documents") or []
         if not isinstance(requested, list) or not requested:
@@ -5218,6 +5295,37 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     self.send_json(self.redact_result(result, user))
             except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError) as error:
                 self.send_json({"error": "Conteúdo protegido indisponível."}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+        if path == "/api/aliquotas-municipais/estados":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_aliquotas_municipais"):
+                return
+            with connect() as database:
+                rows = database.execute(
+                    "SELECT uf, COUNT(DISTINCT codigo_ibge) AS municipios FROM aliquotas_municipais_iss GROUP BY uf ORDER BY uf"
+                ).fetchall()
+            self.send_json({"estados": [{"uf": row["uf"], "municipios": row["municipios"]} for row in rows]})
+            return
+        if path == "/api/aliquotas-municipais/municipios":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_aliquotas_municipais"):
+                return
+            uf = parse_qs(parsed_url.query).get("uf", [""])[0].strip().upper()[:2]
+            if not uf:
+                self.send_json({"error": "Informe o estado (uf)."}, HTTPStatus.BAD_REQUEST)
+                return
+            with connect() as database:
+                rows = database.execute(
+                    "SELECT DISTINCT codigo_ibge, nome_municipio FROM aliquotas_municipais_iss WHERE uf = ? ORDER BY nome_municipio",
+                    (uf,),
+                ).fetchall()
+            self.send_json({"municipios": [{"codigoIbge": row["codigo_ibge"], "nome": row["nome_municipio"]} for row in rows]})
+            return
+        if path == "/api/aliquotas-municipais/consulta":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_aliquotas_municipais"):
+                return
+            self.send_json(self.build_aliquotas_municipais_consulta(parse_qs(parsed_url.query)))
             return
         if path == "/api/state":
             user = self.require_user()
