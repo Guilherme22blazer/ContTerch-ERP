@@ -2905,7 +2905,11 @@
           '<label class="filter-field"><span>Senha do certificado (nesta sessão)</span><input id="nfsen-password" type="password" placeholder="Necessária apenas se ainda não informada"></label>' +
           '<label class="filter-field"><span>Ambiente</span><select id="nfsen-environment" data-nfsen-input><option value="production"' + (f.environment === 'homologation' ? '' : ' selected') + '>Produção</option><option value="homologation"' + (f.environment === 'homologation' ? ' selected' : '') + '>Homologação</option></select></label>' +
         '</div>' +
-        '<div class="page-actions" style="margin-top:8px"><a class="secondary-button" href="' + esc(info.nationalPortalLogin || 'https://www.nfse.gov.br/EmissorNacional/login') + '" target="_blank" rel="noopener noreferrer">↗ Acessar com GOV.BR (portal oficial)</a></div>' +
+        '<div class="page-actions" style="margin-top:8px">' +
+          '<button type="button" class="primary-button" data-action="nfsen-attach-certificate">📎 Anexar certificado digital e conectar</button>' +
+          '<a class="secondary-button" href="' + esc(info.nationalPortalLogin || 'https://www.nfse.gov.br/EmissorNacional/login') + '" target="_blank" rel="noopener noreferrer">↗ Portal oficial (GOV.BR — acesso manual)</a>' +
+        '</div>' +
+        '<p class="subtle" style="margin-top:8px">O botão <b>Anexar certificado</b> é o caminho automático: envia o arquivo .pfx/.p12 e a senha direto para o backend, que valida e conecta na hora — sem precisar cadastrar antes pelo Captador de Notas. O acesso via <b>GOV.BR</b> abre o portal oficial do governo em outra aba para consulta manual; por segurança do próprio navegador, nenhum site (nem este) consegue ler ou reaproveitar o certificado usado no login de outro domínio, então esse caminho não retorna automaticamente para cá.</p>' +
       '</div></section>',
       '<section class="card"><header class="card-header"><h2>② Tipo de NFS-e</h2></header><div class="card-body"><div class="captador-tab-group">' +
         '<button type="button" class="segment' + (f.tipo === 'emitidas' ? ' active' : '') + '" data-action="nfsen-tipo" data-tipo="emitidas">⬆ Emitidas</button>' +
@@ -3028,6 +3032,46 @@
       sync.running = false;
       route();
       await loadNfseNacionalConsulta();
+    }
+  }
+  function openNfseNacionalCertificateForm() {
+    if (!apiEnabled()) { toast('Modo seguro necessário', 'Execute iniciar-site.cmd e acesse http://127.0.0.1:4173 para anexar o certificado.', 'warning'); return; }
+    if (!sefazCan('manage_certificates')) { toast('Permissão necessária', 'Seu usuário não pode cadastrar certificados. Peça ao administrador para anexar ou usar um certificado já cadastrado.', 'warning'); return; }
+    var ufOptions = '<option value="">Selecione a UF</option>' + SEFAZ_UFS.map(function (item) { return '<option value="' + item[0] + '">' + item[1] + '</option>'; }).join('');
+    var companyGuess = (nfseNacionalState.info.certificates[0] || {}).label ? (nfseNacionalState.info.certificates[0] || {}).label.split(' · ')[0] : '';
+    openModal('Anexar certificado digital', '<form id="nfsen-certificate-form"><div class="info-banner"><span>🔒</span><div><strong>Leitura segura do A1.</strong> O backend valida o arquivo, identifica o titular e cifra o conteúdo — o mesmo certificado fica disponível depois no Captador de Notas.</div></div><label class="field"><span>Certificado A1 (.pfx ou .p12)</span><input id="nfsen-cert-file" type="file" accept=".pfx,.p12,application/x-pkcs12" required></label><label class="field"><span>Senha do certificado</span><input id="nfsen-cert-password" type="password" autocomplete="new-password" required></label><div class="form-grid"><label class="field"><span>Empresa</span><input id="nfsen-cert-company" value="' + esc(companyGuess) + '" required></label><label class="field"><span>Filial</span><input id="nfsen-cert-branch" placeholder="Matriz"></label><label class="field"><span>CNPJ/CPF esperado</span><input id="nfsen-cert-document" inputmode="numeric"></label><label class="field"><span>UF do estabelecimento</span><select id="nfsen-cert-state" required>' + ufOptions + '</select></label><label class="field"><span>Ambiente</span><select id="nfsen-cert-environment"><option value="production">Produção</option><option value="homologation">Homologação</option></select></label></div><label class="check"><input id="nfsen-cert-save-password" type="checkbox" checked> Salvar a senha cifrada no backend (evita digitar de novo a cada consulta nesta sessão).</label></form>', '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="nfsen-save-certificate">Validar e conectar</button>');
+  }
+  async function saveNfseNacionalCertificate() {
+    var form = $('#nfsen-certificate-form'), fileInput = $('#nfsen-cert-file');
+    if (!form || !form.reportValidity()) return;
+    var file = fileInput.files && fileInput.files[0];
+    if (!file || !/\.(pfx|p12)$/i.test(file.name)) { toast('Arquivo inválido', 'Selecione um certificado A1 .pfx ou .p12.', 'error'); return; }
+    var button = $('[data-action="nfsen-save-certificate"]');
+    try {
+      if (button) { button.disabled = true; button.textContent = 'Validando…'; }
+      var payload = await apiRequest('/api/sefaz/certificates', {
+        method: 'POST',
+        body: JSON.stringify({
+          filename: file.name, dataBase64: await readFileAsBase64(file), password: $('#nfsen-cert-password').value,
+          company: $('#nfsen-cert-company').value.trim(), branch: $('#nfsen-cert-branch').value.trim(),
+          document: $('#nfsen-cert-document').value.trim(), stateCode: $('#nfsen-cert-state').value,
+          environment: $('#nfsen-cert-environment').value, savePassword: $('#nfsen-cert-save-password').checked,
+        }),
+      });
+      var newCertificateId = (payload.certificate || {}).id || '';
+      closeModal();
+      toast('Certificado conectado', payload.message || 'O certificado foi validado e já está pronto para consultar as NFS-e.');
+      audit('Certificado anexado na aba NFS-e Portal Nacional', (payload.certificate || {}).company || '');
+      await loadNfseNacionalInfo();
+      if (newCertificateId) {
+        nfseNacionalState.filters.certificateId = newCertificateId;
+        nfseNacionalState.filters.environment = payload.certificate && payload.certificate.environment ? payload.certificate.environment : nfseNacionalState.filters.environment;
+        route();
+      }
+    } catch (error) {
+      toast('Certificado recusado', error.message, 'error');
+    } finally {
+      if (button) { button.disabled = false; button.textContent = 'Validar e conectar'; }
     }
   }
   async function exportNfseNacional() {
@@ -8409,6 +8453,8 @@
     else if (action === 'nfsen-consultar') consultarNfseNacional();
     else if (action === 'nfsen-export') exportNfseNacional();
     else if (action === 'nfsen-page') setNfseNacionalPage(actionEl.getAttribute('data-page'));
+    else if (action === 'nfsen-attach-certificate') openNfseNacionalCertificateForm();
+    else if (action === 'nfsen-save-certificate') saveNfseNacionalCertificate();
     else if (action === 'auditor-view') setAuditorFiscalView(actionEl.getAttribute('data-view'));
     else if (action === 'auditor-select-type') selectAuditorFiscalType(actionEl.getAttribute('data-type'));
     else if (action === 'auditor-select-files') { var auditorInput = $('#auditor-sped-files'); if (auditorInput) auditorInput.click(); }
