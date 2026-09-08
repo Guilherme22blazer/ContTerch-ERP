@@ -2518,7 +2518,14 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             if path.endswith((".png", ".jpg", ".jpeg", ".webp", ".svg", ".mp4")):
                 self.send_header("Cache-Control", "public, max-age=604800")
             elif path.endswith((".css", ".js")):
-                self.send_header("Cache-Control", "public, max-age=3600, must-revalidate")
+                # "no-cache" (não confundir com "no-store"): o navegador sempre
+                # revalida com o servidor antes de usar a cópia guardada,
+                # recebendo o arquivo atualizado assim que houver uma correção
+                # publicada — em vez de continuar servindo por até 1h uma
+                # versão antiga do app.js já corrigida no backend, como
+                # acontecia com "max-age=3600" (causa comum de "corrigi mas
+                # continua com o erro" logo após um deploy).
+                self.send_header("Cache-Control", "no-cache")
         if path == "/gestao-fiscal-consultas.html":
             self.send_header("Cache-Control", "public, max-age=3600, must-revalidate")
             self.send_header("X-Frame-Options", "SAMEORIGIN")
