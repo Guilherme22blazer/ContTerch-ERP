@@ -38,13 +38,6 @@
   };
   var sefazState = { certificates: [], history: [], distributedDocuments: [], distributionStates: [], nfseMonthlyImports: [], companiesOverview: [], companiesOverviewMonthStart: '', documents: { items: [], total: 0, page: 1, pageSize: 25, stats: {} }, documentSelection: {}, stats: {}, permissions: [], portals: {}, selectedResult: null, loading: false };
   var transitionXmlState = { files: [], totals: null };
-  var aliquotasMunicipaisState = {
-    estados: [], estadosLoaded: false,
-    filters: { uf: '', municipio: '', aliquotaMin: '', aliquotaMax: '' },
-    page: 1, pageSize: 50,
-    results: { items: [], total: 0, page: 1, pageSize: 50 },
-    loading: false,
-  };
   var nfseNacionalState = {
     info: { certificates: [], nationalPortalLogin: '', documentationUrl: '' }, loaded: false,
     filters: { certificateId: '', tipo: 'emitidas', dateFrom: todayISO(), dateTo: todayISO(), quickPeriod: 'personalizado', reportModel: 'simples', environment: 'production' },
@@ -263,7 +256,6 @@
     { route: 'icms-difal', label: 'ICMS / DIFAL', icon: '∑', desc: 'Matriz estadual e calculadora de diferencial' },
     { route: 'aliquotas-beneficios', label: 'Alíquotas Internas e Benefícios Fiscais', icon: '%', desc: 'Consulta de ICMS, FCP, operações interestaduais e benefícios por UF' },
     { route: 'aliquotas-iss', label: 'Alíquotas do ISS', icon: '‰', desc: 'Consulta dos 200 serviços da LC 116 nas 27 capitais brasileiras' },
-    { route: 'aliquotas-municipais', label: 'Alíquotas Municipais', icon: '⛭', desc: 'Consulta de alíquotas de ISS por estado, município e faixa de percentual' },
     { route: 'emissor-nfe', label: 'Emissor de Nota Fiscal (NFE.io)', icon: '▤', desc: 'Emissão de NFe, NFCe e CFe com certificado digital, integrada à API da NFE.io' },
     { route: 'nfse-nacional', label: 'NFS-e Portal Nacional', icon: '⇓', desc: 'Consulta, importação e relatório em Excel das NFS-e emitidas e recebidas no Portal Nacional' },
     { route: 'simulador-locacao', label: 'Simulador de Locação', icon: '⌂', desc: 'Projeção de IBS e CBS para locação de bens imóveis e móveis' },
@@ -2597,98 +2589,6 @@
     toast('Base de ISS exportada', 'Os 200 serviços e a fonte oficial de ' + selected.city + ' foram salvos em JSON.');
   }
 
-  function renderAliquotasMunicipais() {
-    if (!apiEnabled()) {
-      return [
-        pageHeading('Alíquotas Municipais', 'Consulta de alíquotas de ISS por estado, município e faixa de percentual.', ''),
-        '<div class="info-banner info-banner--warning"><span>!</span><div><strong>Ative o modo seguro para consultar a base de alíquotas.</strong></div></div>'
-      ].join('');
-    }
-    var f = aliquotasMunicipaisState.filters;
-    var estadoOptions = '<option value="">Todos os estados</option>' + (aliquotasMunicipaisState.estados || []).map(function (item) {
-      return '<option value="' + esc(item.uf) + '"' + (f.uf === item.uf ? ' selected' : '') + '>' + esc(item.uf) + ' — ' + number(item.municipios) + ' município(s)</option>';
-    }).join('');
-    return [
-      pageHeading('Alíquotas Municipais', 'Consulta das alíquotas de ISS vigentes por município, a partir das tabelas oficiais fornecidas pelos estados já carregados na base.', ''),
-      '<div class="info-banner"><span>i</span><div><strong>Dados oficiais, sem estimativa.</strong> A alíquota vigente é resolvida pela vigência mais recente (dt_ini/dt_fim) de cada município e serviço. Quando o estado ainda não informou a alíquota de um período, o campo aparece como "Não informado" — nunca um valor inventado.</div></div>',
-      '<section class="card"><header class="card-header"><h2>Filtros</h2><small>Consulte por estado, nome do município e faixa de alíquota (%)</small></header><div class="card-body">' +
-        '<div class="filters" style="grid-template-columns:repeat(4,1fr)">' +
-          '<label class="filter-field"><span>Estado (UF)</span><select id="am-uf" data-am-input>' + estadoOptions + '</select></label>' +
-          '<label class="filter-field"><span>Município</span><input id="am-municipio" data-am-input placeholder="Ex.: Campo Grande" value="' + esc(f.municipio) + '"></label>' +
-          '<label class="filter-field"><span>Alíquota mínima (%)</span><input id="am-aliquota-min" data-am-input type="number" min="0" max="100" step="0.01" value="' + esc(f.aliquotaMin) + '"></label>' +
-          '<label class="filter-field"><span>Alíquota máxima (%)</span><input id="am-aliquota-max" data-am-input type="number" min="0" max="100" step="0.01" value="' + esc(f.aliquotaMax) + '"></label>' +
-        '</div><button class="small-button" data-action="am-clear-filters" style="margin-top:10px">Limpar filtros</button>' +
-      '</div></section>',
-      '<section class="card"><header class="card-header"><h2>Resultado</h2></header><div class="card-body"><div id="am-table-wrap">' + aliquotasMunicipaisTableHtml() + '</div></div></section>'
-    ].join('');
-  }
-  function aliquotasMunicipaisTableHtml() {
-    var payload = aliquotasMunicipaisState.results || { items: [], total: 0, page: 1, pageSize: 50 };
-    var items = payload.items || [];
-    var totalPages = Math.max(1, Math.ceil(payload.total / payload.pageSize));
-    var rows = items.length ? items.map(function (item) {
-      var vigencia = dateBR(item.vigenteDesde) + (item.vigenteAte ? ' até ' + dateBR(item.vigenteAte) : ' (em vigor)');
-      var aliquotaLabel = item.aliquota == null ? '<span class="tag tag--warning">Não informado</span>' : (Number(item.aliquota).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%');
-      return '<tr><td>' + esc(item.uf) + '</td><td>' + esc(item.municipio) + '</td><td><code>' + esc(item.codigoServico) + '</code></td><td>' + aliquotaLabel + '</td><td>' + esc(vigencia) + '</td></tr>';
-    }).join('') : '<tr><td colspan="5"><div class="empty-state"><i>⌕</i><h3>Nenhum resultado encontrado</h3><p>Ajuste os filtros de estado, município ou alíquota.</p></div></td></tr>';
-    return '<div class="table-wrap"><table><thead><tr><th>UF</th><th>Município</th><th>Código de serviço</th><th>Alíquota vigente</th><th>Vigência</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-      '<div class="table-summary captador-pager"><span>' + number(payload.total) + ' registro(s) encontrado(s)</span><div class="captador-pager-controls">' +
-      '<label>Itens por página <select id="am-page-size" data-am-input><option value="25"' + (payload.pageSize === 25 ? ' selected' : '') + '>25</option><option value="50"' + (payload.pageSize === 50 ? ' selected' : '') + '>50</option><option value="100"' + (payload.pageSize === 100 ? ' selected' : '') + '>100</option><option value="200"' + (payload.pageSize === 200 ? ' selected' : '') + '>200</option></select></label>' +
-      '<button class="row-button" data-action="am-page" data-page="1"' + (payload.page <= 1 ? ' disabled' : '') + '>|«</button><button class="row-button" data-action="am-page" data-page="' + (payload.page - 1) + '"' + (payload.page <= 1 ? ' disabled' : '') + '>‹</button><button class="row-button" data-action="am-page" data-page="' + (payload.page + 1) + '"' + (payload.page >= totalPages ? ' disabled' : '') + '>›</button><button class="row-button" data-action="am-page" data-page="' + totalPages + '"' + (payload.page >= totalPages ? ' disabled' : '') + '>»|</button></div></div>';
-  }
-  function loadAliquotasMunicipaisEstados() {
-    if (!apiEnabled() || !apiToken || aliquotasMunicipaisState.estadosLoaded) return Promise.resolve();
-    return apiRequest('/api/aliquotas-municipais/estados').then(function (payload) {
-      aliquotasMunicipaisState.estados = payload.estados || [];
-      aliquotasMunicipaisState.estadosLoaded = true;
-      var select = $('#am-uf');
-      if (select) {
-        var f = aliquotasMunicipaisState.filters;
-        select.innerHTML = '<option value="">Todos os estados</option>' + aliquotasMunicipaisState.estados.map(function (item) {
-          return '<option value="' + esc(item.uf) + '"' + (f.uf === item.uf ? ' selected' : '') + '>' + esc(item.uf) + ' — ' + number(item.municipios) + ' município(s)</option>';
-        }).join('');
-      }
-    }).catch(function (error) { toast('Não foi possível carregar os estados', error.message, 'error'); });
-  }
-  function loadAliquotasMunicipaisConsulta() {
-    if (!apiEnabled() || !apiToken) return Promise.resolve();
-    var f = aliquotasMunicipaisState.filters, params = new URLSearchParams();
-    if (f.uf) params.set('uf', f.uf);
-    if (f.municipio) params.set('municipio', f.municipio);
-    if (f.aliquotaMin) params.set('aliquotaMin', f.aliquotaMin);
-    if (f.aliquotaMax) params.set('aliquotaMax', f.aliquotaMax);
-    params.set('page', aliquotasMunicipaisState.page);
-    params.set('pageSize', aliquotasMunicipaisState.pageSize);
-    aliquotasMunicipaisState.loading = true;
-    return apiRequest('/api/aliquotas-municipais/consulta?' + params.toString()).then(function (payload) {
-      aliquotasMunicipaisState.results = payload;
-      aliquotasMunicipaisState.loading = false;
-      var wrap = $('#am-table-wrap');
-      if (wrap) wrap.innerHTML = aliquotasMunicipaisTableHtml();
-    }).catch(function (error) { aliquotasMunicipaisState.loading = false; toast('Não foi possível consultar as alíquotas', error.message, 'error'); });
-  }
-  function updateAliquotasMunicipaisFilters() {
-    var f = aliquotasMunicipaisState.filters;
-    var field = function (id) { var el = $('#' + id); return el ? el.value : undefined; };
-    f.uf = field('am-uf') || '';
-    f.municipio = field('am-municipio') || '';
-    f.aliquotaMin = field('am-aliquota-min') || '';
-    f.aliquotaMax = field('am-aliquota-max') || '';
-    var pageSizeField = $('#am-page-size'); if (pageSizeField) aliquotasMunicipaisState.pageSize = Number(pageSizeField.value) || 50;
-    aliquotasMunicipaisState.page = 1;
-    loadAliquotasMunicipaisConsulta();
-  }
-  function clearAliquotasMunicipaisFilters() {
-    aliquotasMunicipaisState.filters = { uf: '', municipio: '', aliquotaMin: '', aliquotaMax: '' };
-    aliquotasMunicipaisState.page = 1;
-    route();
-    loadAliquotasMunicipaisConsulta();
-  }
-  function setAliquotasMunicipaisPage(page) {
-    aliquotasMunicipaisState.page = Math.max(1, Number(page) || 1);
-    loadAliquotasMunicipaisConsulta();
-  }
-
   var NFEIO_STATUS_LABELS = {
     Pending: 'Processando', Authorized: 'Autorizada', Denied: 'Negada',
     Cancelled: 'Cancelada', CancellationDenied: 'Cancelamento negado', Issued: 'Emitida',
@@ -4397,7 +4297,6 @@
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
     else if (state.route === 'aliquotas-beneficios') main.innerHTML = renderTaxBenefits();
     else if (state.route === 'aliquotas-iss') main.innerHTML = renderIssRates();
-    else if (state.route === 'aliquotas-municipais') main.innerHTML = renderAliquotasMunicipais();
     else if (state.route === 'emissor-nfe') main.innerHTML = renderEmissorNfe();
     else if (state.route === 'nfse-nacional') main.innerHTML = renderNfseNacional();
     else if (state.route === 'consulta-cest') main.innerHTML = renderCestConsultation();
@@ -4412,7 +4311,6 @@
     bindViewControls();
     if (state.route === 'sefaz-portal') loadSefazData();
     if (state.route === 'captador-notas-fiscais') { loadCaptadorCompanies(); if (captadorSection() === 'documentos') loadCaptadorDocuments(); }
-    if (state.route === 'aliquotas-municipais') { loadAliquotasMunicipaisEstados(); loadAliquotasMunicipaisConsulta(); }
     if (state.route === 'emissor-nfe') { if (!nfeioState.loaded) loadNfeioSettings(); loadNfeioInvoices(); }
     if (state.route === 'nfse-nacional') { if (!nfseNacionalState.loaded) loadNfseNacionalInfo(); if (!nfseNacionalState.sync.running) loadNfseNacionalConsulta(); }
     if (state.route === 'configuracoes') loadStripeSettings();
@@ -8460,8 +8358,6 @@
     else if (action === 'cd-download-one') downloadCaptadorOneDocument(actionEl.getAttribute('data-id'), actionEl.getAttribute('data-source'));
     else if (action === 'cd-download-selected') downloadCaptadorSelectedDocuments();
     else if (action === 'cd-download-filtered') downloadCaptadorFilteredDocuments();
-    else if (action === 'am-clear-filters') clearAliquotasMunicipaisFilters();
-    else if (action === 'am-page') setAliquotasMunicipaisPage(actionEl.getAttribute('data-page'));
     else if (action === 'nfeio-save-settings') saveNfeioSettings();
     else if (action === 'nfeio-sync-company') syncNfeioCompany();
     else if (action === 'nfeio-sync-certificate') syncNfeioCertificate();
@@ -8617,9 +8513,6 @@
     } else if (event.target.matches('[data-cd-input]') && event.target.tagName !== 'SELECT') {
       window.clearTimeout(state.cdFilterTimer);
       state.cdFilterTimer = window.setTimeout(updateCaptadorDocumentFilters, 300);
-    } else if (event.target.matches('[data-am-input]') && event.target.tagName !== 'SELECT') {
-      window.clearTimeout(state.amFilterTimer);
-      state.amFilterTimer = window.setTimeout(updateAliquotasMunicipaisFilters, 300);
     } else if (event.target.matches('[data-nfeio-item-field]')) {
       var itemRow = event.target.closest('[data-nfeio-item-index]');
       if (itemRow) updateNfeioItemField(Number(itemRow.getAttribute('data-nfeio-item-index')), event.target.getAttribute('data-nfeio-item-field'), event.target.value);
@@ -8683,7 +8576,6 @@
     else if (event.target.matches('[data-auditor-param]')) updateAuditorFiscalParam(event.target.getAttribute('data-auditor-param'), event.target.checked);
     else if (event.target.id === 'auditor-sped-files') handleAuditorFiscalFiles(event.target.files);
     else if (event.target.matches('[data-cd-input]')) updateCaptadorDocumentFilters();
-    else if (event.target.matches('[data-am-input]')) updateAliquotasMunicipaisFilters();
     else if (event.target.id === 'nfeio-kind') updateNfeioEmitField('kind', event.target.value, true);
     else if (event.target.matches('[data-nfeio-field]')) updateNfeioEmitField(event.target.getAttribute('data-nfeio-field'), event.target.value, false);
     else if (event.target.matches('[data-nfsen-input]')) updateNfseNacionalFilters();
