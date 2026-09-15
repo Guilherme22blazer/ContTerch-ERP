@@ -171,6 +171,7 @@ ERP_MODULES = {
     "tab_cnpj_simples": "Consulta CNPJ Simples",
     "tab_analise_balanco": "Análise de Balanço",
     "tab_lancamentos_contabeis": "Lançamentos Contábeis",
+    "tab_acompanhamento_contabil": "Acompanhamento Contábil",
     "tab_folha": "Folha de Pagamento",
     "tab_horas_extras_noturno": "Horas Extras e Trabalho Noturno",
     "tab_verbas_rescisorias": "Verbas Rescisórias",
@@ -196,7 +197,7 @@ FISCAL_TAB_MODULES = {
     "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_simulador_locacao",
     "tab_nbs_cclasstrib", "tab_calculadora_tributaria", "tab_cnpj_simples", "tab_emissor_nfe", "tab_nfse_nacional",
 }
-CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis"}
+CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab_acompanhamento_contabil"}
 TRABALHISTA_TAB_MODULES = {
     "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
     "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",
@@ -3715,6 +3716,17 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         }
 
+    def acompanhamento_contabil_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "clientId": row["client_id"], "clientName": row["client_name"],
+            "competencia": row["competencia"],
+            "documentos": row["documentos_status"], "escrituracao": row["escrituracao_status"],
+            "apuracao": row["apuracao_status"], "fechamento": row["fechamento_status"],
+            "obrigacoes": row["obrigacoes_status"],
+            "responsavel": row["responsavel"] or "", "observacoes": row["observacoes"] or "",
+            "updatedBy": row["updated_by"] or "", "updatedAt": row["updated_at"],
+        }
+
     def save_nfeio_invoice_snapshot(self, invoice_id: str, *, status: str, status_reason: str, nfeio_response: dict) -> None:
         fernet = get_fernet()
         pdf_url = str(nfeio_response.get("pdf", {}).get("url", "") if isinstance(nfeio_response.get("pdf"), dict) else nfeio_response.get("pdfUrl", "") or "")
@@ -5939,6 +5951,23 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 "total": total, "page": page, "pageSize": page_size,
             })
             return
+        if path == "/api/acompanhamento-contabil":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_acompanhamento_contabil"):
+                return
+            competencia = parse_qs(parsed_url.query).get("competencia", [""])[0].strip()
+            if not re.match(r"^\d{4}-\d{2}$", competencia):
+                competencia = dt.date.today().strftime("%Y-%m")
+            with connect() as database:
+                rows = database.execute(
+                    "SELECT * FROM acompanhamento_contabil WHERE company_id = ? AND competencia = ? ORDER BY client_name",
+                    (user["company_id"], competencia),
+                ).fetchall()
+            self.send_json({
+                "competencia": competencia,
+                "items": [self.acompanhamento_contabil_row(row) for row in rows],
+            })
+            return
         if path == "/api/state":
             user = self.require_user()
             if user is None:
@@ -6689,6 +6718,64 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     "environment": settings["environment"],
                 })
             except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/acompanhamento-contabil":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_acompanhamento_contabil"):
+                return
+            try:
+                client_id = str(payload.get("clientId", "")).strip()
+                client_name = str(payload.get("clientName", "")).strip()[:200]
+                competencia = str(payload.get("competencia", "")).strip()
+                if not client_id or not client_name:
+                    raise ValueError("Informe o cliente.")
+                if not re.match(r"^\d{4}-\d{2}$", competencia):
+                    raise ValueError("Competência inválida.")
+                valid_status = {"pendente", "andamento", "concluido"}
+                stages = {}
+                for stage_key in ("documentos", "escrituracao", "apuracao", "fechamento", "obrigacoes"):
+                    value = str(payload.get(stage_key, "pendente")).strip()
+                    if value not in valid_status:
+                        raise ValueError("Status inválido.")
+                    stages[stage_key] = value
+                responsavel = str(payload.get("responsavel", "")).strip()[:150]
+                observacoes = str(payload.get("observacoes", "")).strip()[:2000]
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    database.execute(
+                        """
+                        INSERT INTO acompanhamento_contabil(
+                          id, company_id, client_id, client_name, competencia,
+                          documentos_status, escrituracao_status, apuracao_status, fechamento_status, obrigacoes_status,
+                          responsavel, observacoes, updated_by, updated_at, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (company_id, client_id, competencia) DO UPDATE SET
+                          client_name = EXCLUDED.client_name,
+                          documentos_status = EXCLUDED.documentos_status,
+                          escrituracao_status = EXCLUDED.escrituracao_status,
+                          apuracao_status = EXCLUDED.apuracao_status,
+                          fechamento_status = EXCLUDED.fechamento_status,
+                          obrigacoes_status = EXCLUDED.obrigacoes_status,
+                          responsavel = EXCLUDED.responsavel,
+                          observacoes = EXCLUDED.observacoes,
+                          updated_by = EXCLUDED.updated_by,
+                          updated_at = EXCLUDED.updated_at
+                        """,
+                        (
+                            row_id, user["company_id"], client_id, client_name, competencia,
+                            stages["documentos"], stages["escrituracao"], stages["apuracao"], stages["fechamento"], stages["obrigacoes"],
+                            responsavel or None, observacoes or None, user["email"], now, now,
+                        ),
+                    )
+                    saved = database.execute(
+                        "SELECT * FROM acompanhamento_contabil WHERE company_id = ? AND client_id = ? AND competencia = ?",
+                        (user["company_id"], client_id, competencia),
+                    ).fetchone()
+                self.send_json({"ok": True, "item": self.acompanhamento_contabil_row(saved)})
+            except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
 

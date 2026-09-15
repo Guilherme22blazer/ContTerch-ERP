@@ -51,6 +51,15 @@
     invoices: { items: [], total: 0, page: 1, pageSize: 25 },
     emitForm: { kind: 'nfe', operationNature: 'Venda de mercadoria', buyerName: '', buyerDocument: '', paymentMethod: 'Cash', items: [{ code: '', description: '', quantity: 1, unitAmount: 0 }] },
   };
+  var ACOMPANHAMENTO_STAGES = [
+    ['documentos', 'Documentos'], ['escrituracao', 'Escrituração'], ['apuracao', 'Apuração'],
+    ['fechamento', 'Fechamento'], ['obrigacoes', 'Obrigações']
+  ];
+  var ACOMPANHAMENTO_STATUS_LABELS = { pendente: 'Pendente', andamento: 'Em andamento', concluido: 'Concluído' };
+  var acompanhamentoContabilState = {
+    loaded: false, loading: false, competencia: new Date().toISOString().slice(0, 7),
+    itemsByClient: {}, query: '', saving: {},
+  };
   var SEFAZ_UFS = [
     ['11','RO'],['12','AC'],['13','AM'],['14','RR'],['15','PA'],['16','AP'],['17','TO'],
     ['21','MA'],['22','PI'],['23','CE'],['24','RN'],['25','PB'],['26','PE'],['27','AL'],
@@ -231,6 +240,7 @@
     { route: 'pensao-alimenticia', label: 'Pensão Alimentícia', icon: '◫', desc: 'Percentual judicial sobre rendimento bruto, líquido ou valor fixo' },
     { route: 'analise-balanco', label: 'Análise de Balanço', icon: '▦', desc: 'Liquidez, endividamento, rentabilidade e diagnóstico patrimonial' },
     { route: 'lancamentos-contabeis', label: 'Lançamentos Contábeis', icon: '▤', desc: 'Índice alfabético, busca, favoritos e modelos de débito e crédito' },
+    { route: 'acompanhamento-contabil', label: 'Acompanhamento Contábil', icon: '◫', desc: 'Painel mensal do status contábil (documentos, escrituração, apuração, fechamento e obrigações) de cada cliente' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -3015,6 +3025,128 @@
     }
   }
 
+  function acompanhamentoStatusTag(status) {
+    var kind = status === 'concluido' ? 'success' : status === 'andamento' ? 'warning' : 'neutral';
+    return '<span class="tag tag--' + kind + '">' + esc(ACOMPANHAMENTO_STATUS_LABELS[status] || 'Pendente') + '</span>';
+  }
+  function acompanhamentoStageSelect(clientId, stageKey, value) {
+    return '<select class="acompanhamento-select" data-ac-stage-input data-ac-client="' + esc(clientId) + '" data-ac-stage="' + esc(stageKey) + '">' +
+      Object.keys(ACOMPANHAMENTO_STATUS_LABELS).map(function (key) {
+        return '<option value="' + key + '"' + (key === value ? ' selected' : '') + '>' + esc(ACOMPANHAMENTO_STATUS_LABELS[key]) + '</option>';
+      }).join('') + '</select>';
+  }
+  function acompanhamentoContabilItemFor(clientId) {
+    return acompanhamentoContabilState.itemsByClient[clientId] || {
+      clientId: clientId, documentos: 'pendente', escrituracao: 'pendente', apuracao: 'pendente',
+      fechamento: 'pendente', obrigacoes: 'pendente', responsavel: '', observacoes: '', updatedAt: ''
+    };
+  }
+  function renderAcompanhamentoContabil() {
+    if (!apiEnabled()) {
+      return [
+        pageHeading('Acompanhamento Contábil', 'Acompanhe o status mensal do processo contábil de cada cliente.', ''),
+        '<div class="info-banner info-banner--warning"><span>!</span><div><strong>Ative o modo seguro para usar o Acompanhamento Contábil.</strong></div></div>'
+      ].join('');
+    }
+    var query = acompanhamentoContabilState.query.toLowerCase();
+    var clients = state.clients.filter(function (client) {
+      return !query || String(client.name || '').toLowerCase().indexOf(query) >= 0 || String(client.document || '').indexOf(query) >= 0;
+    });
+    var totals = { documentos: 0, escrituracao: 0, apuracao: 0, fechamento: 0, obrigacoes: 0 };
+    state.clients.forEach(function (client) {
+      var item = acompanhamentoContabilItemFor(client.id);
+      ACOMPANHAMENTO_STAGES.forEach(function (stage) { if (item[stage[0]] === 'concluido') totals[stage[0]] += 1; });
+    });
+    var totalClients = state.clients.length || 1;
+    var rows = clients.length ? clients.map(function (client) {
+      var item = acompanhamentoContabilItemFor(client.id);
+      var savingRow = acompanhamentoContabilState.saving[client.id];
+      return '<tr' + (savingRow ? ' class="is-saving"' : '') + '><td><b>' + esc(client.name) + '</b><br><small class="subtle">' + esc(client.document || '') + '</small></td>' +
+        ACOMPANHAMENTO_STAGES.map(function (stage) { return '<td>' + acompanhamentoStageSelect(client.id, stage[0], item[stage[0]]) + '</td>'; }).join('') +
+        '<td><input type="text" class="ac-responsavel-input" data-ac-text-input data-ac-client="' + esc(client.id) + '" data-ac-field="responsavel" value="' + esc(item.responsavel) + '" placeholder="Responsável"></td>' +
+        '<td><button type="button" class="row-button" data-action="ac-notes" data-client="' + esc(client.id) + '" title="Observações">' + (item.observacoes ? '🗒' : '＋') + '</button></td>' +
+        '<td><small class="subtle">' + (item.updatedAt ? dateTimeBR(item.updatedAt) : '—') + '</small></td></tr>';
+    }).join('') : '<tr><td colspan="9"><div class="empty-state"><i>◫</i><h3>Nenhum cliente encontrado</h3><p>Cadastre clientes na aba Clientes para acompanhar o processo contábil deles aqui.</p></div></td></tr>';
+    return [
+      pageHeading('Acompanhamento Contábil', 'Painel mensal do status do processo contábil de cada cliente: documentos, escrituração, apuração de impostos, fechamento e obrigações acessórias.', ''),
+      '<section class="card"><header class="card-header"><h2>Competência</h2></header><div class="card-body"><div class="filters" style="grid-template-columns:repeat(3,1fr)">' +
+        '<label class="filter-field"><span>Mês de referência</span><input id="ac-competencia" type="month" value="' + esc(acompanhamentoContabilState.competencia) + '"></label>' +
+        '<label class="filter-field"><span>Pesquisar cliente</span><input id="ac-query" type="text" value="' + esc(acompanhamentoContabilState.query) + '" placeholder="Nome ou CNPJ"></label>' +
+      '</div></div></section>',
+      '<section class="ua-metrics" style="margin:16px 0">' + ACOMPANHAMENTO_STAGES.map(function (stage) {
+        return '<div class="ua-metric ua-metric--green"><small>' + esc(stage[1]) + '</small><strong>' + totals[stage[0]] + ' / ' + totalClients + '</strong><span>concluído(s) na competência</span></div>';
+      }).join('') + '</section>',
+      '<section class="card"><header class="card-header"><h2>Clientes (' + clients.length + ')</h2></header><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Cliente</th>' +
+        ACOMPANHAMENTO_STAGES.map(function (stage) { return '<th>' + esc(stage[1]) + '</th>'; }).join('') +
+        '<th>Responsável</th><th>Obs.</th><th>Atualizado em</th></tr></thead><tbody>' + rows + '</tbody></table></div></div></section>'
+    ].join('');
+  }
+  function loadAcompanhamentoContabil() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    acompanhamentoContabilState.loading = true;
+    return apiRequest('/api/acompanhamento-contabil?competencia=' + encodeURIComponent(acompanhamentoContabilState.competencia)).then(function (payload) {
+      var byClient = {};
+      (payload.items || []).forEach(function (item) { byClient[item.clientId] = item; });
+      acompanhamentoContabilState.itemsByClient = byClient;
+      acompanhamentoContabilState.loaded = true;
+      acompanhamentoContabilState.loading = false;
+      if (state.route === 'acompanhamento-contabil') route();
+    }).catch(function (error) {
+      acompanhamentoContabilState.loading = false;
+      toast('Não foi possível carregar o acompanhamento', error.message, 'error');
+    });
+  }
+  function setAcompanhamentoContabilCompetencia(value) {
+    if (!/^\d{4}-\d{2}$/.test(value || '')) return;
+    acompanhamentoContabilState.competencia = value;
+    loadAcompanhamentoContabil();
+  }
+  function saveAcompanhamentoContabilRow(clientId, overrides) {
+    var client = state.clients.find(function (item) { return item.id === clientId; });
+    if (!client) return Promise.resolve();
+    var current = acompanhamentoContabilItemFor(clientId);
+    var payload = {
+      clientId: clientId, clientName: client.name, competencia: acompanhamentoContabilState.competencia,
+      documentos: current.documentos, escrituracao: current.escrituracao, apuracao: current.apuracao,
+      fechamento: current.fechamento, obrigacoes: current.obrigacoes,
+      responsavel: current.responsavel, observacoes: current.observacoes,
+    };
+    Object.assign(payload, overrides || {});
+    acompanhamentoContabilState.saving[clientId] = true;
+    return apiRequest('/api/acompanhamento-contabil', { method: 'POST', body: JSON.stringify(payload) }).then(function (result) {
+      acompanhamentoContabilState.itemsByClient[clientId] = result.item;
+      delete acompanhamentoContabilState.saving[clientId];
+      route();
+    }).catch(function (error) {
+      delete acompanhamentoContabilState.saving[clientId];
+      toast('Não foi possível salvar', error.message, 'error');
+      route();
+    });
+  }
+  function updateAcompanhamentoContabilStage(clientId, stageKey, value) {
+    var overrides = {};
+    overrides[stageKey] = value;
+    saveAcompanhamentoContabilRow(clientId, overrides);
+  }
+  function updateAcompanhamentoContabilText(clientId, field, value) {
+    var overrides = {};
+    overrides[field] = value;
+    saveAcompanhamentoContabilRow(clientId, overrides);
+  }
+  function openAcompanhamentoNotes(clientId) {
+    var client = state.clients.find(function (item) { return item.id === clientId; });
+    if (!client) return;
+    var item = acompanhamentoContabilItemFor(clientId);
+    openModal('Observações — ' + client.name, '<form id="ac-notes-form" data-client="' + esc(clientId) + '"><label class="field field--full"><span>Observações da competência ' + esc(acompanhamentoContabilState.competencia) + '</span><textarea id="ac-notes-text" rows="6">' + esc(item.observacoes) + '</textarea></label></form>', '<button class="secondary-button" data-action="close-modal">Cancelar</button><button class="primary-button" data-action="ac-save-notes">Salvar observações</button>');
+  }
+  function saveAcompanhamentoNotes() {
+    var form = $('#ac-notes-form');
+    if (!form) return;
+    var clientId = form.dataset.client;
+    var text = $('#ac-notes-text').value;
+    saveAcompanhamentoContabilRow(clientId, { observacoes: text }).then(function () { closeModal(); toast('Observações salvas', ''); });
+  }
+
   function cestNormalize(value) {
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
   }
@@ -4292,6 +4424,7 @@
     else if (state.route === 'pensao-alimenticia') main.innerHTML = renderAlimonyCalculator();
     else if (state.route === 'analise-balanco') main.innerHTML = renderBalanceAnalysis();
     else if (state.route === 'lancamentos-contabeis') main.innerHTML = renderAccountingEntries();
+    else if (state.route === 'acompanhamento-contabil') main.innerHTML = renderAcompanhamentoContabil();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -4313,6 +4446,7 @@
     if (state.route === 'captador-notas-fiscais') { loadCaptadorCompanies(); if (captadorSection() === 'documentos') loadCaptadorDocuments(); }
     if (state.route === 'emissor-nfe') { if (!nfeioState.loaded) loadNfeioSettings(); loadNfeioInvoices(); }
     if (state.route === 'nfse-nacional') { if (!nfseNacionalState.loaded) loadNfseNacionalInfo(); if (!nfseNacionalState.sync.running) loadNfseNacionalConsulta(); }
+    if (state.route === 'acompanhamento-contabil') loadAcompanhamentoContabil();
     if (state.route === 'configuracoes') loadStripeSettings();
     if (state.route === 'gestao-usuarios' && window.UserAccessManager) window.UserAccessManager.mount(main, { user: currentUser, syncUsers: function (users) { state.users = (users || []).map(function (user) { return Object.assign({}, user, { active: user.status !== 'Inativo' }); }); storageSet(KEYS.users, state.users); } });
   }
@@ -8374,6 +8508,8 @@
     else if (action === 'nfsen-page') setNfseNacionalPage(actionEl.getAttribute('data-page'));
     else if (action === 'nfsen-attach-certificate') openNfseNacionalCertificateForm();
     else if (action === 'nfsen-save-certificate') saveNfseNacionalCertificate();
+    else if (action === 'ac-notes') openAcompanhamentoNotes(actionEl.getAttribute('data-client'));
+    else if (action === 'ac-save-notes') saveAcompanhamentoNotes();
     else if (action === 'auditor-view') setAuditorFiscalView(actionEl.getAttribute('data-view'));
     else if (action === 'auditor-select-type') selectAuditorFiscalType(actionEl.getAttribute('data-type'));
     else if (action === 'auditor-select-files') { var auditorInput = $('#auditor-sped-files'); if (auditorInput) auditorInput.click(); }
@@ -8446,6 +8582,10 @@
       renderSearch(event.target.value);
     } else if (event.target.id === 'portfolio-query') {
       filterPortfolioDashboard();
+    } else if (event.target.id === 'ac-query') {
+      acompanhamentoContabilState.query = event.target.value;
+      window.clearTimeout(state.acQueryTimer);
+      state.acQueryTimer = window.setTimeout(route, 180);
     } else if (event.target.id === 'mei-query') {
       meiControlUi().query = event.target.value;
       window.clearTimeout(state.meiSearchTimer);
@@ -8579,6 +8719,9 @@
     else if (event.target.id === 'nfeio-kind') updateNfeioEmitField('kind', event.target.value, true);
     else if (event.target.matches('[data-nfeio-field]')) updateNfeioEmitField(event.target.getAttribute('data-nfeio-field'), event.target.value, false);
     else if (event.target.matches('[data-nfsen-input]')) updateNfseNacionalFilters();
+    else if (event.target.id === 'ac-competencia') setAcompanhamentoContabilCompetencia(event.target.value);
+    else if (event.target.matches('[data-ac-stage-input]')) updateAcompanhamentoContabilStage(event.target.getAttribute('data-ac-client'), event.target.getAttribute('data-ac-stage'), event.target.value);
+    else if (event.target.matches('[data-ac-text-input]')) updateAcompanhamentoContabilText(event.target.getAttribute('data-ac-client'), event.target.getAttribute('data-ac-field'), event.target.value);
     else if (event.target.id === 'cd-select-all') toggleAllCaptadorDocumentSelection(event.target.checked);
     else if (event.target.matches('[data-cd-select]')) toggleCaptadorDocumentSelection(event.target.getAttribute('data-cd-select'), event.target.checked);
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
