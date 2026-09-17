@@ -51,6 +51,13 @@
     invoices: { items: [], total: 0, page: 1, pageSize: 25 },
     emitForm: { kind: 'nfe', operationNature: 'Venda de mercadoria', buyerName: '', buyerDocument: '', paymentMethod: 'Cash', items: [{ code: '', description: '', quantity: 1, unitAmount: 0 }] },
   };
+  var TAX_REGIME_ANEXO_OPTIONS = ['Anexo I - Comércio', 'Anexo II - Indústria', 'Anexo III - Serviços', 'Anexo IV - Serviços', 'Anexo V - Serviços', 'Fator R automático (III ou V)'];
+  var TAX_REGIME_ATIVIDADE_OPTIONS = ['Comércio/Indústria', 'Serviços'];
+  var TAX_REGIME_FASE_OPTIONS = ['Fase 2027-2028 - CBS plena e IBS teste', 'Fase 2029-2032 - transição gradual', 'Fase 2033 em diante - regime pleno'];
+  var TAX_REGIME_ANEXO_KEY_BY_LABEL = {
+    'Anexo I - Comércio': 'I', 'Anexo II - Indústria': 'II', 'Anexo III - Serviços': 'III',
+    'Anexo IV - Serviços': 'IV', 'Anexo V - Serviços': 'V'
+  };
   var ACOMPANHAMENTO_STAGES = [
     ['documentos', 'Documentos'], ['escrituracao', 'Escrituração'], ['apuracao', 'Apuração'],
     ['fechamento', 'Fechamento'], ['obrigacoes', 'Obrigações']
@@ -269,6 +276,7 @@
     { route: 'emissor-nfe', label: 'Emissor de Nota Fiscal (NFE.io)', icon: '▤', desc: 'Emissão de NFe, NFCe e CFe com certificado digital, integrada à API da NFE.io' },
     { route: 'nfse-nacional', label: 'NFS-e Portal Nacional', icon: '⇓', desc: 'Consulta, importação e relatório em Excel das NFS-e emitidas e recebidas no Portal Nacional' },
     { route: 'simulador-locacao', label: 'Simulador de Locação', icon: '⌂', desc: 'Projeção de IBS e CBS para locação de bens imóveis e móveis' },
+    { route: 'comparativo-regimes', label: 'Comparativo de Regimes Tributários', icon: '⚖', desc: 'Híbrido (Simples) × Lucro Presumido × Lucro Real, com CBS e IBS por fase da Reforma Tributária' },
     { route: 'nbs-cclasstrib', label: 'NBS / cClassTrib', icon: '§', desc: 'Correlação de serviços e classificação IBS/CBS' },
     { route: 'calculadora-tributaria', label: 'Calculadora Tributária', icon: '▣', desc: 'Comparação entre regimes tributários' },
     { route: 'cnpj-simples', label: 'Consulta CNPJ Simples', icon: '◎', desc: 'Consulta de opção pelo Simples Nacional e MEI' }
@@ -3147,6 +3155,217 @@
     saveAcompanhamentoContabilRow(clientId, { observacoes: text }).then(function () { closeModal(); toast('Observações salvas', ''); });
   }
 
+  function taxRegimeCompareDefaults() {
+    return {
+      faturamento: 50000, rbt12: 600000, anexoSimples: 'Anexo III - Serviços', atividade: 'Serviços',
+      despesasPct: 20, creditoPct: 70, proLabore: 5000,
+      cbsRate: 8.8, ibsRate: 17.7, fase: TAX_REGIME_FASE_OPTIONS[0], issIcmsRate: 5
+    };
+  }
+  function taxRegimeAnnexBracket(annexKey, rbt12) {
+    var annex = SIMPLES_ANNEXES[annexKey];
+    var idx = ANNEX_LIMITS.findIndex(function (limit) { return rbt12 <= limit; });
+    if (idx < 0) idx = ANNEX_LIMITS.length - 1;
+    var partition = annex.partitions[idx];
+    return {
+      annex: annex, bracketIndex: idx, rate: annex.rates[idx], deduction: annex.deductions[idx],
+      pisCofinsPct: ((partition.COFINS || 0) + (partition['PIS/Pasep'] || 0)) / 100,
+      icmsIssPct: (partition.ICMS || partition.ISS || 0) / 100
+    };
+  }
+  function calculateTaxRegimeCompare(inputs) {
+    var faturamento = Math.max(0, Number(inputs.faturamento) || 0);
+    var rbt12 = Math.max(0, Number(inputs.rbt12) || 0);
+    var despesasFrac = Math.max(0, Number(inputs.despesasPct) || 0) / 100;
+    var creditoFrac = Math.max(0, Math.min(100, Number(inputs.creditoPct) || 0)) / 100;
+    var proLabore = Math.max(0, Number(inputs.proLabore) || 0);
+    var cbsRate = Math.max(0, Number(inputs.cbsRate) || 0) / 100;
+    var ibsPlenaRate = Math.max(0, Number(inputs.ibsRate) || 0) / 100;
+    var issIcmsRate = Math.max(0, Number(inputs.issIcmsRate) || 0) / 100;
+    var fase = inputs.fase;
+    var fatorImplantacao = fase === TAX_REGIME_FASE_OPTIONS[0] ? 0 : fase === TAX_REGIME_FASE_OPTIONS[1] ? 0.5 : 1;
+    var ibsVigente = fase === TAX_REGIME_FASE_OPTIONS[0] ? 0.001 : fase === TAX_REGIME_FASE_OPTIONS[1] ? ibsPlenaRate * 0.5 : ibsPlenaRate;
+
+    var fatorR = rbt12 > 0 ? (proLabore * 12) / rbt12 : 0;
+    var anexoKey = inputs.anexoSimples === 'Fator R automático (III ou V)'
+      ? (fatorR >= 0.28 ? 'III' : 'V')
+      : (TAX_REGIME_ANEXO_KEY_BY_LABEL[inputs.anexoSimples] || 'III');
+    var bracket = taxRegimeAnnexBracket(anexoKey, rbt12);
+    var effectiveRate = rbt12 > 0 ? Math.max(0, (rbt12 * bracket.rate / 100 - bracket.deduction) / rbt12) : 0;
+    var dasHibrido = faturamento * effectiveRate * (1 - bracket.pisCofinsPct - bracket.icmsIssPct * fatorImplantacao);
+    var hCbsDebito = faturamento * cbsRate, hCbsCredito = faturamento * despesasFrac * creditoFrac * cbsRate;
+    var hIbsDebito = faturamento * ibsVigente, hIbsCredito = faturamento * despesasFrac * creditoFrac * ibsVigente;
+    var hCbsRecolher = Math.max(hCbsDebito - hCbsCredito, 0), hIbsRecolher = Math.max(hIbsDebito - hIbsCredito, 0);
+    var hibrido = {
+      fatorR: fatorR, annexName: bracket.annex.name, bracketIndex: bracket.bracketIndex, effectiveRate: effectiveRate,
+      das: dasHibrido, cbsDebito: hCbsDebito, cbsCredito: hCbsCredito, cbsRecolher: hCbsRecolher,
+      ibsDebito: hIbsDebito, ibsCredito: hIbsCredito, ibsRecolher: hIbsRecolher,
+      carga: dasHibrido + hCbsRecolher + hIbsRecolher, creditoIntegral: hCbsDebito + hIbsDebito
+    };
+
+    var isServico = inputs.atividade === 'Serviços';
+    var basePresIR = faturamento * (isServico ? 0.32 : 0.08), basePresCS = faturamento * (isServico ? 0.32 : 0.12);
+    var lpIrpj = basePresIR * 0.15 + Math.max(basePresIR - 20000, 0) * 0.10, lpCsll = basePresCS * 0.09;
+    var lpCbsDebito = faturamento * cbsRate, lpCbsCredito = faturamento * despesasFrac * creditoFrac * cbsRate;
+    var lpIbsDebito = faturamento * ibsVigente, lpIbsCredito = faturamento * despesasFrac * creditoFrac * ibsVigente;
+    var lpCbsRecolher = Math.max(lpCbsDebito - lpCbsCredito, 0), lpIbsRecolher = Math.max(lpIbsDebito - lpIbsCredito, 0);
+    var lpIssIcmsLegado = faturamento * issIcmsRate * (1 - fatorImplantacao);
+    var presumido = {
+      basePresIR: basePresIR, basePresCS: basePresCS, irpj: lpIrpj, csll: lpCsll,
+      cbsDebito: lpCbsDebito, cbsCredito: lpCbsCredito, cbsRecolher: lpCbsRecolher,
+      ibsDebito: lpIbsDebito, ibsCredito: lpIbsCredito, ibsRecolher: lpIbsRecolher,
+      issIcmsLegado: lpIssIcmsLegado, carga: lpIrpj + lpCsll + lpCbsRecolher + lpIbsRecolher + lpIssIcmsLegado,
+      creditoIntegral: lpCbsDebito + lpIbsDebito
+    };
+
+    var despesasOperacionais = faturamento * despesasFrac;
+    var lucroReal = Math.max(faturamento - despesasOperacionais, 0);
+    var lrIrpj = lucroReal * 0.15 + Math.max(lucroReal - 20000, 0) * 0.10, lrCsll = lucroReal * 0.09;
+    var lrCbsDebito = faturamento * cbsRate, lrCbsCredito = despesasOperacionais * creditoFrac * cbsRate;
+    var lrIbsDebito = faturamento * ibsVigente, lrIbsCredito = despesasOperacionais * creditoFrac * ibsVigente;
+    var lrCbsRecolher = Math.max(lrCbsDebito - lrCbsCredito, 0), lrIbsRecolher = Math.max(lrIbsDebito - lrIbsCredito, 0);
+    var lrIssIcmsLegado = faturamento * issIcmsRate * (1 - fatorImplantacao);
+    var real = {
+      despesasOperacionais: despesasOperacionais, lucroReal: lucroReal, irpj: lrIrpj, csll: lrCsll,
+      cbsDebito: lrCbsDebito, cbsCredito: lrCbsCredito, cbsRecolher: lrCbsRecolher,
+      ibsDebito: lrIbsDebito, ibsCredito: lrIbsCredito, ibsRecolher: lrIbsRecolher,
+      issIcmsLegado: lrIssIcmsLegado, carga: lrIrpj + lrCsll + lrCbsRecolher + lrIbsRecolher + lrIssIcmsLegado,
+      creditoIntegral: lrCbsDebito + lrIbsDebito
+    };
+
+    var melhor = 'hibrido';
+    if (!(hibrido.carga <= presumido.carga && hibrido.carga <= real.carga)) melhor = presumido.carga <= real.carga ? 'presumido' : 'real';
+    return { faturamento: faturamento, fatorImplantacao: fatorImplantacao, ibsVigente: ibsVigente, hibrido: hibrido, presumido: presumido, real: real, melhor: melhor };
+  }
+  function taxRegimeCompareAnnexTableHtml() {
+    return ['I', 'II', 'III', 'IV', 'V'].map(function (key) {
+      var annex = SIMPLES_ANNEXES[key];
+      var rows = annex.rates.map(function (rate, idx) {
+        var partition = annex.partitions[idx];
+        var pisCofins = (partition.COFINS || 0) + (partition['PIS/Pasep'] || 0);
+        var icmsIss = partition.ICMS || partition.ISS || 0;
+        return '<tr><td>' + (idx + 1) + 'ª</td><td>' + money(ANNEX_LIMITS[idx]) + '</td><td>' + number(rate) + '%</td><td>' + money(annex.deductions[idx]) + '</td><td>' + number(pisCofins) + '%</td><td>' + number(icmsIss) + '%</td></tr>';
+      }).join('');
+      return '<h3 style="margin:16px 0 8px">' + esc(annex.name) + '</h3><div class="table-wrap"><table><thead><tr><th>Faixa</th><th>RBT12 até</th><th>Alíq. nominal</th><th>Parcela a deduzir</th><th>% PIS/COFINS (→CBS)</th><th>% ICMS/ISS (→IBS)</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }).join('');
+  }
+  function taxRegimeCompareSummaryHtml(inputs, result) {
+    function line(label, carga) {
+      var pct = result.faturamento > 0 ? carga / result.faturamento * 100 : 0;
+      return '<tr><td>' + label + '</td><td>' + money(carga) + '</td><td>' + money(carga * 12) + '</td><td>' + number(pct) + '%</td></tr>';
+    }
+    var labels = { hibrido: '🅰️ Híbrido (Simples)', presumido: '🅱️ Lucro Presumido', real: '🅲️ Lucro Real' };
+    return '<div class="table-wrap"><table><thead><tr><th>Regime</th><th>Carga mensal</th><th>Carga anual</th><th>% s/ faturamento</th></tr></thead><tbody>' +
+      line(labels.hibrido, result.hibrido.carga) + line(labels.presumido, result.presumido.carga) + line(labels.real, result.real.carga) +
+      '</tbody></table></div><div class="info-banner" style="margin-top:12px"><span>✓</span><div><strong>Veredito.</strong> Carga mensal — Híbrido: ' + money(result.hibrido.carga) + ' • Presumido: ' + money(result.presumido.carga) + ' • Real: ' + money(result.real.carga) + '. O regime de menor carga nesta fase é <b>' + esc(labels[result.melhor]) + '</b>. Refaça a simulação em outras fases da Reforma para ver a trajetória — a vantagem entre regimes pode mudar conforme o IBS avança.</div></div>';
+  }
+  function taxRegimeCompareDetailItem(label, value) {
+    return '<div><small>' + label + '</small><strong>' + value + '</strong></div>';
+  }
+  function taxRegimeCompareHibridoDetailHtml(result) {
+    var h = result.hibrido;
+    return '<div class="rental-result-detail" style="grid-template-columns:1fr">' +
+      taxRegimeCompareDetailItem('Fator R', number(h.fatorR * 100) + '%') +
+      taxRegimeCompareDetailItem('Anexo aplicado', esc(h.annexName) + ' · Faixa ' + (h.bracketIndex + 1)) +
+      taxRegimeCompareDetailItem('Alíquota efetiva do Simples', number(h.effectiveRate * 100) + '%') +
+      taxRegimeCompareDetailItem('DAS Híbrido (reduzido)', money(h.das)) +
+      taxRegimeCompareDetailItem('CBS — débito / crédito / a recolher', money(h.cbsDebito) + ' / ' + money(h.cbsCredito) + ' / ' + money(h.cbsRecolher)) +
+      taxRegimeCompareDetailItem('IBS — débito / crédito / a recolher', money(h.ibsDebito) + ' / ' + money(h.ibsCredito) + ' / ' + money(h.ibsRecolher)) +
+      taxRegimeCompareDetailItem('💰 Carga tributária total / mês', '<b>' + money(h.carga) + '</b>') +
+      taxRegimeCompareDetailItem('Crédito integral ao cliente PJ', money(h.creditoIntegral)) +
+      '</div>';
+  }
+  function taxRegimeComparePresumidoDetailHtml(result) {
+    var p = result.presumido;
+    return '<div class="rental-result-detail" style="grid-template-columns:1fr">' +
+      taxRegimeCompareDetailItem('Base presumida IRPJ / CSLL', money(p.basePresIR) + ' / ' + money(p.basePresCS)) +
+      taxRegimeCompareDetailItem('IRPJ (15% + adicional 10%)', money(p.irpj)) +
+      taxRegimeCompareDetailItem('CSLL (9%)', money(p.csll)) +
+      taxRegimeCompareDetailItem('CBS — débito / crédito / a recolher', money(p.cbsDebito) + ' / ' + money(p.cbsCredito) + ' / ' + money(p.cbsRecolher)) +
+      taxRegimeCompareDetailItem('IBS — débito / crédito / a recolher', money(p.ibsDebito) + ' / ' + money(p.ibsCredito) + ' / ' + money(p.ibsRecolher)) +
+      taxRegimeCompareDetailItem('ISS/ICMS legado a recolher', money(p.issIcmsLegado)) +
+      taxRegimeCompareDetailItem('💰 Carga tributária total / mês', '<b>' + money(p.carga) + '</b>') +
+      taxRegimeCompareDetailItem('Crédito integral ao cliente PJ', money(p.creditoIntegral)) +
+      '</div>';
+  }
+  function taxRegimeCompareRealDetailHtml(result) {
+    var r = result.real;
+    return '<div class="rental-result-detail" style="grid-template-columns:1fr">' +
+      taxRegimeCompareDetailItem('Despesas operacionais', money(r.despesasOperacionais)) +
+      taxRegimeCompareDetailItem('Lucro Real (base tributável)', money(r.lucroReal)) +
+      taxRegimeCompareDetailItem('IRPJ (15% + adicional 10%)', money(r.irpj)) +
+      taxRegimeCompareDetailItem('CSLL (9%)', money(r.csll)) +
+      taxRegimeCompareDetailItem('CBS — débito / crédito / a recolher', money(r.cbsDebito) + ' / ' + money(r.cbsCredito) + ' / ' + money(r.cbsRecolher)) +
+      taxRegimeCompareDetailItem('IBS — débito / crédito / a recolher', money(r.ibsDebito) + ' / ' + money(r.ibsCredito) + ' / ' + money(r.ibsRecolher)) +
+      taxRegimeCompareDetailItem('ISS/ICMS legado a recolher', money(r.issIcmsLegado)) +
+      taxRegimeCompareDetailItem('💰 Carga tributária total / mês', '<b>' + money(r.carga) + '</b>') +
+      taxRegimeCompareDetailItem('Crédito integral ao cliente PJ', money(r.creditoIntegral)) +
+      '</div>';
+  }
+  function renderTaxRegimeCompare() {
+    var data = Object.assign(taxRegimeCompareDefaults(), state.settings.taxRegimeCompare || {});
+    var optionsHtml = function (list, selected) { return list.map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === selected ? ' selected' : '') + '>' + esc(opt) + '</option>'; }).join(''); };
+    return [
+      pageHeading('Comparativo de Regimes Tributários', 'Simulador Híbrido (Simples Nacional) × Lucro Presumido × Lucro Real, com CBS e IBS aplicados de forma consistente nos 3 regimes conforme a fase da Reforma Tributária.', ''),
+      '<div class="info-banner"><span>i</span><div><strong>Como funciona.</strong> O regime Híbrido dá ao Simples Nacional a mesma sistemática de CBS/IBS não cumulativos que Presumido e Real já usam — DAS reduzido (sem a parcela de PIS/COFINS/ICMS/ISS conforme a fase) mais CBS e IBS apurados à parte, com crédito integral ao cliente PJ. Preencha os dados uma única vez: eles são compartilhados pelos 3 regimes. Esta é uma ferramenta de simulação — valide com o contador antes de decisões formais.</div></div>',
+      '<section class="card"><header class="card-header"><h2>1. Dados de entrada (compartilhados pelos 3 regimes)</h2></header><div class="card-body"><div class="form-grid rental-form-grid">' +
+        '<label class="field"><span>Faturamento mensal (R$)</span><input id="trc-faturamento" data-trc-input type="number" min="0" step="0.01" value="' + Number(data.faturamento) + '"></label>' +
+        '<label class="field"><span>RBT12 — Receita bruta anual (R$)</span><input id="trc-rbt12" data-trc-input type="number" min="0" step="0.01" value="' + Number(data.rbt12) + '"></label>' +
+        '<label class="field"><span>Anexo do Simples (regime Híbrido)</span><select id="trc-anexo" data-trc-input>' + optionsHtml(TAX_REGIME_ANEXO_OPTIONS, data.anexoSimples) + '</select></label>' +
+        '<label class="field"><span>Atividade (Presumido/Real)</span><select id="trc-atividade" data-trc-input>' + optionsHtml(TAX_REGIME_ATIVIDADE_OPTIONS, data.atividade) + '</select></label>' +
+        '<label class="field"><span>Despesas operacionais (% do faturamento)</span><input id="trc-despesas-pct" data-trc-input type="number" min="0" max="100" step="0.01" value="' + Number(data.despesasPct) + '"></label>' +
+        '<label class="field"><span>% das despesas com direito a crédito CBS/IBS</span><input id="trc-credito-pct" data-trc-input type="number" min="0" max="100" step="0.01" value="' + Number(data.creditoPct) + '"></label>' +
+        '<label class="field"><span>Pró-labore mensal (informativo — não entra na carga da empresa)</span><input id="trc-prolabore" data-trc-input type="number" min="0" step="0.01" value="' + Number(data.proLabore) + '"></label>' +
+      '</div></div></section>',
+      '<section class="card"><header class="card-header"><h2>2. Parâmetros da Reforma Tributária</h2></header><div class="card-body"><div class="form-grid rental-form-grid">' +
+        '<label class="field"><span>Alíquota CBS — federal (%)</span><input id="trc-cbs-rate" data-trc-input type="number" min="0" step="0.01" value="' + Number(data.cbsRate) + '"></label>' +
+        '<label class="field"><span>Alíquota IBS plena — estadual+municipal (%)</span><input id="trc-ibs-rate" data-trc-input type="number" min="0" step="0.01" value="' + Number(data.ibsRate) + '"></label>' +
+        '<label class="field"><span>Fase da Reforma a simular</span><select id="trc-fase" data-trc-input>' + optionsHtml(TAX_REGIME_FASE_OPTIONS, data.fase) + '</select></label>' +
+        '<label class="field"><span>ISS/ICMS legado — alíquota (%)</span><input id="trc-iss-icms-rate" data-trc-input type="number" min="0" step="0.01" value="' + Number(data.issIcmsRate) + '"></label>' +
+      '</div><p class="subtle" style="margin-top:8px">Aplicada igualmente aos 3 regimes. ⚠ Estimativas em calibração: CBS plena desde 2027; IBS só atinge o valor pleno em 2033.</p></div></section>',
+      '<section class="card"><header class="card-header"><h2>3. Resumo comparativo</h2></header><div class="card-body" id="trc-summary"></div></section>',
+      '<div class="rental-layout" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">' +
+        '<section class="card"><header class="card-header"><h2>🅰️ Híbrido (Simples)</h2></header><div class="card-body" id="trc-detail-hibrido"></div></section>' +
+        '<section class="card"><header class="card-header"><h2>🅱️ Lucro Presumido</h2></header><div class="card-body" id="trc-detail-presumido"></div></section>' +
+        '<section class="card"><header class="card-header"><h2>🅲️ Lucro Real</h2></header><div class="card-body" id="trc-detail-real"></div></section>' +
+      '</div>',
+      '<details class="card" style="margin-top:16px"><summary style="cursor:pointer;padding:16px;font-weight:600">📅 Prazos e regras</summary><div class="card-body">' +
+        '<p><b>Híbrido — janela de opção</b> (só o Simples Nacional tem essa escolha): setembro (1º a 30) vale para o 1º semestre seguinte; março vale para o 2º semestre do mesmo ano; desistência até o último dia de novembro após optar em setembro. Fora dessas janelas, a empresa permanece no Simples tradicional.</p>' +
+        '<p><b>Lucro Presumido e Lucro Real</b> não têm essa escolha: já operam no regime regular de CBS/IBS desde o início, com transição automática pelo cronograma legal da Reforma.</p>' +
+        '<p><b>Cronograma da Reforma (resumo):</b> 2026 — ano de teste, sem cobrança efetiva. 2027-2028 — CBS plena, IBS em alíquota de teste (~0,1%), ICMS/ISS seguem cobrados integralmente. 2029-2032 — transição gradual: ICMS/ISS reduzem à medida que o IBS assume a fatia. 2033 em diante — regime pleno, ICMS/ISS extintos.</p>' +
+        '<p class="subtle">⚠ As alíquotas de CBS (~8,8%) e IBS pleno (~17,7%) são estimativas em calibração — ajuste conforme a legislação for consolidada. O fator de implantação do IBS (0% / 50% / 100%) é uma simplificação do cronograma real, que é anual e mais granular. O Fator R do Híbrido considera apenas o pró-labore informado, sem folha de funcionários adicional. Esta ferramenta não substitui orientação contábil específica.</p>' +
+      '</div></details>',
+      '<details class="card" style="margin-top:16px"><summary style="cursor:pointer;padding:16px;font-weight:600">📚 Tabela de referência — Simples Nacional (Anexos I a V)</summary><div class="card-body">' + taxRegimeCompareAnnexTableHtml() + '</div></details>'
+    ].join('');
+  }
+  function readTaxRegimeCompareInputs() {
+    var fallback = Object.assign(taxRegimeCompareDefaults(), state.settings.taxRegimeCompare || {});
+    var value = function (id, defaultValue) { var el = $('#' + id); return el ? el.value : defaultValue; };
+    return {
+      faturamento: Math.max(0, parseLocaleNumber(value('trc-faturamento', fallback.faturamento))),
+      rbt12: Math.max(0, parseLocaleNumber(value('trc-rbt12', fallback.rbt12))),
+      anexoSimples: value('trc-anexo', fallback.anexoSimples),
+      atividade: value('trc-atividade', fallback.atividade),
+      despesasPct: Math.max(0, parseLocaleNumber(value('trc-despesas-pct', fallback.despesasPct))),
+      creditoPct: Math.max(0, parseLocaleNumber(value('trc-credito-pct', fallback.creditoPct))),
+      proLabore: Math.max(0, parseLocaleNumber(value('trc-prolabore', fallback.proLabore))),
+      cbsRate: Math.max(0, parseLocaleNumber(value('trc-cbs-rate', fallback.cbsRate))),
+      ibsRate: Math.max(0, parseLocaleNumber(value('trc-ibs-rate', fallback.ibsRate))),
+      fase: value('trc-fase', fallback.fase),
+      issIcmsRate: Math.max(0, parseLocaleNumber(value('trc-iss-icms-rate', fallback.issIcmsRate)))
+    };
+  }
+  function updateTaxRegimeCompare(persist) {
+    if (!$('#trc-summary')) return;
+    var inputs = readTaxRegimeCompareInputs();
+    var result = calculateTaxRegimeCompare(inputs);
+    if (persist) { state.settings.taxRegimeCompare = inputs; storageSet(KEYS.settings, state.settings); scheduleServerSync(); }
+    var summary = $('#trc-summary'); if (summary) summary.innerHTML = taxRegimeCompareSummaryHtml(inputs, result);
+    var hd = $('#trc-detail-hibrido'); if (hd) hd.innerHTML = taxRegimeCompareHibridoDetailHtml(result);
+    var pd = $('#trc-detail-presumido'); if (pd) pd.innerHTML = taxRegimeComparePresumidoDetailHtml(result);
+    var rd = $('#trc-detail-real'); if (rd) rd.innerHTML = taxRegimeCompareRealDetailHtml(result);
+  }
+
   function cestNormalize(value) {
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
   }
@@ -4434,6 +4653,7 @@
     else if (state.route === 'nfse-nacional') main.innerHTML = renderNfseNacional();
     else if (state.route === 'consulta-cest') main.innerHTML = renderCestConsultation();
     else if (state.route === 'simulador-locacao') main.innerHTML = renderRentalSimulator();
+    else if (state.route === 'comparativo-regimes') main.innerHTML = renderTaxRegimeCompare();
     else if (state.route === 'conttech-simples-nacional') main.innerHTML = renderSnSimulator();
     else if (state.route === 'gestao-usuarios') main.innerHTML = '<div id="user-access-management"></div>';
     else if (state.route === 'configuracoes') main.innerHTML = renderSettings();
@@ -8180,6 +8400,7 @@
     if ($('#iss-service-query')) { filterIssRates(); updateIssEstimate(); }
     if ($('#cest-results-body')) renderCestResults(false);
     if ($('#rental-simulator')) updateRentalSimulator();
+    if ($('#trc-summary')) updateTaxRegimeCompare(false);
     if ($('#portfolio-query')) filterPortfolioDashboard();
     if ($('#mei-control-page')) drawMeiControlCharts();
     if ($('#calc-month')) $('#calc-month').addEventListener('blur', function () {
@@ -8617,6 +8838,8 @@
       state.cestFilterTimer = window.setTimeout(function () { renderCestResults(true); }, 90);
     } else if (event.target.matches('[data-rental-input]')) {
       updateRentalSimulator();
+    } else if (event.target.matches('[data-trc-input]')) {
+      updateTaxRegimeCompare(true);
     } else if (event.target.matches('[data-sn-input]')) {
       updateSnSimulator();
     } else if (event.target.matches('[data-overtime-input]')) {
@@ -8719,6 +8942,7 @@
     else if (event.target.id === 'nfeio-kind') updateNfeioEmitField('kind', event.target.value, true);
     else if (event.target.matches('[data-nfeio-field]')) updateNfeioEmitField(event.target.getAttribute('data-nfeio-field'), event.target.value, false);
     else if (event.target.matches('[data-nfsen-input]')) updateNfseNacionalFilters();
+    else if (event.target.matches('[data-trc-input]')) updateTaxRegimeCompare(true);
     else if (event.target.id === 'ac-competencia') setAcompanhamentoContabilCompetencia(event.target.value);
     else if (event.target.matches('[data-ac-stage-input]')) updateAcompanhamentoContabilStage(event.target.getAttribute('data-ac-client'), event.target.getAttribute('data-ac-stage'), event.target.value);
     else if (event.target.matches('[data-ac-text-input]')) updateAcompanhamentoContabilText(event.target.getAttribute('data-ac-client'), event.target.getAttribute('data-ac-field'), event.target.value);

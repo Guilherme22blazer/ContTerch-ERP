@@ -166,6 +166,7 @@ ERP_MODULES = {
     "tab_emissor_nfe": "Emissor de Nota Fiscal (NFE.io)",
     "tab_nfse_nacional": "NFS-e Portal Nacional",
     "tab_simulador_locacao": "Simulador de Locação",
+    "tab_comparativo_regimes": "Comparativo de Regimes Tributários",
     "tab_nbs_cclasstrib": "NBS / cClassTrib",
     "tab_calculadora_tributaria": "Calculadora Tributária",
     "tab_cnpj_simples": "Consulta CNPJ Simples",
@@ -196,6 +197,7 @@ FISCAL_TAB_MODULES = {
     "tab_cnae_servicos", "tab_ncm_tipi", "tab_consulta_cest", "tab_cfop", "tab_icms_difal",
     "tab_aliquotas_beneficios", "tab_aliquotas_iss", "tab_simulador_locacao",
     "tab_nbs_cclasstrib", "tab_calculadora_tributaria", "tab_cnpj_simples", "tab_emissor_nfe", "tab_nfse_nacional",
+    "tab_comparativo_regimes",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab_acompanhamento_contabil"}
 TRABALHISTA_TAB_MODULES = {
