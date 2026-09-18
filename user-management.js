@@ -27,14 +27,15 @@
     'pensao-alimenticia': 'tab_pensao_alimenticia', kanban: 'tab_kanban',
     'central-formularios': 'tab_central_formularios', 'modelos-contratos': 'tab_modelos_contratos',
     clientes: 'tab_clientes', 'gestao-usuarios': 'tab_gestao_usuarios',
-    configuracoes: 'tab_configuracoes', historico: 'tab_historico'
+    configuracoes: 'tab_configuracoes', historico: 'tab_historico',
+    'central-suporte': 'tab_central_suporte'
   };
   var MODULE_GROUPS = [
     { label: 'Visão geral', keys: ['tab_inicio'] },
     { label: 'Área Fiscal', keys: ['tab_sefaz_portal', 'tab_captador_notas_fiscais', 'tab_auditor_fiscal', 'tab_dashboard', 'tab_conttech_simples_nacional', 'tab_diagnostico', 'tab_mei', 'tab_controle_mei', 'tab_obrigacoes', 'tab_certidao_regularidade_fiscal', 'tab_ibs_cbs', 'tab_transicao_reforma', 'tab_recuperador_pis_cofins', 'tab_planejamento_tributario', 'tab_lei_complementar', 'tab_mei_ibs_cbs', 'tab_parametros_2026', 'tab_consulta_cnpj', 'tab_inscricao_estadual', 'tab_cnae_servicos', 'tab_ncm_tipi', 'tab_consulta_cest', 'tab_cfop', 'tab_icms_difal', 'tab_aliquotas_beneficios', 'tab_aliquotas_iss', 'tab_emissor_nfe', 'tab_nfse_nacional', 'tab_simulador_locacao', 'tab_nbs_cclasstrib', 'tab_calculadora_tributaria', 'tab_cnpj_simples', 'tab_comparativo_regimes'] },
     { label: 'Área Contábil', keys: ['tab_analise_balanco', 'tab_lancamentos_contabeis', 'tab_acompanhamento_contabil'] },
     { label: 'Área Trabalhista', keys: ['tab_folha', 'tab_horas_extras_noturno', 'tab_verbas_rescisorias', 'tab_seguro_desemprego', 'tab_gps_atraso', 'tab_pro_labore', 'tab_irrf_aliquota_efetiva', 'tab_pensao_alimenticia'] },
-    { label: 'Outros', keys: ['tab_kanban', 'tab_central_formularios', 'tab_modelos_contratos', 'tab_clientes', 'tab_gestao_usuarios', 'tab_configuracoes', 'tab_historico'] }
+    { label: 'Outros', keys: ['tab_kanban', 'tab_central_formularios', 'tab_modelos_contratos', 'tab_clientes', 'tab_gestao_usuarios', 'tab_configuracoes', 'tab_historico', 'tab_central_suporte'] }
   ];
 
   function esc(value) { return String(value == null ? '' : value).replace(/[&<>'"]/g, function (char) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]; }); }
@@ -241,10 +242,10 @@
   function savePlan() { var form = document.getElementById('ua-plan-form'); if (!form.reportValidity()) return; var data = Object.fromEntries(new FormData(form).entries()); data.modules = Array.from(form.querySelectorAll('input[name="modules"]:checked')).map(function (input) { return input.value; }); var id = form.dataset.id; request('/api/admin/plans' + (id ? '/' + id : ''), { method: id ? 'PUT' : 'POST', body: JSON.stringify(data) }).then(function (payload) { Object.assign(store, payload.data || {}); closeModal(); render(); toast(id ? 'Plano atualizado' : 'Plano criado', 'Valores, limites e módulos foram gravados no banco.'); }).catch(function (error) { toast('Não foi possível salvar o plano', error.message, 'error'); }); }
   function deleteRecord(kind, id) { var record = kind === 'user' ? userById(id) : planById(id); if (!record || !confirm('Excluir “' + (record.name || record.email) + '”? Esta ação será registrada.')) return; request('/api/admin/' + (kind === 'user' ? 'users/' : 'plans/') + id, { method: 'DELETE' }).then(function (payload) { Object.assign(store, payload.data || {}); closeModal(); render(); toast(kind === 'user' ? 'Usuário excluído' : 'Plano excluído', 'O registro foi removido do banco.'); }).catch(function (error) { toast('Exclusão não concluída', error.message, 'error'); }); }
   function refreshTable() { var region = document.getElementById('ua-table-region'); if (region) region.innerHTML = renderTable(); }
-  function canRoute(user, route) { if (!user) return false; if (isAdmin(user)) return true; var module = ROUTE_MODULES[route] || 'tab_inicio'; return Array.isArray(user.modules) && user.modules.indexOf(module) >= 0; }
+  function canRoute(user, route) { if (!user) return false; if (route === 'suporte-admin') return !!user.superAdmin; if (isAdmin(user)) return true; var module = ROUTE_MODULES[route] || 'tab_inicio'; return Array.isArray(user.modules) && user.modules.indexOf(module) >= 0; }
   function applyMenu(user) {
     if (!user) return;
-    document.querySelectorAll('.main-nav [data-route], .top-toolbar [data-route]').forEach(function (element) { var route = element.getAttribute('data-route'); element.hidden = route === 'gestao-usuarios' ? !isAdmin(user) : !canRoute(user, route); });
+    document.querySelectorAll('.main-nav [data-route], .top-toolbar [data-route]').forEach(function (element) { var route = element.getAttribute('data-route'); element.hidden = route === 'gestao-usuarios' ? !isAdmin(user) : route === 'suporte-admin' ? !user.superAdmin : !canRoute(user, route); });
     document.querySelectorAll('.main-nav details').forEach(function (group) { var visible = Array.from(group.querySelectorAll('a[data-route]')).some(function (link) { return !link.hidden; }); group.hidden = !visible; });
   }
   function unauthorizedHtml() { return '<section class="ua-denied"><span>🔒</span><h1>Acesso não autorizado</h1><p>Seu usuário não possui permissão para acessar este módulo.</p><a class="primary-button" href="#inicio">Voltar ao dashboard</a></section>'; }
@@ -280,5 +281,5 @@
   });
   document.addEventListener('input', function (event) { if (event.target.id === 'ua-query') { filters.query = event.target.value; clearTimeout(store.searchTimer); store.searchTimer = setTimeout(refreshTable, 100); } });
 
-  window.UserAccessManager = { mount: mount, applyMenu: applyMenu, canRoute: canRoute, unauthorizedHtml: unauthorizedHtml, load: load };
+  window.UserAccessManager = { mount: mount, applyMenu: applyMenu, canRoute: canRoute, unauthorizedHtml: unauthorizedHtml, load: load, ROUTE_MODULES: ROUTE_MODULES };
 })();

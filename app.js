@@ -67,6 +67,24 @@
     loaded: false, loading: false, competencia: new Date().toISOString().slice(0, 7),
     itemsByClient: {}, query: '', saving: {},
   };
+  var SUPPORT_QUICK_OPTIONS = [
+    ['duvida', '🤖', 'Tirar uma dúvida'],
+    ['bug', '🐞', 'Relatar um erro/Bug'],
+    ['melhoria', '💡', 'Sugerir uma melhoria'],
+    ['chamado', '🎫', 'Abrir chamado'],
+    ['humano', '👨‍💻', 'Falar com suporte humano'],
+    ['documentacao', '📚', 'Consultar documentação'],
+    ['funcionalidades', '🔍', 'Consultar funcionalidades do sistema']
+  ];
+  var SUPPORT_STATUS_LABELS = { aberto: 'Aberto', em_analise: 'Em análise', aguardando_usuario: 'Aguardando você', em_desenvolvimento: 'Em desenvolvimento', resolvido: 'Resolvido', encerrado: 'Encerrado' };
+  var SUPPORT_CATEGORY_LABELS = { duvida: 'Dúvida', bug: 'Bug/Erro', melhoria: 'Melhoria', chamado: 'Chamado' };
+  var SUPPORT_PRIORITY_LABELS = { baixa: 'Baixa', media: 'Média', alta: 'Alta', urgente: 'Urgente' };
+  var supportWidgetState = {
+    open: false, view: 'menu', formCategory: '', chatMessages: [], chatSending: false,
+    attachment: null, lastTicket: null, escalating: false, formError: '',
+  };
+  var supportTicketsState = { items: [], loaded: false, loading: false, query: '', statusFilter: '', detail: null };
+  var supportAdminState = { loaded: false, loading: false, data: null, statusFilter: '', categoryFilter: '', priorityFilter: '' };
   var SEFAZ_UFS = [
     ['11','RO'],['12','AC'],['13','AM'],['14','RR'],['15','PA'],['16','AP'],['17','TO'],
     ['21','MA'],['22','PI'],['23','CE'],['24','RN'],['25','PB'],['26','PE'],['27','AL'],
@@ -264,6 +282,8 @@
     { route: 'gestao-usuarios', label: 'Gestão de Usuários e Acessos', icon: '⚿', desc: 'Usuários, planos, permissões, assinaturas e auditoria' },
     { route: 'configuracoes', label: 'Configurações', icon: '⚙', desc: 'Usuários, dados e conteúdo legal' },
     { route: 'historico', label: 'Histórico de Atualizações', icon: '◷', desc: 'Alterações legais e trilha de auditoria' },
+    { route: 'central-suporte', label: 'Meus Chamados', icon: '♡', desc: 'Acompanhe suas dúvidas, bugs, sugestões e chamados de suporte' },
+    { route: 'suporte-admin', label: 'Painel de Suporte (Admin)', icon: '◈', desc: 'Painel administrativo da Central de Suporte Inteligente (equipe ContTech)' },
     { route: 'consulta-cnpj', label: 'Consulta CNPJ', icon: '⌕', desc: 'Consulta cadastral com suporte ao CNPJ alfanumérico' },
     { route: 'inscricao-estadual', label: 'Inscrição Estadual', icon: '▤', desc: 'Portais estaduais e consulta SINTEGRA' },
     { route: 'cnae-servicos', label: 'CNAE × Serviços', icon: '🏷', desc: 'Correlação de atividades e serviços' },
@@ -861,7 +881,7 @@
       'id', 'name', 'email', 'role', 'active', 'billingCycle', 'subscriptionValue',
       'monitoringStart', 'monitoringEnd', 'subscriptionStatus', 'daysRemaining',
       'lastLoginAt', 'currentLoginAt', 'profilePhotoDataUrl', 'profilePhotoUpdatedAt',
-      'status', 'planId', 'modules'
+      'status', 'planId', 'modules', 'superAdmin'
     ];
     var result = {};
     allowed.forEach(function (key) { if (source[key] !== undefined) result[key] = source[key]; });
@@ -905,6 +925,7 @@
     await Promise.all([hydrateFromServer(), refreshCurrentProfile()]);
     if (window.UserAccessManager) window.UserAccessManager.applyMenu(currentUser);
     refreshClientSelect();
+    mountSupportWidget();
     if (forceHome && window.history && window.history.replaceState) window.history.replaceState(null, '', location.href.split('#')[0] + '#inicio');
     route();
   }
@@ -915,6 +936,8 @@
     sessionStorage.removeItem('simplescalc.apiToken');
     sessionStorage.removeItem(KEYS.auth);
     currentUser = null;
+    supportWidgetState.open = false;
+    var supportRoot = $('#support-widget'); if (supportRoot) supportRoot.innerHTML = '';
     $('#app-shell').classList.add('is-hidden');
     $('#login-screen').classList.remove('is-hidden');
     setLoginView('login');
@@ -3366,6 +3389,410 @@
     var rd = $('#trc-detail-real'); if (rd) rd.innerHTML = taxRegimeCompareRealDetailHtml(result);
   }
 
+  function supportModuleOptions() {
+    var routeModules = (window.UserAccessManager && window.UserAccessManager.ROUTE_MODULES) || {};
+    return NAV_ITEMS.filter(function (item) { return routeModules[item.route]; }).map(function (item) {
+      return { moduleKey: routeModules[item.route], label: item.label };
+    });
+  }
+  function supportContextInfo() {
+    var navItem = NAV_ITEMS.find(function (item) { return item.route === state.route; });
+    var routeModules = (window.UserAccessManager && window.UserAccessManager.ROUTE_MODULES) || {};
+    return { route: state.route, moduleKey: routeModules[state.route] || '', moduleLabel: navItem ? navItem.label : state.route };
+  }
+  function mountSupportWidget() {
+    var root = $('#support-widget');
+    if (!root || !currentUser) return;
+    root.innerHTML = '<button type="button" class="support-fab' + (supportWidgetState.open ? ' is-open' : '') + '" data-action="support-toggle" aria-label="Central de Suporte">' + (supportWidgetState.open ? '×' : '💬') + '</button>' +
+      (supportWidgetState.open ? supportPanelHtml() : '');
+    if (supportWidgetState.open) supportScrollToBottom();
+  }
+  function toggleSupportWidget() {
+    supportWidgetState.open = !supportWidgetState.open;
+    mountSupportWidget();
+  }
+  function closeSupportWidget() {
+    supportWidgetState.open = false;
+    mountSupportWidget();
+  }
+  function openSupportView(view) {
+    supportWidgetState.view = view;
+    supportWidgetState.formError = '';
+    mountSupportWidget();
+  }
+  function supportPanelHtml() {
+    return '<section class="support-panel" role="dialog" aria-modal="true" aria-label="Central de Suporte ContTech ERP">' +
+      '<header class="support-panel-header"><div><strong>Central de Suporte ContTech ERP</strong><small>' + esc(currentUser.name || '') + '</small></div><button type="button" class="icon-button" data-action="support-toggle" aria-label="Fechar">×</button></header>' +
+      '<div class="support-panel-body" id="support-panel-body">' + supportViewHtml() + '</div>' +
+      '</section>';
+  }
+  function supportViewHtml() {
+    if (supportWidgetState.view === 'chat') return supportChatViewHtml();
+    if (supportWidgetState.view === 'form') return supportFormViewHtml();
+    if (supportWidgetState.view === 'created') return supportCreatedViewHtml();
+    return supportMenuViewHtml();
+  }
+  function supportMenuViewHtml() {
+    return '<div class="support-bubble support-bubble--assistant">Olá! 👋 Sou o assistente inteligente do ContTech ERP. Como posso ajudar você hoje?</div>' +
+      '<div class="support-quick-options">' + SUPPORT_QUICK_OPTIONS.map(function (opt) {
+        return '<button type="button" class="support-quick-option" data-action="support-quick" data-option="' + opt[0] + '"><span>' + opt[1] + '</span>' + esc(opt[2]) + '</button>';
+      }).join('') + '</div>' +
+      '<button type="button" class="secondary-button support-block-button" data-action="support-open-tickets">📋 Meus chamados</button>';
+  }
+  function supportBubbleHtml(item) {
+    var kind = item.role === 'assistant' ? 'assistant' : 'user';
+    return '<div class="support-bubble support-bubble--' + kind + '">' + esc(item.text).replace(/\n/g, '<br>') + '</div>';
+  }
+  function supportChatViewHtml() {
+    var body = supportWidgetState.chatMessages.map(supportBubbleHtml).join('') +
+      (supportWidgetState.chatSending ? '<div class="support-bubble support-bubble--assistant support-typing"><span></span><span></span><span></span></div>' : '');
+    return '<button type="button" class="support-back-button" data-action="support-back">← Voltar</button>' +
+      '<div class="support-chat-thread" id="support-chat-thread">' + (body || '<div class="support-bubble support-bubble--assistant">Olá! 👋 Pode escrever sua dúvida.</div>') + '</div>' +
+      '<div class="support-chat-input-row">' +
+      '<textarea id="support-chat-input" rows="1" placeholder="Digite sua mensagem..."' + (supportWidgetState.chatSending ? ' disabled' : '') + '></textarea>' +
+      '<button type="button" class="support-send-button" data-action="support-send"' + (supportWidgetState.chatSending ? ' disabled' : '') + ' aria-label="Enviar">➤</button>' +
+      '</div>' +
+      '<button type="button" class="support-block-button support-escalate-button" data-action="support-escalate">👨‍💻 Falar com um especialista</button>';
+  }
+  function supportFormFieldsForCategory() {
+    var category = supportWidgetState.formCategory;
+    if (category === 'bug') {
+      return [
+        ['subject', 'Título do problema', 'text', true],
+        ['description', 'Descrição do problema', 'textarea', true],
+        ['errorMessage', 'Mensagem de erro apresentada (se houver)', 'textarea', false],
+        ['stepsToReproduce', 'Passos realizados antes do erro', 'textarea', false],
+      ];
+    }
+    if (category === 'melhoria') {
+      return [
+        ['subject', 'Funcionalidade desejada', 'text', true],
+        ['description', 'Problema que a melhoria pretende resolver', 'textarea', true],
+        ['expectedBenefit', 'Benefício esperado', 'textarea', false],
+      ];
+    }
+    return [
+      ['subject', 'Assunto', 'text', true],
+      ['description', 'Descreva sua solicitação', 'textarea', true],
+    ];
+  }
+  function supportFormViewHtml() {
+    var category = supportWidgetState.formCategory;
+    var title = category === 'bug' ? '🐞 Relatar erro ou Bug' : category === 'melhoria' ? '💡 Sugerir melhoria' : '🎫 Abrir chamado';
+    var fields = supportFormFieldsForCategory();
+    var moduleOptions = supportModuleOptions();
+    var context = supportContextInfo();
+    var fieldsHtml = fields.map(function (field) {
+      var id = 'support-form-' + field[0];
+      var input = field[2] === 'textarea'
+        ? '<textarea id="' + id + '" data-support-field="' + field[0] + '" rows="3"' + (field[3] ? ' required' : '') + '></textarea>'
+        : '<input id="' + id + '" data-support-field="' + field[0] + '" type="text"' + (field[3] ? ' required' : '') + '>';
+      return '<label class="field"><span>' + esc(field[1]) + (field[3] ? ' *' : '') + '</span>' + input + '</label>';
+    }).join('');
+    return '<button type="button" class="support-back-button" data-action="support-back">← Voltar</button>' +
+      '<form id="support-ticket-form" class="support-form">' +
+      '<h3 class="support-form-title">' + title + '</h3>' +
+      fieldsHtml +
+      '<label class="field"><span>Módulo relacionado</span><select id="support-form-module">' +
+      '<option value="">Selecione (opcional)</option>' +
+      moduleOptions.map(function (opt) { return '<option value="' + esc(opt.moduleKey) + '"' + (opt.moduleKey === context.moduleKey ? ' selected' : '') + '>' + esc(opt.label) + '</option>'; }).join('') +
+      '</select></label>' +
+      (category === 'bug' ? '<label class="field"><span>Prioridade</span><select id="support-form-priority">' +
+        Object.keys(SUPPORT_PRIORITY_LABELS).map(function (key) { return '<option value="' + key + '"' + (key === 'media' ? ' selected' : '') + '>' + SUPPORT_PRIORITY_LABELS[key] + '</option>'; }).join('') +
+        '</select></label>' : '') +
+      '<label class="field"><span>Anexar print ou arquivo (opcional — PNG, JPEG, WEBP ou PDF, até 5MB)</span><input id="support-form-attachment" type="file" accept="image/png,image/jpeg,image/webp,application/pdf"></label>' +
+      (supportWidgetState.attachment ? '<p class="subtle">📎 ' + esc(supportWidgetState.attachment.filename) + '</p>' : '') +
+      '<p class="subtle">Contexto capturado automaticamente: usuário ' + esc(currentUser.name) + ', página "' + esc(context.moduleLabel) + '", em ' + esc(new Date().toLocaleString('pt-BR')) + '.</p>' +
+      (supportWidgetState.formError ? '<p class="support-form-error">' + esc(supportWidgetState.formError) + '</p>' : '') +
+      '<button type="submit" class="primary-button support-block-button">Enviar</button>' +
+      '</form>';
+  }
+  function supportCreatedViewHtml() {
+    var ticket = supportWidgetState.lastTicket;
+    if (!ticket) return supportMenuViewHtml();
+    return '<div class="support-bubble support-bubble--assistant">Chamado <b>#' + esc(ticket.protocol) + '</b> criado com sucesso.' +
+      (supportWidgetState.escalating ? '<br><br>Registrei também um resumo da conversa para nossa equipe de suporte acompanhar pelo painel administrativo.' : '') +
+      '</div>' +
+      '<button type="button" class="secondary-button support-block-button" data-action="support-open-tickets">📋 Ver meus chamados</button>' +
+      '<button type="button" class="secondary-button support-block-button" data-action="support-back-menu">Voltar ao início</button>';
+  }
+  function supportScrollToBottom() {
+    var thread = $('#support-chat-thread');
+    if (thread) thread.scrollTop = thread.scrollHeight;
+  }
+  function supportQuickOption(option) {
+    supportWidgetState.formError = '';
+    if (option === 'bug' || option === 'melhoria' || option === 'chamado') {
+      supportWidgetState.formCategory = option;
+      supportWidgetState.attachment = null;
+      openSupportView('form');
+      return;
+    }
+    if (option === 'humano') { escalateSupportToHuman(); return; }
+    supportWidgetState.chatMessages = [];
+    openSupportView('chat');
+    if (option === 'documentacao') sendSupportChatMessage('Preciso de ajuda com a documentação do sistema.');
+    else if (option === 'funcionalidades') sendSupportChatMessage('Quero saber mais sobre as funcionalidades do sistema.');
+  }
+  async function sendSupportChatMessage(presetText) {
+    var input = $('#support-chat-input');
+    var text = String(presetText || (input ? input.value : '')).trim();
+    if (!text || supportWidgetState.chatSending) return;
+    supportWidgetState.chatMessages.push({ role: 'user', text: text });
+    supportWidgetState.chatSending = true;
+    if (input) input.value = '';
+    mountSupportWidget();
+    try {
+      var context = supportContextInfo();
+      var result = await apiRequest('/api/support/ai-chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          messages: supportWidgetState.chatMessages,
+          context: { route: context.route, module: context.moduleLabel },
+        }),
+      });
+      supportWidgetState.chatMessages.push({ role: 'assistant', text: result.reply });
+    } catch (error) {
+      supportWidgetState.chatMessages.push({ role: 'assistant', text: 'Não encontrei informações suficientes para responder com segurança. Posso encaminhar sua solicitação para nossa equipe de suporte.' });
+    } finally {
+      supportWidgetState.chatSending = false;
+      mountSupportWidget();
+    }
+  }
+  async function handleSupportAttachmentChange(file) {
+    if (!file) { supportWidgetState.attachment = null; return; }
+    var allowed = { 'image/png': 1, 'image/jpeg': 1, 'image/webp': 1, 'application/pdf': 1 };
+    if (!allowed[file.type]) { toast('Arquivo não suportado', 'Envie PNG, JPEG, WEBP ou PDF.', 'error'); var el = $('#support-form-attachment'); if (el) el.value = ''; return; }
+    if (file.size > 5 * 1024 * 1024) { toast('Arquivo muito grande', 'O limite é 5MB.', 'error'); var el2 = $('#support-form-attachment'); if (el2) el2.value = ''; return; }
+    supportWidgetState.attachment = { filename: file.name, contentType: file.type, dataBase64: await readFileAsBase64(file) };
+    var note = document.createElement('p'); note.className = 'subtle'; note.textContent = '📎 ' + file.name;
+    var input = $('#support-form-attachment'); if (input && input.parentNode) input.parentNode.insertBefore(note, input.nextSibling);
+  }
+  async function submitSupportForm() {
+    var form = $('#support-ticket-form');
+    if (!form || !form.reportValidity()) return;
+    var category = supportWidgetState.formCategory;
+    var context = supportContextInfo();
+    var fields = supportFormFieldsForCategory();
+    var payload = { category: category, moduleKey: ($('#support-form-module') || {}).value || context.moduleKey, browserInfo: navigator.userAgent, pageContext: context.route };
+    fields.forEach(function (field) { var el = $('#support-form-' + field[0]); payload[field[0]] = el ? el.value.trim() : ''; });
+    var priorityEl = $('#support-form-priority');
+    if (priorityEl) payload.priority = priorityEl.value;
+    if (supportWidgetState.attachment) payload.attachment = supportWidgetState.attachment;
+    var submitButton = form.querySelector('button[type="submit"]');
+    try {
+      if (submitButton) { submitButton.disabled = true; submitButton.textContent = 'Enviando...'; }
+      var result = await apiRequest('/api/support/tickets', { method: 'POST', body: JSON.stringify(payload) });
+      supportWidgetState.lastTicket = result.ticket;
+      supportWidgetState.escalating = false;
+      supportWidgetState.attachment = null;
+      audit('Chamado de suporte aberto', result.ticket.protocol + ' · ' + SUPPORT_CATEGORY_LABELS[category]);
+      openSupportView('created');
+    } catch (error) {
+      supportWidgetState.formError = error.message;
+      mountSupportWidget();
+    } finally {
+      if (submitButton) { submitButton.disabled = false; submitButton.textContent = 'Enviar'; }
+    }
+  }
+  async function escalateSupportToHuman() {
+    var context = supportContextInfo();
+    var transcript = supportWidgetState.chatMessages.slice(-20);
+    var lastUserMessage = transcript.slice().reverse().find(function (item) { return item.role === 'user'; });
+    var summaryLines = [
+      'Resumo para o suporte:',
+      'Usuário: ' + currentUser.name,
+      'Módulo/página: ' + context.moduleLabel,
+      'Mensagens trocadas: ' + transcript.length,
+      lastUserMessage ? 'Última mensagem do usuário: ' + lastUserMessage.text : 'Nenhuma conversa prévia registrada.',
+    ];
+    var summary = summaryLines.join('\n');
+    var payload = {
+      category: 'chamado',
+      subject: 'Encaminhamento para suporte humano',
+      description: lastUserMessage ? lastUserMessage.text : 'Usuário solicitou atendimento humano diretamente pelo menu do chat.',
+      moduleKey: context.moduleKey,
+      priority: 'alta',
+      browserInfo: navigator.userAgent,
+      pageContext: context.route,
+      aiSummary: summary,
+      transcript: transcript,
+    };
+    supportWidgetState.escalating = true;
+    mountSupportWidget();
+    try {
+      var result = await apiRequest('/api/support/tickets', { method: 'POST', body: JSON.stringify(payload) });
+      supportWidgetState.lastTicket = result.ticket;
+      audit('Encaminhado para suporte humano', result.ticket.protocol);
+      openSupportView('created');
+    } catch (error) {
+      toast('Não foi possível encaminhar', error.message, 'error');
+      supportWidgetState.escalating = false;
+      mountSupportWidget();
+    }
+  }
+
+  function supportStatusTagHtml(status) {
+    var kind = status === 'resolvido' || status === 'encerrado' ? 'success' : status === 'aguardando_usuario' ? 'warning' : status === 'em_desenvolvimento' || status === 'em_analise' ? 'info' : 'neutral';
+    return '<span class="tag tag--' + kind + '">' + esc(SUPPORT_STATUS_LABELS[status] || status) + '</span>';
+  }
+  function renderSupportTickets() {
+    if (!apiEnabled()) {
+      return [pageHeading('Meus Chamados', 'Acompanhe suas dúvidas, bugs, sugestões e chamados abertos com o suporte.', ''), '<div class="info-banner info-banner--warning"><span>!</span><div><strong>Ative o modo seguro para usar a Central de Suporte.</strong></div></div>'].join('');
+    }
+    if (supportTicketsState.detail) return supportTicketDetailHtml(supportTicketsState.detail, false);
+    var query = (supportTicketsState.query || '').toLowerCase();
+    var items = supportTicketsState.items.filter(function (item) {
+      var matchesQuery = !query || item.protocol.toLowerCase().indexOf(query) >= 0 || item.subject.toLowerCase().indexOf(query) >= 0;
+      var matchesStatus = !supportTicketsState.statusFilter || item.status === supportTicketsState.statusFilter;
+      return matchesQuery && matchesStatus;
+    });
+    var rows = items.length ? items.map(function (item) {
+      return '<tr class="row-clickable" data-action="support-ticket-open" data-id="' + esc(item.id) + '"><td><code>' + esc(item.protocol) + '</code></td><td>' + esc(item.subject) + '</td><td>' + esc(SUPPORT_CATEGORY_LABELS[item.category] || item.category) + '</td><td>' + supportStatusTagHtml(item.status) + '</td><td>' + dateTimeBR(item.createdAt) + '</td><td>' + dateTimeBR(item.updatedAt) + '</td></tr>';
+    }).join('') : '<tr><td colspan="6"><div class="empty-state"><i>🎫</i><h3>Nenhum chamado encontrado</h3><p>Use o botão de suporte no canto da tela para abrir um chamado, relatar um bug ou sugerir uma melhoria.</p></div></td></tr>';
+    return [
+      pageHeading('Meus Chamados', 'Acompanhe suas dúvidas, bugs, sugestões e chamados abertos com o suporte.', ''),
+      '<section class="card"><header class="card-header"><h2>Chamados (' + items.length + ')</h2></header><div class="card-body">' +
+        '<div class="support-tickets-toolbar"><input id="support-tickets-query" type="text" placeholder="Pesquisar por protocolo ou assunto" value="' + esc(supportTicketsState.query) + '"><select id="support-tickets-status-filter"><option value="">Todos os status</option>' + Object.keys(SUPPORT_STATUS_LABELS).map(function (key) { return '<option value="' + key + '"' + (key === supportTicketsState.statusFilter ? ' selected' : '') + '>' + SUPPORT_STATUS_LABELS[key] + '</option>'; }).join('') + '</select></div>' +
+        '<div class="table-wrap"><table><thead><tr><th>Protocolo</th><th>Assunto</th><th>Categoria</th><th>Status</th><th>Aberto em</th><th>Atualizado em</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '</div></section>'
+    ].join('');
+  }
+  function supportTicketDetailHtml(detail, isAdminView) {
+    var ticket = detail.ticket;
+    var messages = detail.messages || [];
+    var attachments = detail.attachments || [];
+    var backAction = isAdminView ? 'support-admin-ticket-back' : 'support-ticket-back';
+    return [
+      '<button type="button" class="support-back-button" style="font-size:12px;margin-bottom:12px" data-action="' + backAction + '">← Voltar para a lista</button>',
+      pageHeading('#' + ticket.protocol + ' — ' + ticket.subject, 'Aberto por ' + esc(ticket.requesterName) + ' (' + esc(ticket.requesterEmail) + ') em ' + dateTimeBR(ticket.createdAt), ''),
+      '<section class="card"><div class="card-body"><div class="rental-result-detail">' +
+        '<div><small>Categoria</small><strong>' + esc(SUPPORT_CATEGORY_LABELS[ticket.category] || ticket.category) + '</strong></div>' +
+        '<div><small>Status</small><strong>' + supportStatusTagHtml(ticket.status) + '</strong></div>' +
+        '<div><small>Prioridade</small><strong>' + esc(SUPPORT_PRIORITY_LABELS[ticket.priority] || ticket.priority) + '</strong></div>' +
+        '<div><small>Módulo</small><strong>' + esc(supportModuleLabel(ticket.moduleKey)) + '</strong></div>' +
+        '<div><small>Responsável</small><strong>' + esc(ticket.assignedTo || 'Não atribuído') + '</strong></div>' +
+        '<div><small>Última atualização</small><strong>' + dateTimeBR(ticket.updatedAt) + '</strong></div>' +
+      '</div>' +
+      (ticket.errorMessage ? '<p class="subtle" style="margin-top:10px"><b>Mensagem de erro:</b> ' + esc(ticket.errorMessage) + '</p>' : '') +
+      (ticket.stepsToReproduce ? '<p class="subtle"><b>Passos realizados:</b> ' + esc(ticket.stepsToReproduce) + '</p>' : '') +
+      (ticket.expectedBenefit ? '<p class="subtle"><b>Benefício esperado:</b> ' + esc(ticket.expectedBenefit) + '</p>' : '') +
+      (attachments.length ? '<p class="subtle"><b>Anexos:</b> ' + attachments.map(function (a) { return esc(a.filename); }).join(', ') + '</p>' : '') +
+      '</div></section>',
+      '<section class="card"><header class="card-header"><h2>Histórico da conversa</h2></header><div class="card-body">' +
+        '<div class="support-thread-list">' + (messages.length ? messages.map(function (m) {
+          var kind = m.authorType === 'user' ? 'user' : 'assistant';
+          return '<div class="support-bubble support-bubble--' + kind + '"><b>' + esc(m.authorName) + '</b> · <small>' + dateTimeBR(m.createdAt) + '</small><br>' + esc(m.message).replace(/\n/g, '<br>') + '</div>';
+        }).join('') : '<p class="subtle">Nenhuma mensagem registrada ainda.</p>') + '</div>' +
+        '<form id="support-reply-form" data-ticket-id="' + esc(ticket.id) + '" style="margin-top:14px;display:flex;gap:8px"><input id="support-reply-input" type="text" placeholder="Escreva uma mensagem..." style="flex:1;border:1px solid var(--line-strong);border-radius:9px;padding:10px 12px"><button type="submit" class="primary-button">Enviar</button></form>' +
+      '</div></section>',
+      isAdminView ? supportAdminTicketControlsHtml(ticket) : ''
+    ].join('');
+  }
+  function supportModuleLabel(moduleKey) {
+    if (!moduleKey) return 'Não informado';
+    var routeModules = (window.UserAccessManager && window.UserAccessManager.ROUTE_MODULES) || {};
+    var navItem = NAV_ITEMS.find(function (item) { return routeModules[item.route] === moduleKey; });
+    return navItem ? navItem.label : moduleKey;
+  }
+  function supportBarsHtml(items, total) {
+    if (!items.length) return '<div class="empty-state"><p>Sem dados no período.</p></div>';
+    var max = Math.max.apply(Math, items.map(function (item) { return item.value; }).concat([1]));
+    return '<div class="ua-bars">' + items.slice(0, 10).map(function (item) {
+      return '<div><span title="' + esc(item.label) + '">' + esc(item.label) + '</span><i><b style="width:' + Math.max(5, item.value / max * 100) + '%"></b></i><strong>' + item.value + (total ? '<small> · ' + Math.round(item.value / total * 100) + '%</small>' : '') + '</strong></div>';
+    }).join('') + '</div>';
+  }
+  function loadSupportTickets() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    supportTicketsState.loading = true;
+    return apiRequest('/api/support/tickets').then(function (payload) {
+      supportTicketsState.items = payload.items || [];
+      supportTicketsState.loaded = true;
+      supportTicketsState.loading = false;
+      if (state.route === 'central-suporte') route();
+    }).catch(function (error) {
+      supportTicketsState.loading = false;
+      toast('Não foi possível carregar seus chamados', error.message, 'error');
+    });
+  }
+  function openSupportTicketDetail(id) {
+    apiRequest('/api/support/tickets/' + id).then(function (payload) {
+      supportTicketsState.detail = payload;
+      route();
+    }).catch(function (error) { toast('Não foi possível abrir o chamado', error.message, 'error'); });
+  }
+  function sendSupportTicketReply(ticketId) {
+    var input = $('#support-reply-input');
+    var text = input ? input.value.trim() : '';
+    if (!text) return;
+    apiRequest('/api/support/tickets/' + ticketId + '/messages', { method: 'POST', body: JSON.stringify({ message: text }) }).then(function () {
+      return state.route === 'suporte-admin' ? openSupportAdminTicketDetail(ticketId) : openSupportTicketDetail(ticketId);
+    }).catch(function (error) { toast('Não foi possível enviar', error.message, 'error'); });
+  }
+  function supportAdminTicketControlsHtml(ticket) {
+    return '<section class="card"><header class="card-header"><h2>Gestão do chamado (equipe ContTech)</h2></header><div class="card-body"><div class="form-grid">' +
+      '<label class="field"><span>Status</span><select data-support-admin-update="status" data-id="' + esc(ticket.id) + '">' + Object.keys(SUPPORT_STATUS_LABELS).map(function (key) { return '<option value="' + key + '"' + (key === ticket.status ? ' selected' : '') + '>' + SUPPORT_STATUS_LABELS[key] + '</option>'; }).join('') + '</select></label>' +
+      '<label class="field"><span>Prioridade</span><select data-support-admin-update="priority" data-id="' + esc(ticket.id) + '">' + Object.keys(SUPPORT_PRIORITY_LABELS).map(function (key) { return '<option value="' + key + '"' + (key === ticket.priority ? ' selected' : '') + '>' + SUPPORT_PRIORITY_LABELS[key] + '</option>'; }).join('') + '</select></label>' +
+      '<label class="field"><span>Responsável</span><input type="text" value="' + esc(ticket.assignedTo || '') + '" data-support-admin-update="assignedTo" data-id="' + esc(ticket.id) + '" placeholder="Nome do responsável"></label>' +
+      '</div></div></section>';
+  }
+  function supportAdminUpdateTicket(id, field, value) {
+    var payload = {};
+    payload[field] = value;
+    apiRequest('/api/support/tickets/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Chamado atualizado', 'Alteração registrada com sucesso.');
+      openSupportAdminTicketDetail(id);
+      loadSupportAdminDashboard();
+    }).catch(function (error) { toast('Não foi possível atualizar', error.message, 'error'); });
+  }
+  function openSupportAdminTicketDetail(id) {
+    apiRequest('/api/support/tickets/' + id).then(function (payload) {
+      supportAdminState.detail = payload;
+      route();
+    }).catch(function (error) { toast('Não foi possível abrir o chamado', error.message, 'error'); });
+  }
+  function renderSupportAdminDashboard() {
+    if (!apiEnabled()) return [pageHeading('Painel de Suporte', 'Acompanhamento de chamados da Central de Suporte.', ''), '<div class="info-banner info-banner--warning"><span>!</span><div><strong>Ative o modo seguro.</strong></div></div>'].join('');
+    if (!currentUser || !currentUser.superAdmin) return window.UserAccessManager.unauthorizedHtml();
+    if (supportAdminState.detail) return supportTicketDetailHtml(supportAdminState.detail, true);
+    var data = supportAdminState.data;
+    if (!data) return [pageHeading('Painel de Suporte', 'Acompanhamento de chamados da Central de Suporte.', ''), '<div class="empty-state"><i>◈</i><h3>Carregando...</h3></div>'].join('');
+    var metric = function (label, value) { return '<div class="ua-metric ua-metric--green"><small>' + esc(label) + '</small><strong>' + value + '</strong></div>'; };
+    var items = data.recent.filter(function (item) {
+      return (!supportAdminState.statusFilter || item.status === supportAdminState.statusFilter) &&
+        (!supportAdminState.categoryFilter || item.category === supportAdminState.categoryFilter) &&
+        (!supportAdminState.priorityFilter || item.priority === supportAdminState.priorityFilter);
+    });
+    var rows = items.length ? items.map(function (item) {
+      return '<tr class="row-clickable" data-action="support-admin-ticket-open" data-id="' + esc(item.id) + '"><td><code>' + esc(item.protocol) + '</code></td><td>' + esc(item.subject) + '<br><small class="subtle">' + esc(item.requesterName) + ' · ' + esc(item.requesterEmail) + '</small></td><td>' + esc(SUPPORT_CATEGORY_LABELS[item.category] || item.category) + '</td><td>' + supportStatusTagHtml(item.status) + '</td><td>' + esc(SUPPORT_PRIORITY_LABELS[item.priority] || item.priority) + '</td><td>' + dateTimeBR(item.createdAt) + '</td></tr>';
+    }).join('') : '<tr><td colspan="6"><div class="empty-state"><p>Nenhum chamado com esses filtros.</p></div></td></tr>';
+    return [
+      pageHeading('Painel de Suporte', 'Acompanhamento administrativo de todos os chamados da Central de Suporte Inteligente (equipe ContTech).', ''),
+      '<section class="ua-metrics">' + metric('Total de chamados', data.total) + metric('Abertos', data.byStatus.aberto || 0) + metric('Em análise', data.byStatus.em_analise || 0) + metric('Aguardando usuário', data.byStatus.aguardando_usuario || 0) + metric('Resolvidos', data.byStatus.resolvido || 0) + metric('Bugs reportados', data.byCategory.bug || 0) + metric('Sugestões', data.byCategory.melhoria || 0) + '</section>',
+      '<section class="card"><header class="card-header"><h2>Chamados por módulo</h2></header><div class="card-body">' + supportBarsHtml(data.byModule.map(function (m) { return { label: m.label, value: m.amount }; }), data.total) + '</div></section>',
+      '<section class="card"><header class="card-header"><h2>Usuários que mais abriram chamados</h2></header><div class="card-body">' + (data.topRequesters.length ? '<div class="table-wrap"><table><thead><tr><th>Usuário</th><th>E-mail</th><th>Chamados</th></tr></thead><tbody>' + data.topRequesters.map(function (r) { return '<tr><td>' + esc(r.name) + '</td><td>' + esc(r.email) + '</td><td>' + r.amount + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<p class="subtle">Sem dados ainda.</p>') + '</div></section>',
+      '<section class="card"><header class="card-header"><h2>Chamados recentes (' + items.length + ')</h2></header><div class="card-body">' +
+        '<div class="support-tickets-toolbar"><select id="support-admin-status-filter"><option value="">Todos os status</option>' + Object.keys(SUPPORT_STATUS_LABELS).map(function (key) { return '<option value="' + key + '"' + (key === supportAdminState.statusFilter ? ' selected' : '') + '>' + SUPPORT_STATUS_LABELS[key] + '</option>'; }).join('') + '</select>' +
+        '<select id="support-admin-category-filter"><option value="">Todas as categorias</option>' + Object.keys(SUPPORT_CATEGORY_LABELS).map(function (key) { return '<option value="' + key + '"' + (key === supportAdminState.categoryFilter ? ' selected' : '') + '>' + SUPPORT_CATEGORY_LABELS[key] + '</option>'; }).join('') + '</select>' +
+        '<select id="support-admin-priority-filter"><option value="">Todas as prioridades</option>' + Object.keys(SUPPORT_PRIORITY_LABELS).map(function (key) { return '<option value="' + key + '"' + (key === supportAdminState.priorityFilter ? ' selected' : '') + '>' + SUPPORT_PRIORITY_LABELS[key] + '</option>'; }).join('') + '</select></div>' +
+        '<div class="table-wrap"><table><thead><tr><th>Protocolo</th><th>Assunto</th><th>Categoria</th><th>Status</th><th>Prioridade</th><th>Aberto em</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '</div></section>'
+    ].join('');
+  }
+  function loadSupportAdminDashboard() {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    supportAdminState.loading = true;
+    return apiRequest('/api/support/admin/dashboard').then(function (payload) {
+      supportAdminState.data = payload;
+      supportAdminState.loaded = true;
+      supportAdminState.loading = false;
+      if (state.route === 'suporte-admin') route();
+    }).catch(function (error) {
+      supportAdminState.loading = false;
+      toast('Não foi possível carregar o painel', error.message, 'error');
+    });
+  }
+
   function cestNormalize(value) {
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
   }
@@ -4654,6 +5081,8 @@
     else if (state.route === 'consulta-cest') main.innerHTML = renderCestConsultation();
     else if (state.route === 'simulador-locacao') main.innerHTML = renderRentalSimulator();
     else if (state.route === 'comparativo-regimes') main.innerHTML = renderTaxRegimeCompare();
+    else if (state.route === 'central-suporte') main.innerHTML = renderSupportTickets();
+    else if (state.route === 'suporte-admin') main.innerHTML = renderSupportAdminDashboard();
     else if (state.route === 'conttech-simples-nacional') main.innerHTML = renderSnSimulator();
     else if (state.route === 'gestao-usuarios') main.innerHTML = '<div id="user-access-management"></div>';
     else if (state.route === 'configuracoes') main.innerHTML = renderSettings();
@@ -4666,7 +5095,9 @@
     if (state.route === 'captador-notas-fiscais') { loadCaptadorCompanies(); if (captadorSection() === 'documentos') loadCaptadorDocuments(); }
     if (state.route === 'emissor-nfe') { if (!nfeioState.loaded) loadNfeioSettings(); loadNfeioInvoices(); }
     if (state.route === 'nfse-nacional') { if (!nfseNacionalState.loaded) loadNfseNacionalInfo(); if (!nfseNacionalState.sync.running) loadNfseNacionalConsulta(); }
-    if (state.route === 'acompanhamento-contabil') loadAcompanhamentoContabil();
+    if (state.route === 'acompanhamento-contabil' && !acompanhamentoContabilState.loaded) loadAcompanhamentoContabil();
+    if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
+    if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
     if (state.route === 'configuracoes') loadStripeSettings();
     if (state.route === 'gestao-usuarios' && window.UserAccessManager) window.UserAccessManager.mount(main, { user: currentUser, syncUsers: function (users) { state.users = (users || []).map(function (user) { return Object.assign({}, user, { active: user.status !== 'Inativo' }); }); storageSet(KEYS.users, state.users); } });
   }
@@ -8731,6 +9162,17 @@
     else if (action === 'nfsen-save-certificate') saveNfseNacionalCertificate();
     else if (action === 'ac-notes') openAcompanhamentoNotes(actionEl.getAttribute('data-client'));
     else if (action === 'ac-save-notes') saveAcompanhamentoNotes();
+    else if (action === 'support-toggle') toggleSupportWidget();
+    else if (action === 'support-quick') supportQuickOption(actionEl.getAttribute('data-option'));
+    else if (action === 'support-back') { supportWidgetState.chatMessages = []; openSupportView('menu'); }
+    else if (action === 'support-back-menu') { supportWidgetState.chatMessages = []; supportWidgetState.lastTicket = null; openSupportView('menu'); }
+    else if (action === 'support-send') sendSupportChatMessage();
+    else if (action === 'support-escalate') escalateSupportToHuman();
+    else if (action === 'support-open-tickets') { closeSupportWidget(); navigate('central-suporte'); }
+    else if (action === 'support-ticket-open') openSupportTicketDetail(actionEl.getAttribute('data-id'));
+    else if (action === 'support-ticket-back') { supportTicketsState.detail = null; route(); }
+    else if (action === 'support-admin-ticket-open') openSupportAdminTicketDetail(actionEl.getAttribute('data-id'));
+    else if (action === 'support-admin-ticket-back') { supportAdminState.detail = null; route(); }
     else if (action === 'auditor-view') setAuditorFiscalView(actionEl.getAttribute('data-view'));
     else if (action === 'auditor-select-type') selectAuditorFiscalType(actionEl.getAttribute('data-type'));
     else if (action === 'auditor-select-files') { var auditorInput = $('#auditor-sped-files'); if (auditorInput) auditorInput.click(); }
@@ -8807,6 +9249,13 @@
       acompanhamentoContabilState.query = event.target.value;
       window.clearTimeout(state.acQueryTimer);
       state.acQueryTimer = window.setTimeout(route, 180);
+    } else if (event.target.id === 'support-tickets-query') {
+      supportTicketsState.query = event.target.value;
+      window.clearTimeout(state.supportQueryTimer);
+      state.supportQueryTimer = window.setTimeout(route, 180);
+    } else if (event.target.id === 'support-chat-input') {
+      event.target.style.height = 'auto';
+      event.target.style.height = Math.min(120, event.target.scrollHeight) + 'px';
     } else if (event.target.id === 'mei-query') {
       meiControlUi().query = event.target.value;
       window.clearTimeout(state.meiSearchTimer);
@@ -8946,6 +9395,12 @@
     else if (event.target.id === 'ac-competencia') setAcompanhamentoContabilCompetencia(event.target.value);
     else if (event.target.matches('[data-ac-stage-input]')) updateAcompanhamentoContabilStage(event.target.getAttribute('data-ac-client'), event.target.getAttribute('data-ac-stage'), event.target.value);
     else if (event.target.matches('[data-ac-text-input]')) updateAcompanhamentoContabilText(event.target.getAttribute('data-ac-client'), event.target.getAttribute('data-ac-field'), event.target.value);
+    else if (event.target.id === 'support-form-attachment') handleSupportAttachmentChange(event.target.files && event.target.files[0]);
+    else if (event.target.id === 'support-tickets-status-filter') { supportTicketsState.statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'support-admin-status-filter') { supportAdminState.statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'support-admin-category-filter') { supportAdminState.categoryFilter = event.target.value; route(); }
+    else if (event.target.id === 'support-admin-priority-filter') { supportAdminState.priorityFilter = event.target.value; route(); }
+    else if (event.target.matches('[data-support-admin-update]')) supportAdminUpdateTicket(event.target.getAttribute('data-id'), event.target.getAttribute('data-support-admin-update'), event.target.value);
     else if (event.target.id === 'cd-select-all') toggleAllCaptadorDocumentSelection(event.target.checked);
     else if (event.target.matches('[data-cd-select]')) toggleCaptadorDocumentSelection(event.target.getAttribute('data-cd-select'), event.target.checked);
     else if (event.target.id === 'transition-xml-files') handleTaxTransitionFiles(event.target.files);
@@ -9008,6 +9463,7 @@
     var issCapitalTrigger = event.target && event.target.closest ? event.target.closest('[data-action="iss-select-capital"]') : null;
     if (issCapitalTrigger && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); selectIssCapital(issCapitalTrigger.getAttribute('data-uf')); return; }
     if (event.target && event.target.id === 'sefaz-access-key' && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); consultSefazDocument(); return; }
+    if (event.target && event.target.id === 'support-chat-input' && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendSupportChatMessage(); return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openSearch(); }
     if (event.key === 'Escape') { closeSearch(); closeModal(); }
     if (!$('#search-layer').classList.contains('is-hidden')) {
@@ -9025,6 +9481,8 @@
   document.addEventListener('submit', function (event) {
     if (event.target.id === 'password-reset-identify-form') { event.preventDefault(); verifyPasswordReset(); }
     else if (event.target.id === 'password-reset-new-form') { event.preventDefault(); savePasswordReset(); }
+    else if (event.target.id === 'support-ticket-form') { event.preventDefault(); submitSupportForm(); }
+    else if (event.target.id === 'support-reply-form') { event.preventDefault(); sendSupportTicketReply(event.target.getAttribute('data-ticket-id')); }
   });
 
   $('#login-form').addEventListener('submit', async function (event) {

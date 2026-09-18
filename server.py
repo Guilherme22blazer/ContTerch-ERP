@@ -91,6 +91,13 @@ STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
 APP_URL = os.environ.get("APP_URL", f"http://{os.environ.get('SIMPLESCALC_HOST', '127.0.0.1')}:{os.environ.get('SIMPLESCALC_PORT', '4173')}").rstrip("/")
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
+
+# Central de Suporte Inteligente — chave da API da Anthropic para o
+# assistente de IA de primeiro nível. Só existe no backend; nunca é
+# enviada ao navegador. Sem ela, o chat informa que a IA está
+# indisponível e direciona direto para abrir chamado.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929").strip()
 # Assinaturas com status nestes valores não têm acesso liberado ao ERP.
 BLOCKED_SUBSCRIPTION_STATUSES = {"CANCELADA", "BLOQUEADA", "VENCIDA"}
 VALID_COMPANY_STATUSES = {"ATIVA", "AGUARDANDO_PAGAMENTO", "CANCELADA", "BLOQUEADA", "VENCIDA"}
@@ -188,6 +195,7 @@ ERP_MODULES = {
     "tab_gestao_usuarios": "Gestão de Usuários",
     "tab_configuracoes": "Configurações",
     "tab_historico": "Histórico de Atualizações",
+    "tab_central_suporte": "Central de Suporte",
 }
 FISCAL_TAB_MODULES = {
     "tab_sefaz_portal", "tab_captador_notas_fiscais", "tab_auditor_fiscal", "tab_dashboard", "tab_conttech_simples_nacional", "tab_diagnostico", "tab_mei", "tab_controle_mei",
@@ -206,14 +214,14 @@ TRABALHISTA_TAB_MODULES = {
 }
 OUTROS_TAB_MODULES = {
     "tab_kanban", "tab_central_formularios", "tab_modelos_contratos", "tab_clientes",
-    "tab_gestao_usuarios", "tab_configuracoes", "tab_historico",
+    "tab_gestao_usuarios", "tab_configuracoes", "tab_historico", "tab_central_suporte",
 }
 DEFAULT_PLAN_MODULES = {
-    "erp-start": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico"},
+    "erp-start": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico", "tab_central_suporte"},
     "erp-profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
     "erp-business": set(ERP_MODULES) - {"tab_gestao_usuarios", "tab_configuracoes"},
     "erp-enterprise": set(ERP_MODULES),
-    "basico": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico"},
+    "basico": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico", "tab_central_suporte"},
     "profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
     "empresarial": set(ERP_MODULES) - {"tab_gestao_usuarios", "tab_configuracoes"},
     "completo": set(ERP_MODULES),
@@ -787,6 +795,92 @@ def decode_base64_field(value: str, limit: int, label: str) -> bytes:
     if not data or len(data) > limit:
         raise ValueError(f"{label} vazio ou acima do limite permitido.")
     return data
+
+
+SUPPORT_SYSTEM_PROMPT_BASE = """Você é o assistente de primeiro nível da Central de Suporte do ContTech ERP,
+um sistema de gestão fiscal, contábil e trabalhista para escritórios de contabilidade brasileiros.
+
+Regras obrigatórias:
+- Responda sempre em português do Brasil, de forma clara, objetiva e cordial.
+- Nunca invente funcionalidades, telas, botões ou comportamentos que você não tem certeza que existem no sistema.
+- Quando não tiver informação suficiente para responder com segurança, diga isso claramente e sugira abrir um chamado
+  ou falar com o suporte humano — não tente adivinhar.
+- Nunca afirme que corrigiu ou resolveu um problema técnico: você pode, no máximo, indicar uma possível causa e um
+  procedimento recomendado para o usuário verificar.
+- Quando o usuário relatar um erro/bug, estruture a resposta em: (1) possível causa; (2) o que verificar;
+  (3) procedimento recomendado; (4) se persistir, ofereça abrir um chamado.
+- Seja breve: respostas curtas e diretas, sem parágrafos longos desnecessários.
+- Não peça nem processe senhas, dados de cartão de crédito ou credenciais de certificado digital dentro do chat.
+
+Módulos existentes no sistema (chave técnica → nome exibido ao usuário):
+{modules}
+"""
+
+
+def anthropic_chat_request(system_prompt: str, messages: list[dict], max_tokens: int = 700) -> str:
+    """Chama a API de Mensagens da Anthropic (Claude) para o assistente de
+    primeiro nível da Central de Suporte. A chave nunca sai do backend."""
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("IA não configurada")
+    body = json.dumps({
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": max_tokens,
+        "system": system_prompt,
+        "messages": messages,
+    }).encode("utf-8")
+    request = Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        method="POST",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            raw = response.read()
+    except HTTPError as error:
+        raw = error.read()
+        try:
+            error_payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            error_payload = {}
+        message = (error_payload.get("error") or {}).get("message") or f"HTTP {error.code}"
+        raise RuntimeError(f"Falha ao consultar a IA: {message}") from error
+    except (URLError, TimeoutError) as error:
+        raise RuntimeError("Não foi possível conectar ao serviço de IA.") from error
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+        blocks = parsed.get("content") or []
+        text = "".join(block.get("text", "") for block in blocks if isinstance(block, dict) and block.get("type") == "text")
+        if not text.strip():
+            raise ValueError("Resposta vazia")
+        return text.strip()
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, AttributeError) as error:
+        raise RuntimeError("Resposta inválida do serviço de IA.") from error
+
+
+def support_system_prompt() -> str:
+    modules_text = "\n".join(f"- {key}: {label}" for key, label in sorted(ERP_MODULES.items(), key=lambda item: item[1]))
+    return SUPPORT_SYSTEM_PROMPT_BASE.format(modules=modules_text)
+
+
+def next_support_protocol(database: sqlite3.Connection) -> str:
+    """Gera o próximo número de protocolo do ano corrente (ex.: CT-2026-000125)
+    via contador atômico — evita colisão sob concorrência (ao contrário de um
+    simples COUNT(*) sobre support_tickets)."""
+    year = dt.date.today().year
+    row = database.execute(
+        """
+        INSERT INTO support_ticket_counters(year, last_value) VALUES (?, 1)
+        ON CONFLICT (year) DO UPDATE SET last_value = support_ticket_counters.last_value + 1
+        RETURNING last_value
+        """,
+        (year,),
+    ).fetchone()
+    return f"CT-{year}-{row['last_value']:06d}"
 
 
 def digits(value: str) -> str:
@@ -3729,6 +3823,40 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "updatedBy": row["updated_by"] or "", "updatedAt": row["updated_at"],
         }
 
+    def support_ticket_summary(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "protocol": row["protocol"], "companyId": row["company_id"],
+            "requesterEmail": row["requester_email"], "requesterName": row["requester_name"],
+            "category": row["category"], "moduleKey": row["module_key"] or "",
+            "priority": row["priority"], "status": row["status"], "subject": row["subject"],
+            "description": row["description"], "errorMessage": row["error_message"] or "",
+            "stepsToReproduce": row["steps_to_reproduce"] or "", "expectedBenefit": row["expected_benefit"] or "",
+            "pageContext": row["page_context"] or "", "browserInfo": row["browser_info"] or "",
+            "aiSummary": row["ai_summary"] or "", "assignedTo": row["assigned_to"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def support_ticket_message_summary(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "authorType": row["author_type"], "authorName": row["author_name"],
+            "message": row["message"], "createdAt": row["created_at"],
+        }
+
+    def support_ticket_attachment_summary(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "filename": row["filename"], "contentType": row["content_type"],
+            "sizeBytes": row["size_bytes"], "createdAt": row["created_at"],
+        }
+
+    def support_ticket_row(self, ticket_id: str, user: sqlite3.Row) -> sqlite3.Row | None:
+        with connect() as database:
+            row = database.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if row is None:
+            return None
+        if row["requester_email"] != user["email"] and not self.is_super_admin(user):
+            return None
+        return row
+
     def save_nfeio_invoice_snapshot(self, invoice_id: str, *, status: str, status_reason: str, nfeio_response: dict) -> None:
         fernet = get_fernet()
         pdf_url = str(nfeio_response.get("pdf", {}).get("url", "") if isinstance(nfeio_response.get("pdf"), dict) else nfeio_response.get("pdfUrl", "") or "")
@@ -5970,6 +6098,107 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 "items": [self.acompanhamento_contabil_row(row) for row in rows],
             })
             return
+        if path == "/api/support/tickets":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_central_suporte"):
+                return
+            params = parse_qs(parsed_url.query)
+            scope = params.get("scope", [""])[0].strip()
+            with connect() as database:
+                if scope == "all" and self.is_super_admin(user):
+                    where, values = [], []
+                    status_filter = params.get("status", [""])[0].strip()
+                    if status_filter:
+                        where.append("status = ?"); values.append(status_filter)
+                    category_filter = params.get("category", [""])[0].strip()
+                    if category_filter:
+                        where.append("category = ?"); values.append(category_filter)
+                    priority_filter = params.get("priority", [""])[0].strip()
+                    if priority_filter:
+                        where.append("priority = ?"); values.append(priority_filter)
+                    condition_sql = f"WHERE {' AND '.join(where)}" if where else ""
+                    rows = database.execute(
+                        f"SELECT * FROM support_tickets {condition_sql} ORDER BY created_at DESC LIMIT 500", values
+                    ).fetchall()
+                else:
+                    rows = database.execute(
+                        "SELECT * FROM support_tickets WHERE requester_email = ? ORDER BY created_at DESC",
+                        (user["email"],),
+                    ).fetchall()
+            self.send_json({"items": [self.support_ticket_summary(row) for row in rows]})
+            return
+        support_ticket_match = re.fullmatch(r"/api/support/tickets/([a-f0-9]{32})", path)
+        if support_ticket_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_central_suporte"):
+                return
+            ticket = self.support_ticket_row(support_ticket_match.group(1), user)
+            if ticket is None:
+                self.send_json({"error": "Chamado não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            with connect() as database:
+                messages = database.execute(
+                    "SELECT * FROM support_ticket_messages WHERE ticket_id = ? ORDER BY created_at",
+                    (ticket["id"],),
+                ).fetchall()
+                attachments = database.execute(
+                    "SELECT id, ticket_id, filename, content_type, size_bytes, created_at FROM support_ticket_attachments WHERE ticket_id = ? ORDER BY created_at",
+                    (ticket["id"],),
+                ).fetchall()
+            self.send_json({
+                "ticket": self.support_ticket_summary(ticket),
+                "messages": [self.support_ticket_message_summary(row) for row in messages],
+                "attachments": [self.support_ticket_attachment_summary(row) for row in attachments],
+            })
+            return
+        support_attachment_match = re.fullmatch(r"/api/support/tickets/([a-f0-9]{32})/attachments/([a-f0-9]{32})", path)
+        if support_attachment_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_central_suporte"):
+                return
+            ticket = self.support_ticket_row(support_attachment_match.group(1), user)
+            if ticket is None:
+                self.send_json({"error": "Chamado não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            with connect() as database:
+                attachment = database.execute(
+                    "SELECT * FROM support_ticket_attachments WHERE id = ? AND ticket_id = ?",
+                    (support_attachment_match.group(2), ticket["id"]),
+                ).fetchone()
+            if attachment is None:
+                self.send_json({"error": "Anexo não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({
+                "filename": attachment["filename"], "contentType": attachment["content_type"],
+                "dataBase64": base64.b64encode(bytes(attachment["data"])).decode("ascii"),
+            })
+            return
+        if path == "/api/support/admin/dashboard":
+            administrator = self.require_role("SUPER_ADMIN")
+            if administrator is None:
+                return
+            with connect() as database:
+                total = database.execute("SELECT COUNT(*) AS amount FROM support_tickets").fetchone()["amount"]
+                by_status = database.execute("SELECT status, COUNT(*) AS amount FROM support_tickets GROUP BY status").fetchall()
+                by_category = database.execute("SELECT category, COUNT(*) AS amount FROM support_tickets GROUP BY category").fetchall()
+                by_module = database.execute(
+                    "SELECT COALESCE(module_key, 'não informado') AS module_key, COUNT(*) AS amount FROM support_tickets GROUP BY module_key ORDER BY amount DESC LIMIT 15"
+                ).fetchall()
+                by_priority = database.execute("SELECT priority, COUNT(*) AS amount FROM support_tickets GROUP BY priority").fetchall()
+                top_requesters = database.execute(
+                    "SELECT requester_email, requester_name, COUNT(*) AS amount FROM support_tickets GROUP BY requester_email, requester_name ORDER BY amount DESC LIMIT 10"
+                ).fetchall()
+                recent = database.execute("SELECT * FROM support_tickets ORDER BY created_at DESC LIMIT 50").fetchall()
+            self.send_json({
+                "total": total,
+                "byStatus": {row["status"]: row["amount"] for row in by_status},
+                "byCategory": {row["category"]: row["amount"] for row in by_category},
+                "byModule": [{"moduleKey": row["module_key"], "label": ERP_MODULES.get(row["module_key"], row["module_key"]), "amount": row["amount"]} for row in by_module],
+                "byPriority": {row["priority"]: row["amount"] for row in by_priority},
+                "topRequesters": [{"email": row["requester_email"], "name": row["requester_name"], "amount": row["amount"]} for row in top_requesters],
+                "recent": [self.support_ticket_summary(row) for row in recent],
+            })
+            return
         if path == "/api/state":
             user = self.require_user()
             if user is None:
@@ -6311,11 +6540,12 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             with connect() as database:
                 refresh_expired_subscriptions(database)
                 user = database.execute(
-                    "SELECT id, email, name, role, status, active, plan_id, salt, password_hash, password_algo, "
-                    "billing_cycle, subscription_value, monitoring_start, monitoring_end, last_login_at, "
-                    "login_attempts, company_id, perfil_id, primeiro_acesso "
-                    "FROM users "
-                    "WHERE lower(email) = ? OR lower(login) = ?",
+                    "SELECT u.id, u.email, u.name, u.role, u.status, u.active, u.plan_id, u.salt, u.password_hash, u.password_algo, "
+                    "u.billing_cycle, u.subscription_value, u.monitoring_start, u.monitoring_end, u.last_login_at, "
+                    "u.login_attempts, u.company_id, u.perfil_id, u.primeiro_acesso, r.nome AS perfil_nome "
+                    "FROM users u "
+                    "LEFT JOIN roles r ON r.id = u.perfil_id "
+                    "WHERE lower(u.email) = ? OR lower(u.login) = ?",
                     (login_identifier, login_identifier),
                 ).fetchone()
                 valid = user and verify_password(
@@ -6404,6 +6634,7 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                         "lastLoginAt": previous_login_at,
                         "currentLoginAt": current_login_at,
                         "primeiroAcesso": bool(user["primeiro_acesso"]),
+                        "superAdmin": (user["perfil_nome"] or "") == "SUPER_ADMIN",
                     },
                 }
             )
@@ -6720,6 +6951,165 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     "environment": settings["environment"],
                 })
             except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/support/ai-chat":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_central_suporte"):
+                return
+            if not self.enforce_rate_limit("support_ai", limit=30, window_seconds=300):
+                self.send_rate_limited()
+                return
+            try:
+                raw_messages = payload.get("messages", [])
+                if not isinstance(raw_messages, list) or not raw_messages:
+                    raise ValueError("Envie ao menos uma mensagem.")
+                api_messages = []
+                for item in raw_messages[-20:]:
+                    if not isinstance(item, dict):
+                        continue
+                    role = "assistant" if item.get("role") == "assistant" else "user"
+                    text = str(item.get("text", "")).strip()[:4000]
+                    if text:
+                        api_messages.append({"role": role, "content": text})
+                if not api_messages:
+                    raise ValueError("Envie ao menos uma mensagem.")
+                context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+                with connect() as database:
+                    company = database.execute("SELECT razao_social FROM companies WHERE id = ?", (user["company_id"],)).fetchone()
+                context_note = (
+                    f"\nContexto da sessão atual: usuário={user['name']}, empresa={company['razao_social'] if company else ''}, "
+                    f"página={str(context.get('route', ''))[:60]}, módulo={str(context.get('module', ''))[:60]}."
+                )
+                system_prompt = support_system_prompt() + context_note
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            fallback_message = (
+                "Não encontrei informações suficientes para responder com segurança. "
+                "Posso encaminhar sua solicitação para nossa equipe de suporte."
+            )
+            try:
+                reply = anthropic_chat_request(system_prompt, api_messages)
+                self.send_json({"reply": reply, "aiAvailable": True})
+            except RuntimeError:
+                self.send_json({"reply": fallback_message, "aiAvailable": False})
+            return
+
+        if path == "/api/support/tickets":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_central_suporte"):
+                return
+            if not self.enforce_rate_limit("support_ticket_create", limit=15, window_seconds=600):
+                self.send_rate_limited()
+                return
+            try:
+                category = str(payload.get("category", "")).strip()
+                if category not in {"duvida", "bug", "melhoria", "chamado"}:
+                    raise ValueError("Categoria inválida.")
+                subject = str(payload.get("subject", "")).strip()[:200]
+                description = str(payload.get("description", "")).strip()[:5000]
+                if not subject or not description:
+                    raise ValueError("Informe o assunto e a descrição.")
+                module_key = str(payload.get("moduleKey", "")).strip() or None
+                if module_key and module_key not in ERP_MODULES:
+                    module_key = None
+                priority = str(payload.get("priority", "media")).strip() or "media"
+                if priority not in {"baixa", "media", "alta", "urgente"}:
+                    priority = "media"
+                error_message = str(payload.get("errorMessage", "")).strip()[:3000] or None
+                steps_to_reproduce = str(payload.get("stepsToReproduce", "")).strip()[:3000] or None
+                expected_benefit = str(payload.get("expectedBenefit", "")).strip()[:2000] or None
+                page_context = str(payload.get("pageContext", "")).strip()[:200] or None
+                browser_info = str(payload.get("browserInfo", "")).strip()[:300] or self.headers.get("User-Agent", "")[:300]
+                ai_summary = str(payload.get("aiSummary", "")).strip()[:4000] or None
+                transcript = payload.get("transcript") if isinstance(payload.get("transcript"), list) else []
+
+                attachment_payload = payload.get("attachment") if isinstance(payload.get("attachment"), dict) else None
+                attachment_bytes = None
+                attachment_filename = ""
+                attachment_content_type = ""
+                if attachment_payload:
+                    attachment_content_type = str(attachment_payload.get("contentType", "")).strip().lower()
+                    if attachment_content_type not in {"image/png", "image/jpeg", "image/webp", "application/pdf"}:
+                        raise ValueError("Tipo de anexo não suportado. Envie PNG, JPEG, WEBP ou PDF.")
+                    attachment_filename = str(attachment_payload.get("filename", "anexo")).strip()[:150] or "anexo"
+                    attachment_bytes = decode_base64_field(attachment_payload.get("dataBase64", ""), 5_000_000, "Anexo")
+
+                now = local_now()
+                ticket_id = uuid.uuid4().hex
+                with connect() as database:
+                    protocol = next_support_protocol(database)
+                    database.execute(
+                        """
+                        INSERT INTO support_tickets(
+                          id, protocol, company_id, requester_email, requester_name, category, module_key,
+                          priority, status, subject, description, error_message, steps_to_reproduce,
+                          expected_benefit, page_context, browser_info, ai_summary, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'aberto', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            ticket_id, protocol, user["company_id"], user["email"], user["name"], category, module_key,
+                            priority, subject, description, error_message, steps_to_reproduce,
+                            expected_benefit, page_context, browser_info, ai_summary, now, now,
+                        ),
+                    )
+                    if transcript:
+                        for item in transcript[-40:]:
+                            if not isinstance(item, dict):
+                                continue
+                            role = str(item.get("role", "")).strip()
+                            text = str(item.get("text", "")).strip()[:4000]
+                            if not text:
+                                continue
+                            author_type = "ai" if role == "assistant" else "user"
+                            author_name = "Assistente IA" if author_type == "ai" else user["name"]
+                            database.execute(
+                                "INSERT INTO support_ticket_messages(id, ticket_id, author_type, author_name, message, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                (uuid.uuid4().hex, ticket_id, author_type, author_name, text, now),
+                            )
+                    else:
+                        database.execute(
+                            "INSERT INTO support_ticket_messages(id, ticket_id, author_type, author_name, message, created_at) VALUES (?, ?, 'user', ?, ?, ?)",
+                            (uuid.uuid4().hex, ticket_id, user["name"], description, now),
+                        )
+                    if attachment_bytes:
+                        database.execute(
+                            "INSERT INTO support_ticket_attachments(id, ticket_id, filename, content_type, size_bytes, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (uuid.uuid4().hex, ticket_id, attachment_filename, attachment_content_type, len(attachment_bytes), attachment_bytes, now),
+                        )
+                    ticket = database.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket_id,)).fetchone()
+                self.audit(user["email"], "support_ticket_created", f"{protocol} · {category}")
+                self.send_json({"ticket": self.support_ticket_summary(ticket)}, HTTPStatus.CREATED)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        support_message_match = re.fullmatch(r"/api/support/tickets/([a-f0-9]{32})/messages", path)
+        if support_message_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_central_suporte"):
+                return
+            ticket = self.support_ticket_row(support_message_match.group(1), user)
+            if ticket is None:
+                self.send_json({"error": "Chamado não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                text = str(payload.get("message", "")).strip()[:4000]
+                if not text:
+                    raise ValueError("Escreva uma mensagem.")
+                now = local_now()
+                author_type = "agent" if self.is_super_admin(user) else "user"
+                with connect() as database:
+                    database.execute(
+                        "INSERT INTO support_ticket_messages(id, ticket_id, author_type, author_name, message, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (uuid.uuid4().hex, ticket["id"], author_type, user["name"], text, now),
+                    )
+                    database.execute("UPDATE support_tickets SET updated_at = ? WHERE id = ?", (now, ticket["id"]))
+                self.audit(user["email"], "support_ticket_message", ticket["protocol"])
+                self.send_json({"ok": True})
+            except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
 
@@ -7132,6 +7522,54 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": True})
             except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        support_ticket_put_match = re.fullmatch(r"/api/support/tickets/([a-f0-9]{32})", path)
+        if support_ticket_put_match:
+            administrator = self.require_role("SUPER_ADMIN")
+            if administrator is None:
+                return
+            with connect() as database:
+                ticket = database.execute("SELECT * FROM support_tickets WHERE id = ?", (support_ticket_put_match.group(1),)).fetchone()
+            if ticket is None:
+                self.send_json({"error": "Chamado não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                payload = self.read_json()
+                changes = []
+                status = str(payload.get("status", "")).strip()
+                priority = str(payload.get("priority", "")).strip()
+                assigned_to = payload.get("assignedTo")
+                fields, values = [], []
+                if status:
+                    if status not in {"aberto", "em_analise", "aguardando_usuario", "em_desenvolvimento", "resolvido", "encerrado"}:
+                        raise ValueError("Status inválido.")
+                    if status != ticket["status"]:
+                        changes.append(f"status: {ticket['status']} → {status}")
+                    fields.append("status = ?"); values.append(status)
+                if priority:
+                    if priority not in {"baixa", "media", "alta", "urgente"}:
+                        raise ValueError("Prioridade inválida.")
+                    fields.append("priority = ?"); values.append(priority)
+                if assigned_to is not None:
+                    fields.append("assigned_to = ?"); values.append(str(assigned_to).strip()[:150] or None)
+                if not fields:
+                    raise ValueError("Nada para atualizar.")
+                now = local_now()
+                fields.append("updated_at = ?"); values.append(now)
+                values.append(ticket["id"])
+                with connect() as database:
+                    database.execute(f"UPDATE support_tickets SET {', '.join(fields)} WHERE id = ?", values)
+                    if changes:
+                        database.execute(
+                            "INSERT INTO support_ticket_messages(id, ticket_id, author_type, author_name, message, created_at) VALUES (?, ?, 'system', ?, ?, ?)",
+                            (uuid.uuid4().hex, ticket["id"], administrator["name"], "Atualização: " + "; ".join(changes), now),
+                        )
+                    updated = database.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket["id"],)).fetchone()
+                self.audit(administrator["email"], "support_ticket_updated", ticket["protocol"])
+                self.send_json({"ticket": self.support_ticket_summary(updated)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
 
         if path == "/api/settings/stripe":
