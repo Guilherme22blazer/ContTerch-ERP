@@ -184,6 +184,7 @@ ERP_MODULES = {
     "tab_colaboradores": "Cadastro de Colaboradores",
     "tab_ferias": "Férias",
     "tab_afastamentos": "Afastamentos",
+    "tab_beneficios": "Benefícios",
     "tab_folha": "Folha de Pagamento",
     "tab_horas_extras_noturno": "Horas Extras e Trabalho Noturno",
     "tab_verbas_rescisorias": "Verbas Rescisórias",
@@ -213,7 +214,7 @@ FISCAL_TAB_MODULES = {
     "tab_comparativo_regimes",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab_acompanhamento_contabil"}
-RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos"}
+RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos", "tab_beneficios"}
 TRABALHISTA_TAB_MODULES = {
     "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
     "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",
@@ -527,6 +528,50 @@ def afastamento_fields_from_payload(payload: dict) -> dict:
         "documento_referencia": str(payload.get("documentoReferencia", "")).strip()[:150] or None,
         "motivo": str(payload.get("motivo", "")).strip()[:2000] or None,
         "status": "encerrado" if data_fim else "em_andamento",
+    }
+
+
+BENEFICIO_TIPO_VALUES = {
+    "vale_transporte", "vale_refeicao", "vale_alimentacao", "plano_saude",
+    "plano_odontologico", "seguro_vida", "auxilio_creche", "auxilio_educacao", "outro",
+}
+
+
+def beneficio_fields_from_payload(payload: dict) -> dict:
+    tipo = str(payload.get("tipo", "")).strip()
+    if tipo not in BENEFICIO_TIPO_VALUES:
+        raise ValueError("Tipo de benefício inválido.")
+    data_inicio = str(payload.get("dataInicio", "")).strip()
+    if not DATE_ISO_RE.match(data_inicio):
+        raise ValueError("Informe a data de início do benefício.")
+    data_fim = str(payload.get("dataFim", "")).strip()
+    if data_fim and not DATE_ISO_RE.match(data_fim):
+        raise ValueError("Data de fim inválida.")
+    if data_fim and data_fim < data_inicio:
+        raise ValueError("A data de fim não pode ser anterior à data de início.")
+    status = str(payload.get("status", "ativo")).strip()
+    if status not in ("ativo", "inativo"):
+        raise ValueError("Status de benefício inválido.")
+
+    def money_field(key: str) -> float:
+        try:
+            value = round(float(payload.get(key, 0) or 0), 2)
+        except (TypeError, ValueError):
+            raise ValueError("Valor monetário inválido.")
+        if value < 0:
+            raise ValueError("Valor monetário inválido.")
+        return value
+
+    valor_beneficio = money_field("valorBeneficio")
+    valor_desconto = money_field("valorDescontoColaborador")
+    if valor_desconto > valor_beneficio:
+        raise ValueError("O desconto do colaborador não pode ser maior do que o valor do benefício.")
+    return {
+        "tipo": tipo, "descricao": str(payload.get("descricao", "")).strip()[:200] or None,
+        "valor_beneficio": valor_beneficio, "valor_desconto_colaborador": valor_desconto,
+        "valor_custo_empresa": round(valor_beneficio - valor_desconto, 2),
+        "status": status, "data_inicio": data_inicio, "data_fim": data_fim or None,
+        "observacoes": str(payload.get("observacoes", "")).strip()[:2000] or None,
     }
 
 
@@ -4063,6 +4108,18 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         }
 
+    def beneficio_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "tipo": row["tipo"], "descricao": row["descricao"] or "",
+            "valorBeneficio": float(row["valor_beneficio"] or 0), "valorDescontoColaborador": float(row["valor_desconto_colaborador"] or 0),
+            "valorCustoEmpresa": float(row["valor_custo_empresa"] or 0), "status": row["status"],
+            "dataInicio": row["data_inicio"], "dataFim": row["data_fim"] or "", "observacoes": row["observacoes"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
     def support_ticket_summary(self, row: sqlite3.Row) -> dict:
         ai_triage_raw = row["ai_triage"]
         if isinstance(ai_triage_raw, str):
@@ -6639,6 +6696,34 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 ).fetchall()
             self.send_json({"items": [self.afastamento_row(row) for row in rows]})
             return
+        if path == "/api/beneficios":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_beneficios"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["b.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("b.colaborador_id = ?"); values.append(colaborador_id)
+            if status_filter in ("ativo", "inativo"):
+                conditions.append("b.status = ?"); values.append(status_filter)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT b.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM beneficios b JOIN colaboradores c ON c.id = b.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY c.nome_completo
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.beneficio_row(row) for row in rows]})
+            return
         if path == "/api/support/categories":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_central_suporte"):
@@ -7889,6 +7974,41 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
 
+        if path == "/api/beneficios":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_beneficios"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = beneficio_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO beneficios({', '.join(columns)}) VALUES ({placeholders})", values)
+                    saved = database.execute(
+                        """
+                        SELECT b.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM beneficios b JOIN colaboradores c ON c.id = b.colaborador_id WHERE b.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "beneficio_registrado", f"{saved['colaborador_nome']} · {fields['tipo']}")
+                self.send_json({"ok": True, "item": self.beneficio_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
         if path == "/api/acompanhamento-contabil":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_acompanhamento_contabil"):
@@ -8229,6 +8349,20 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             self.audit(administrator["email"], "afastamento_excluido", afastamento_delete_match.group(1))
             self.send_json({"ok": True})
             return
+        beneficio_delete_match = re.fullmatch(r"/api/beneficios/([a-f0-9]{32})", path)
+        if beneficio_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT id FROM beneficios WHERE id = ? AND company_id = ?", (beneficio_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Benefício não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM beneficios WHERE id = ?", (beneficio_delete_match.group(1),))
+            self.audit(administrator["email"], "beneficio_excluido", beneficio_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
         managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
         if managed_user_match:
             administrator = self.require_admin()
@@ -8407,6 +8541,36 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     ).fetchone()
                 self.audit(user["email"], "afastamento_atualizado", f"{saved['colaborador_nome']} · {fields['status']}")
                 self.send_json({"ok": True, "item": self.afastamento_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        beneficio_put_match = re.fullmatch(r"/api/beneficios/([a-f0-9]{32})", path)
+        if beneficio_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_beneficios"):
+                return
+            try:
+                payload = self.read_json()
+                fields = beneficio_fields_from_payload(payload)
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM beneficios WHERE id = ? AND company_id = ?", (beneficio_put_match.group(1), user["company_id"])).fetchone()
+                    if existing is None:
+                        raise ValueError("Benefício não encontrado.")
+                    assignments = ", ".join(f"{column} = ?" for column in fields.keys())
+                    database.execute(
+                        f"UPDATE beneficios SET {assignments}, updated_by = ?, updated_at = ? WHERE id = ?",
+                        list(fields.values()) + [user["email"], local_now(), beneficio_put_match.group(1)],
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT b.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM beneficios b JOIN colaboradores c ON c.id = b.colaborador_id WHERE b.id = ?
+                        """,
+                        (beneficio_put_match.group(1),),
+                    ).fetchone()
+                self.audit(user["email"], "beneficio_atualizado", f"{saved['colaborador_nome']} · {fields['tipo']}")
+                self.send_json({"ok": True, "item": self.beneficio_row(saved)})
             except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return

@@ -275,6 +275,7 @@
     { route: 'colaboradores', label: 'Cadastro de Colaboradores', icon: '♟', desc: 'Ficha completa do colaborador — dados pessoais, profissionais e dependentes' },
     { route: 'ferias', label: 'Férias', icon: '☀', desc: 'Período aquisitivo, programação, abono e cálculo de férias por colaborador' },
     { route: 'afastamentos', label: 'Afastamentos', icon: '⛑', desc: 'Registro de afastamentos por doença, acidente, licenças e outras hipóteses' },
+    { route: 'beneficios', label: 'Benefícios', icon: '◈', desc: 'Vale-transporte, vale-refeição/alimentação, planos e outros benefícios por colaborador' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -5318,6 +5319,7 @@
     else if (state.route === 'colaboradores') main.innerHTML = renderColaboradores();
     else if (state.route === 'ferias') main.innerHTML = renderFerias();
     else if (state.route === 'afastamentos') main.innerHTML = renderAfastamentos();
+    else if (state.route === 'beneficios') main.innerHTML = renderBeneficios();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -5347,6 +5349,7 @@
     if (state.route === 'colaboradores' && colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
     if (state.route === 'ferias') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (feriasState.loadedForClient !== (currentClient() && currentClient().id)) loadFerias(); }
     if (state.route === 'afastamentos') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (afastamentosState.loadedForClient !== (currentClient() && currentClient().id)) loadAfastamentos(); }
+    if (state.route === 'beneficios') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios(); }
     if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
     if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
     if (state.route === 'configuracoes') loadStripeSettings();
@@ -8167,6 +8170,202 @@
   }
   function renderAfastamentos() { return afastamentosUi().view === 'form' ? renderAfastamentoForm() : renderAfastamentosList(); }
 
+  var BENEFICIO_CALC_TIPOS = ['vale_transporte', 'vale_refeicao', 'vale_alimentacao'];
+  function beneficioTipoLabel(tipo) {
+    return ({
+      vale_transporte: 'Vale-Transporte', vale_refeicao: 'Vale-Refeição', vale_alimentacao: 'Vale-Alimentação',
+      plano_saude: 'Plano de Saúde', plano_odontologico: 'Plano Odontológico', seguro_vida: 'Seguro de Vida',
+      auxilio_creche: 'Auxílio-Creche', auxilio_educacao: 'Auxílio-Educação', outro: 'Outro'
+    })[tipo] || tipo;
+  }
+  function beneficioComputeValues(tipo, colaborador, extra) {
+    var find = function (lines, label) { var line = lines.filter(function (item) { return item.label === label; })[0]; return line ? line.value : 0; };
+    if (tipo === 'vale_transporte') {
+      var vt = HR_CALC_SPECS['vale-transporte'].compute({ 'hr-vt-base': colaborador.salario, 'hr-vt-daily': extra.custoDiario, 'hr-vt-days': extra.diasUteis });
+      return { valorBeneficio: find(vt.lines, 'Custo total do transporte no mês'), valorDescontoColaborador: find(vt.lines, 'Desconto do colaborador') };
+    }
+    if (tipo === 'vale_refeicao' || tipo === 'vale_alimentacao') {
+      var vr = HR_CALC_SPECS['vale-refeicao'].compute({ 'hr-vr-daily': extra.valorDiario, 'hr-vr-days': extra.diasUteis, 'hr-vr-share': extra.percentualDesconto });
+      return { valorBeneficio: find(vr.lines, 'Valor total do benefício'), valorDescontoColaborador: find(vr.lines, 'Participação do colaborador') };
+    }
+    return null;
+  }
+  var beneficiosState = { loadedForClient: null, loading: false, items: [] };
+  function beneficiosUi() {
+    if (!state.beneficiosUi) state.beneficiosUi = { view: 'list', colaboradorFilter: '', statusFilter: '', formSeed: null };
+    return state.beneficiosUi;
+  }
+  function loadBeneficios(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && beneficiosState.loadedForClient === client.id) return Promise.resolve();
+    beneficiosState.loading = true;
+    return apiRequest('/api/beneficios?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      beneficiosState.items = payload.items || [];
+      beneficiosState.loadedForClient = client.id;
+      beneficiosState.loading = false;
+      if (state.route === 'beneficios') route();
+    }).catch(function (error) { beneficiosState.loading = false; toast('Não foi possível carregar os benefícios', error.message, 'error'); });
+  }
+  function openBeneficioForm() {
+    beneficiosUi().view = 'form';
+    beneficiosUi().formSeed = { colaboradorId: '', tipo: 'vale_transporte', custoDiario: 12, diasUteis: 22, valorDiario: 35, percentualDesconto: 20, valorBeneficio: 0, valorDescontoColaborador: 0, dataInicio: todayISO(), dataFim: '', status: 'ativo', descricao: '', observacoes: '' };
+    route();
+  }
+  function closeBeneficioForm() { beneficiosUi().view = 'list'; beneficiosUi().formSeed = null; route(); }
+  function beneficioCaptureFormState() {
+    var raw = {};
+    $$('[data-beneficio-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ben-/, '')] = el.value; });
+    beneficiosUi().formSeed = Object.assign({}, beneficiosUi().formSeed || {}, raw);
+  }
+  function renderBeneficioForm() {
+    var seed = beneficiosUi().formSeed || {};
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    var tipoOptions = ['vale_transporte', 'vale_refeicao', 'vale_alimentacao', 'plano_saude', 'plano_odontologico', 'seguro_vida', 'auxilio_creche', 'auxilio_educacao', 'outro'];
+    var isCalcTipo = BENEFICIO_CALC_TIPOS.indexOf(seed.tipo) >= 0;
+    var computed = isCalcTipo && colaborador ? beneficioComputeValues(seed.tipo, colaborador, seed) : null;
+    var valorBeneficio = computed ? computed.valorBeneficio : Number(seed.valorBeneficio || 0);
+    var valorDesconto = computed ? computed.valorDescontoColaborador : Number(seed.valorDescontoColaborador || 0);
+    var custoEmpresa = Math.max(0, valorBeneficio - valorDesconto);
+    return [
+      pageHeading('Novo Benefício', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="beneficio-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados do benefício</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="ben-colaboradorId" data-beneficio-input>' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Tipo de benefício</span><select id="ben-tipo" data-beneficio-input>' + tipoOptions.map(function (tipo) { return '<option value="' + tipo + '"' + (seed.tipo === tipo ? ' selected' : '') + '>' + beneficioTipoLabel(tipo) + '</option>'; }).join('') + '</select></label>' +
+        (seed.tipo === 'outro' ? '<label class="field"><span>Descrição</span><input id="ben-descricao" data-beneficio-input type="text" value="' + esc(seed.descricao || '') + '" placeholder="Ex.: Auxílio-combustível"></label>' : '') +
+        '<label class="field"><span>Data de início</span><input id="ben-dataInicio" data-beneficio-input type="date" value="' + esc(seed.dataInicio) + '"></label>' +
+        '<label class="field"><span>Data de fim (opcional)</span><input id="ben-dataFim" data-beneficio-input type="date" value="' + esc(seed.dataFim || '') + '"></label>' +
+        '<label class="field"><span>Status</span><select id="ben-status" data-beneficio-input><option value="ativo"' + (seed.status !== 'inativo' ? ' selected' : '') + '>Ativo</option><option value="inativo"' + (seed.status === 'inativo' ? ' selected' : '') + '>Inativo</option></select></label>' +
+        '<label class="field field--full"><span>Observações</span><input id="ben-observacoes" data-beneficio-input type="text" value="' + esc(seed.observacoes || '') + '"></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador para ver o cálculo do benefício.</div></div>' : (
+        seed.tipo === 'vale_transporte' ?
+          '<section class="card"><header class="card-header"><div><h2>Cálculo do Vale-Transporte</h2><small>Desconto legal de até 6% do salário-base</small></div></header><div class="card-body"><div class="form-grid">' +
+            '<label class="field"><span>Custo diário do transporte</span><input id="ben-custoDiario" data-beneficio-input type="number" min="0" step="0.01" value="' + esc(seed.custoDiario || 0) + '"></label>' +
+            '<label class="field"><span>Dias úteis no mês</span><input id="ben-diasUteis" data-beneficio-input type="number" min="0" step="1" value="' + esc(seed.diasUteis || 22) + '"></label>' +
+          '</div><div class="table-wrap"><table><tbody>' +
+            '<tr><td>Custo total do transporte</td><td id="ben-preview-beneficio">' + money(valorBeneficio) + '</td></tr>' +
+            '<tr><td>Desconto do colaborador (máx. 6% do salário)</td><td id="ben-preview-desconto">' + money(valorDesconto) + '</td></tr>' +
+            '<tr class="hr-calc-total-row"><td><b>Custo da empresa</b></td><td><b id="ben-preview-custo">' + money(custoEmpresa) + '</b></td></tr>' +
+          '</tbody></table></div></div></section>'
+        : (seed.tipo === 'vale_refeicao' || seed.tipo === 'vale_alimentacao') ?
+          '<section class="card"><header class="card-header"><div><h2>Cálculo do ' + beneficioTipoLabel(seed.tipo) + '</h2></div></header><div class="card-body"><div class="form-grid">' +
+            '<label class="field"><span>Valor diário</span><input id="ben-valorDiario" data-beneficio-input type="number" min="0" step="0.01" value="' + esc(seed.valorDiario || 0) + '"></label>' +
+            '<label class="field"><span>Dias úteis no mês</span><input id="ben-diasUteis" data-beneficio-input type="number" min="0" step="1" value="' + esc(seed.diasUteis || 22) + '"></label>' +
+            '<label class="field"><span>Participação do colaborador (%)</span><input id="ben-percentualDesconto" data-beneficio-input type="number" min="0" max="100" step="1" value="' + esc(seed.percentualDesconto || 0) + '"></label>' +
+          '</div><div class="table-wrap"><table><tbody>' +
+            '<tr><td>Valor total do benefício</td><td id="ben-preview-beneficio">' + money(valorBeneficio) + '</td></tr>' +
+            '<tr><td>Participação do colaborador</td><td id="ben-preview-desconto">' + money(valorDesconto) + '</td></tr>' +
+            '<tr class="hr-calc-total-row"><td><b>Custo da empresa</b></td><td><b id="ben-preview-custo">' + money(custoEmpresa) + '</b></td></tr>' +
+          '</tbody></table></div></div></section>'
+        :
+          '<section class="card"><header class="card-header"><div><h2>Valores do benefício</h2></div></header><div class="card-body"><div class="form-grid">' +
+            '<label class="field"><span>Valor total do benefício</span><input id="ben-valorBeneficio" data-beneficio-input type="number" min="0" step="0.01" value="' + esc(seed.valorBeneficio || 0) + '"></label>' +
+            '<label class="field"><span>Desconto do colaborador</span><input id="ben-valorDescontoColaborador" data-beneficio-input type="number" min="0" step="0.01" value="' + esc(seed.valorDescontoColaborador || 0) + '"></label>' +
+          '</div><div class="table-wrap"><table><tbody><tr class="hr-calc-total-row"><td><b>Custo da empresa</b></td><td><b id="ben-preview-custo">' + money(custoEmpresa) + '</b></td></tr></tbody></table></div></div></section>'
+      ),
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="beneficio-cancel">Cancelar</button><button class="primary-button" data-action="beneficio-save">💾 Registrar benefício</button></div>'
+    ].join('');
+  }
+  function updateBeneficioForm() {
+    if (!$('#ben-tipo')) return;
+    var tipo = $('#ben-tipo').value;
+    var colaboradorId = $('#ben-colaboradorId') ? $('#ben-colaboradorId').value : '';
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === colaboradorId; });
+    if (!colaborador) return;
+    var extra = {
+      custoDiario: $('#ben-custoDiario') ? parseLocaleNumber($('#ben-custoDiario').value) : 0,
+      diasUteis: $('#ben-diasUteis') ? parseLocaleNumber($('#ben-diasUteis').value) : 22,
+      valorDiario: $('#ben-valorDiario') ? parseLocaleNumber($('#ben-valorDiario').value) : 0,
+      percentualDesconto: $('#ben-percentualDesconto') ? parseLocaleNumber($('#ben-percentualDesconto').value) : 0
+    };
+    var computed = BENEFICIO_CALC_TIPOS.indexOf(tipo) >= 0 ? beneficioComputeValues(tipo, colaborador, extra) : null;
+    var valorBeneficio = computed ? computed.valorBeneficio : ($('#ben-valorBeneficio') ? parseLocaleNumber($('#ben-valorBeneficio').value) : 0);
+    var valorDesconto = computed ? computed.valorDescontoColaborador : ($('#ben-valorDescontoColaborador') ? parseLocaleNumber($('#ben-valorDescontoColaborador').value) : 0);
+    var custoEmpresa = Math.max(0, valorBeneficio - valorDesconto);
+    if ($('#ben-preview-beneficio')) $('#ben-preview-beneficio').textContent = money(valorBeneficio);
+    if ($('#ben-preview-desconto')) $('#ben-preview-desconto').textContent = money(valorDesconto);
+    if ($('#ben-preview-custo')) $('#ben-preview-custo').textContent = money(custoEmpresa);
+  }
+  function beneficioReadForm() {
+    var raw = {};
+    $$('[data-beneficio-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ben-/, '')] = el.value; });
+    return raw;
+  }
+  function submitBeneficioForm() {
+    var seed = Object.assign({}, beneficiosUi().formSeed || {}, beneficioReadForm());
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página.', 'error'); return; }
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    if (!colaborador) { toast('Selecione um colaborador', '', 'error'); return; }
+    if (!seed.dataInicio) { toast('Informe a data de início', '', 'error'); return; }
+    var computed = BENEFICIO_CALC_TIPOS.indexOf(seed.tipo) >= 0 ? beneficioComputeValues(seed.tipo, colaborador, seed) : null;
+    var payload = Object.assign({}, seed, {
+      valorBeneficio: computed ? computed.valorBeneficio : Number(seed.valorBeneficio || 0),
+      valorDescontoColaborador: computed ? computed.valorDescontoColaborador : Number(seed.valorDescontoColaborador || 0)
+    });
+    apiRequest('/api/beneficios', { method: 'POST', body: JSON.stringify(payload) }).then(function (result) {
+      toast('Benefício registrado', result.item.colaboradorNome);
+      audit('Benefício registrado', result.item.colaboradorNome + ' · ' + beneficioTipoLabel(result.item.tipo));
+      closeBeneficioForm();
+      loadBeneficios(true);
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function toggleBeneficioStatus(id) {
+    var item = (beneficiosState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var payload = {
+      tipo: item.tipo, descricao: item.descricao, valorBeneficio: item.valorBeneficio, valorDescontoColaborador: item.valorDescontoColaborador,
+      status: item.status === 'ativo' ? 'inativo' : 'ativo', dataInicio: item.dataInicio, dataFim: item.dataFim, observacoes: item.observacoes
+    };
+    apiRequest('/api/beneficios/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Status atualizado', payload.status === 'ativo' ? 'Ativo' : 'Inativo');
+      audit('Benefício — status atualizado', item.colaboradorNome + ' · ' + payload.status);
+      loadBeneficios(true);
+    }).catch(function (error) { toast('Não foi possível atualizar', error.message, 'error'); });
+  }
+  function deleteBeneficio(id) {
+    var item = (beneficiosState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este benefício de ' + item.colaboradorNome + '?')) return;
+    apiRequest('/api/beneficios/' + id, { method: 'DELETE' }).then(function () {
+      toast('Benefício excluído', item.colaboradorNome);
+      loadBeneficios(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderBeneficiosList() {
+    var client = currentClient(), ui = beneficiosUi();
+    if (!client) return pageHeading('Benefícios', 'Selecione um cliente no topo da página para gerenciar os benefícios.', '');
+    var items = (beneficiosState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      return true;
+    });
+    var custoTotalEmpresa = items.filter(function (item) { return item.status === 'ativo'; }).reduce(function (sum, item) { return sum + item.valorCustoEmpresa; }, 0);
+    var rows = items.map(function (item) {
+      var actions = '<button class="row-button" data-action="beneficio-toggle" data-id="' + item.id + '" title="' + (item.status === 'ativo' ? 'Inativar' : 'Reativar') + '">' + (item.status === 'ativo' ? '⏸' : '▶') + '</button>';
+      actions += '<button class="row-button" data-action="beneficio-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + esc(beneficioTipoLabel(item.tipo)) + (item.descricao ? '<br><small class="subtle">' + esc(item.descricao) + '</small>' : '') + '</td>' +
+        '<td>' + money(item.valorBeneficio) + '</td>' +
+        '<td>' + money(item.valorDescontoColaborador) + '</td>' +
+        '<td>' + money(item.valorCustoEmpresa) + '</td>' +
+        '<td><span class="tag ' + (item.status === 'ativo' ? 'tag--success' : 'tag--danger') + '">' + (item.status === 'ativo' ? 'Ativo' : 'Inativo') + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Benefícios', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="beneficio-new">+ Novo benefício</button>'),
+      '<div class="info-banner"><span>i</span><div><strong>Custo total em benefícios ativos:</strong> ' + money(custoTotalEmpresa) + ' por mês — soma do custo assumido pela empresa nos benefícios ativos.</div></div>',
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Colaborador</span><select id="beneficio-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="beneficio-status-filter"><option value="">Todos</option><option value="ativo"' + (ui.statusFilter === 'ativo' ? ' selected' : '') + '>Ativo</option><option value="inativo"' + (ui.statusFilter === 'inativo' ? ' selected' : '') + '>Inativo</option></select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Tipo</th><th>Valor do benefício</th><th>Desconto colaborador</th><th>Custo empresa</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty-state"><h3>Nenhum benefício cadastrado</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderBeneficios() { return beneficiosUi().view === 'form' ? renderBeneficioForm() : renderBeneficiosList(); }
+
   var ALIMONY_INSS_2026 = [
     { limit: 1621.00, rate: .075 },
     { limit: 2902.84, rate: .09 },
@@ -10242,6 +10441,11 @@
     else if (action === 'afastamento-save') submitAfastamentoForm();
     else if (action === 'afastamento-encerrar') encerrarAfastamento(actionEl.getAttribute('data-id'));
     else if (action === 'afastamento-delete') deleteAfastamento(actionEl.getAttribute('data-id'));
+    else if (action === 'beneficio-new') openBeneficioForm();
+    else if (action === 'beneficio-cancel') closeBeneficioForm();
+    else if (action === 'beneficio-save') submitBeneficioForm();
+    else if (action === 'beneficio-toggle') toggleBeneficioStatus(actionEl.getAttribute('data-id'));
+    else if (action === 'beneficio-delete') deleteBeneficio(actionEl.getAttribute('data-id'));
     else if (action === 'cest-export-json') exportCestResults('json');
     else if (action === 'cest-export-csv') exportCestResults('csv');
     else if (action === 'cest-print') window.print();
@@ -10572,6 +10776,11 @@
       feriasCaptureFormState();
       window.clearTimeout(state.feriasFormTimer);
       state.feriasFormTimer = window.setTimeout(function () { route(); }, 200);
+    } else if (event.target.id === 'ben-colaboradorId' || event.target.id === 'ben-tipo') {
+      beneficioCaptureFormState();
+      route();
+    } else if (event.target.matches('[data-beneficio-input]')) {
+      updateBeneficioForm();
     } else if (event.target.matches('[data-rental-input]')) {
       updateRentalSimulator();
     } else if (event.target.matches('[data-trc-input]')) {
@@ -10653,6 +10862,10 @@
     else if (event.target.id === 'ferias-status-filter') { feriasUi().statusFilter = event.target.value; route(); }
     else if (event.target.id === 'afastamento-colaborador-filter') { afastamentosUi().colaboradorFilter = event.target.value; route(); }
     else if (event.target.id === 'afastamento-status-filter') { afastamentosUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'ben-colaboradorId' || event.target.id === 'ben-tipo') { beneficioCaptureFormState(); route(); }
+    else if (event.target.matches('[data-beneficio-input]')) { updateBeneficioForm(); }
+    else if (event.target.id === 'beneficio-colaborador-filter') { beneficiosUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'beneficio-status-filter') { beneficiosUi().statusFilter = event.target.value; route(); }
     else if (event.target.matches('[data-kanban-move]')) moveKanbanCard(event.target.getAttribute('data-id'), event.target.value);
     else if (['cest-filter-uf', 'cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
     else if (event.target.matches('[data-hr-calc-input]')) updateHrCalc();
