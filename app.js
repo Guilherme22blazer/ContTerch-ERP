@@ -273,6 +273,8 @@
     { route: 'acompanhamento-contabil', label: 'Acompanhamento Contábil', icon: '◫', desc: 'Painel mensal do status contábil (documentos, escrituração, apuração, fechamento e obrigações) de cada cliente' },
     { route: 'rh-dashboard', label: 'Dashboard de RH', icon: '◉', desc: 'Headcount, admissões, desligamentos, aniversariantes e contratos de experiência do cliente selecionado' },
     { route: 'colaboradores', label: 'Cadastro de Colaboradores', icon: '♟', desc: 'Ficha completa do colaborador — dados pessoais, profissionais e dependentes' },
+    { route: 'ferias', label: 'Férias', icon: '☀', desc: 'Período aquisitivo, programação, abono e cálculo de férias por colaborador' },
+    { route: 'afastamentos', label: 'Afastamentos', icon: '⛑', desc: 'Registro de afastamentos por doença, acidente, licenças e outras hipóteses' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -5314,6 +5316,8 @@
     else if (state.route === 'acompanhamento-contabil') main.innerHTML = renderAcompanhamentoContabil();
     else if (state.route === 'rh-dashboard') main.innerHTML = renderRhDashboard();
     else if (state.route === 'colaboradores') main.innerHTML = renderColaboradores();
+    else if (state.route === 'ferias') main.innerHTML = renderFerias();
+    else if (state.route === 'afastamentos') main.innerHTML = renderAfastamentos();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -5341,6 +5345,8 @@
     if (state.route === 'acompanhamento-contabil' && !acompanhamentoContabilState.loaded) loadAcompanhamentoContabil();
     if (state.route === 'rh-dashboard' && rhDashboardState.loadedForClient !== (currentClient() && currentClient().id)) loadRhDashboard();
     if (state.route === 'colaboradores' && colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
+    if (state.route === 'ferias') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (feriasState.loadedForClient !== (currentClient() && currentClient().id)) loadFerias(); }
+    if (state.route === 'afastamentos') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (afastamentosState.loadedForClient !== (currentClient() && currentClient().id)) loadAfastamentos(); }
     if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
     if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
     if (state.route === 'configuracoes') loadStripeSettings();
@@ -7886,6 +7892,281 @@
     return colaboradoresUi().view === 'form' ? renderColaboradorForm() : renderColaboradoresList();
   }
 
+  function feriasColaboradorOptions(selected) {
+    return '<option value="">Selecione um colaborador</option>' + (colaboradoresState.items || []).filter(function (item) { return item.status !== 'desligado'; }).map(function (item) {
+      return '<option value="' + item.id + '"' + (item.id === selected ? ' selected' : '') + '>' + esc(item.nomeCompleto) + (item.cargo ? ' — ' + esc(item.cargo) : '') + '</option>';
+    }).join('');
+  }
+  function feriasComputeValues(colaborador, diasGozo, diasAbono) {
+    var dependentCount = (colaborador.dependentes || []).filter(function (dep) { return dep.dependenteIrrf; }).length;
+    var result = HR_CALC_SPECS['ferias'].compute({ 'hr-ferias-gross': colaborador.salario, 'hr-ferias-days': diasGozo, 'hr-ferias-dependents': dependentCount });
+    var find = function (label) { var line = result.lines.filter(function (item) { return item.label === label; })[0]; return line ? line.value : 0; };
+    var abonoTotal = 0;
+    if (diasAbono > 0) {
+      var abonoResult = HR_CALC_SPECS['abono-ferias'].compute({ 'hr-abono-gross': colaborador.salario });
+      var abonoLine = abonoResult.lines.filter(function (item) { return item.label.indexOf('Total do abono') === 0; })[0];
+      abonoTotal = abonoLine ? abonoLine.value / 10 * diasAbono : 0;
+    }
+    return {
+      valorBase: Number(colaborador.salario || 0), valorBruto: find('Total bruto de férias'),
+      valorInss: find('INSS'), valorIrrf: find('IRRF'), valorLiquido: find('Férias líquidas'), valorAbono: abonoTotal
+    };
+  }
+  var feriasState = { loadedForClient: null, loading: false, items: [] };
+  function feriasUi() {
+    if (!state.feriasUi) state.feriasUi = { view: 'list', colaboradorFilter: '', statusFilter: '', formSeed: null };
+    return state.feriasUi;
+  }
+  function loadFerias(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && feriasState.loadedForClient === client.id) return Promise.resolve();
+    feriasState.loading = true;
+    return apiRequest('/api/ferias?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      feriasState.items = payload.items || [];
+      feriasState.loadedForClient = client.id;
+      feriasState.loading = false;
+      if (state.route === 'ferias') route();
+    }).catch(function (error) { feriasState.loading = false; toast('Não foi possível carregar as férias', error.message, 'error'); });
+  }
+  function feriasStatusLabel(status) { return ({ programada: 'Programada', aprovada: 'Aprovada', em_gozo: 'Em gozo', concluida: 'Concluída', cancelada: 'Cancelada' })[status] || status; }
+  function feriasStatusTag(status) { return ({ programada: 'tag--info', aprovada: 'tag--success', em_gozo: 'tag--warning', concluida: 'tag--success', cancelada: 'tag--danger' })[status] || ''; }
+  function openFeriasForm() {
+    feriasUi().view = 'form';
+    feriasUi().formSeed = { colaboradorId: '', periodoAquisitivoInicio: '', periodoAquisitivoFim: '', diasGozo: '30', diasAbono: '0', dataInicioGozo: '', observacoes: '' };
+    route();
+  }
+  function closeFeriasForm() { feriasUi().view = 'list'; feriasUi().formSeed = null; route(); }
+  function feriasCaptureFormState() {
+    var raw = {};
+    $$('[data-ferias-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ferias-/, '')] = el.value; });
+    feriasUi().formSeed = Object.assign({}, feriasUi().formSeed || {}, raw);
+  }
+  function renderFeriasForm() {
+    var seed = feriasUi().formSeed || {};
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    var preview = colaborador ? feriasComputeValues(colaborador, Number(seed.diasGozo || 30), Number(seed.diasAbono || 0)) : null;
+    return [
+      pageHeading('Nova Solicitação de Férias', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="ferias-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados da solicitação</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="ferias-colaboradorId" data-ferias-input>' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Período aquisitivo — início</span><input id="ferias-periodoAquisitivoInicio" data-ferias-input type="date" value="' + esc(seed.periodoAquisitivoInicio) + '"></label>' +
+        '<label class="field"><span>Período aquisitivo — fim</span><input id="ferias-periodoAquisitivoFim" data-ferias-input type="date" value="' + esc(seed.periodoAquisitivoFim) + '"></label>' +
+        '<label class="field"><span>Dias de gozo</span><select id="ferias-diasGozo" data-ferias-input>' + [30, 20, 15, 10, 5].map(function (dias) { return '<option value="' + dias + '"' + (String(seed.diasGozo) === String(dias) ? ' selected' : '') + '>' + dias + ' dias</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Dias de abono (venda de até 1/3)</span><input id="ferias-diasAbono" data-ferias-input type="number" min="0" max="10" value="' + esc(seed.diasAbono || 0) + '"></label>' +
+        '<label class="field"><span>Data de início do gozo</span><input id="ferias-dataInicioGozo" data-ferias-input type="date" value="' + esc(seed.dataInicioGozo) + '"></label>' +
+        '<label class="field field--full"><span>Observações</span><input id="ferias-observacoes" data-ferias-input type="text" value="' + esc(seed.observacoes) + '"></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador para ver o cálculo estimado com base no salário cadastrado.</div></div>' : (
+        '<section class="card"><header class="card-header"><div><h2>Cálculo estimado</h2><small>Baseado no salário cadastrado do colaborador</small></div></header><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th>Valor</th></tr></thead><tbody>' +
+        '<tr><td>Salário base</td><td>' + money(preview.valorBase) + '</td></tr>' +
+        '<tr><td>Bruto de férias (' + seed.diasGozo + ' dias + 1/3)</td><td>' + money(preview.valorBruto) + '</td></tr>' +
+        '<tr><td>INSS</td><td>' + money(preview.valorInss) + '</td></tr>' +
+        '<tr><td>IRRF</td><td>' + money(preview.valorIrrf) + '</td></tr>' +
+        '<tr class="hr-calc-total-row"><td><b>Férias líquidas</b></td><td><b>' + money(preview.valorLiquido) + '</b></td></tr>' +
+        (Number(seed.diasAbono || 0) > 0 ? '<tr><td>Abono pecuniário (' + seed.diasAbono + ' dias, isento de INSS/IRRF)</td><td>' + money(preview.valorAbono) + '</td></tr>' : '') +
+        '</tbody></table></div></div></section>'
+      ),
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="ferias-cancel">Cancelar</button><button class="primary-button" data-action="ferias-save">💾 Registrar férias</button></div>'
+    ].join('');
+  }
+  function submitFeriasForm() {
+    feriasCaptureFormState();
+    var seed = feriasUi().formSeed || {};
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página.', 'error'); return; }
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    if (!colaborador) { toast('Selecione um colaborador', '', 'error'); return; }
+    if (!seed.periodoAquisitivoInicio || !seed.periodoAquisitivoFim) { toast('Informe o período aquisitivo', 'Preencha o início e o fim do período aquisitivo.', 'error'); return; }
+    var preview = feriasComputeValues(colaborador, Number(seed.diasGozo || 30), Number(seed.diasAbono || 0));
+    var payload = Object.assign({}, seed, {
+      diasGozo: Number(seed.diasGozo || 30), diasAbono: Number(seed.diasAbono || 0), status: 'programada',
+      valorBase: preview.valorBase, valorBruto: preview.valorBruto, valorInss: preview.valorInss,
+      valorIrrf: preview.valorIrrf, valorLiquido: preview.valorLiquido, valorAbono: preview.valorAbono
+    });
+    apiRequest('/api/ferias', { method: 'POST', body: JSON.stringify(payload) }).then(function (result) {
+      toast('Férias registradas', result.item.colaboradorNome);
+      audit('Férias registradas', result.item.colaboradorNome + ' · ' + client.name);
+      closeFeriasForm();
+      loadFerias(true);
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function setFeriasStatus(id, status) {
+    var item = (feriasState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var payload = {
+      periodoAquisitivoInicio: item.periodoAquisitivoInicio, periodoAquisitivoFim: item.periodoAquisitivoFim,
+      periodoConcessivoFim: item.periodoConcessivoFim, dataInicioGozo: item.dataInicioGozo || (status === 'em_gozo' ? todayISO() : ''),
+      diasGozo: item.diasGozo, diasAbono: item.diasAbono, status: status,
+      valorBase: item.valorBase, valorBruto: item.valorBruto, valorInss: item.valorInss, valorIrrf: item.valorIrrf,
+      valorLiquido: item.valorLiquido, valorAbono: item.valorAbono, observacoes: item.observacoes
+    };
+    apiRequest('/api/ferias/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Status atualizado', feriasStatusLabel(status));
+      audit('Férias — status atualizado', item.colaboradorNome + ' · ' + feriasStatusLabel(status));
+      loadFerias(true);
+    }).catch(function (error) { toast('Não foi possível atualizar', error.message, 'error'); });
+  }
+  function deleteFerias(id) {
+    var item = (feriasState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este registro de férias de ' + item.colaboradorNome + '?')) return;
+    apiRequest('/api/ferias/' + id, { method: 'DELETE' }).then(function () {
+      toast('Registro excluído', item.colaboradorNome);
+      loadFerias(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderFeriasList() {
+    var client = currentClient(), ui = feriasUi();
+    if (!client) return pageHeading('Férias', 'Selecione um cliente no topo da página para gerenciar as férias.', '');
+    var items = (feriasState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      return true;
+    });
+    var rows = items.map(function (item) {
+      var actions = '';
+      if (item.status === 'programada') actions += '<button class="row-button" data-action="ferias-status" data-id="' + item.id + '" data-status="aprovada" title="Aprovar">✓</button>';
+      if (item.status === 'aprovada') actions += '<button class="row-button" data-action="ferias-status" data-id="' + item.id + '" data-status="em_gozo" title="Iniciar gozo">▶</button>';
+      if (item.status === 'em_gozo') actions += '<button class="row-button" data-action="ferias-status" data-id="' + item.id + '" data-status="concluida" title="Concluir">✔</button>';
+      if (item.status !== 'concluida' && item.status !== 'cancelada') actions += '<button class="row-button" data-action="ferias-status" data-id="' + item.id + '" data-status="cancelada" title="Cancelar">✕</button>';
+      actions += '<button class="row-button" data-action="ferias-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + brDate(item.periodoAquisitivoInicio) + ' – ' + brDate(item.periodoAquisitivoFim) + '</td>' +
+        '<td>' + item.diasGozo + ' dias' + (item.diasAbono ? ' + ' + item.diasAbono + ' abono' : '') + '</td>' +
+        '<td>' + brDate(item.periodoConcessivoFim) + '</td>' +
+        '<td>' + money(item.valorLiquido) + '</td>' +
+        '<td><span class="tag ' + feriasStatusTag(item.status) + '">' + feriasStatusLabel(item.status) + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Férias', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="ferias-new">+ Nova solicitação</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Colaborador</span><select id="ferias-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="ferias-status-filter"><option value="">Todos</option>' + ['programada', 'aprovada', 'em_gozo', 'concluida', 'cancelada'].map(function (status) { return '<option value="' + status + '"' + (ui.statusFilter === status ? ' selected' : '') + '>' + feriasStatusLabel(status) + '</option>'; }).join('') + '</select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Período aquisitivo</th><th>Dias</th><th>Limite p/ gozo</th><th>Líquido</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty-state"><h3>Nenhum registro de férias</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderFerias() { return feriasUi().view === 'form' ? renderFeriasForm() : renderFeriasList(); }
+
+  var afastamentosState = { loadedForClient: null, loading: false, items: [] };
+  function afastamentosUi() {
+    if (!state.afastamentosUi) state.afastamentosUi = { view: 'list', colaboradorFilter: '', statusFilter: '', formSeed: null };
+    return state.afastamentosUi;
+  }
+  function loadAfastamentos(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && afastamentosState.loadedForClient === client.id) return Promise.resolve();
+    afastamentosState.loading = true;
+    return apiRequest('/api/afastamentos?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      afastamentosState.items = payload.items || [];
+      afastamentosState.loadedForClient = client.id;
+      afastamentosState.loading = false;
+      if (state.route === 'afastamentos') route();
+    }).catch(function (error) { afastamentosState.loading = false; toast('Não foi possível carregar os afastamentos', error.message, 'error'); });
+  }
+  function afastamentoTipoLabel(tipo) {
+    return ({ doenca: 'Doença', acidente_trabalho: 'Acidente de trabalho', licenca_maternidade: 'Licença-maternidade', licenca_paternidade: 'Licença-paternidade', licenca_nao_remunerada: 'Licença não remunerada', outro: 'Outro' })[tipo] || tipo;
+  }
+  function openAfastamentoForm() {
+    afastamentosUi().view = 'form';
+    afastamentosUi().formSeed = { colaboradorId: '', tipo: 'doenca', dataInicio: '', dataFim: '', documentoReferencia: '', motivo: '' };
+    route();
+  }
+  function closeAfastamentoForm() { afastamentosUi().view = 'list'; afastamentosUi().formSeed = null; route(); }
+  function renderAfastamentoForm() {
+    var seed = afastamentosUi().formSeed || {};
+    var tipos = ['doenca', 'acidente_trabalho', 'licenca_maternidade', 'licenca_paternidade', 'licenca_nao_remunerada', 'outro'];
+    return [
+      pageHeading('Novo Afastamento', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="afastamento-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados do afastamento</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="afast-colaboradorId">' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Tipo</span><select id="afast-tipo">' + tipos.map(function (tipo) { return '<option value="' + tipo + '"' + (seed.tipo === tipo ? ' selected' : '') + '>' + afastamentoTipoLabel(tipo) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Data de início</span><input id="afast-dataInicio" type="date" value="' + esc(seed.dataInicio) + '"></label>' +
+        '<label class="field"><span>Data de fim (deixe em branco se em andamento)</span><input id="afast-dataFim" type="date" value="' + esc(seed.dataFim) + '"></label>' +
+        '<label class="field"><span>Documento de referência</span><input id="afast-documentoReferencia" type="text" value="' + esc(seed.documentoReferencia) + '" placeholder="Ex.: nº do atestado"></label>' +
+        '<label class="field field--full"><span>Motivo / observações</span><input id="afast-motivo" type="text" value="' + esc(seed.motivo) + '"></label>' +
+      '</div></div></section>',
+      '<div class="warning-banner hr-calc-warning"><span>!</span><div>Por segurança e LGPD, este cadastro não armazena CID nem laudo médico — apenas o tipo geral do afastamento e um documento de referência para consulta externa quando necessário.</div></div>',
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="afastamento-cancel">Cancelar</button><button class="primary-button" data-action="afastamento-save">💾 Registrar afastamento</button></div>'
+    ].join('');
+  }
+  function submitAfastamentoForm() {
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', '', 'error'); return; }
+    var colaboradorId = $('#afast-colaboradorId') ? $('#afast-colaboradorId').value : '';
+    if (!colaboradorId) { toast('Selecione um colaborador', '', 'error'); return; }
+    var dataInicio = $('#afast-dataInicio') ? $('#afast-dataInicio').value : '';
+    if (!dataInicio) { toast('Informe a data de início', '', 'error'); return; }
+    var payload = {
+      colaboradorId: colaboradorId, tipo: $('#afast-tipo').value, dataInicio: dataInicio,
+      dataFim: $('#afast-dataFim').value, documentoReferencia: $('#afast-documentoReferencia').value, motivo: $('#afast-motivo').value
+    };
+    apiRequest('/api/afastamentos', { method: 'POST', body: JSON.stringify(payload) }).then(function (result) {
+      toast('Afastamento registrado', result.item.colaboradorNome);
+      audit('Afastamento registrado', result.item.colaboradorNome + ' · ' + afastamentoTipoLabel(result.item.tipo));
+      closeAfastamentoForm();
+      loadAfastamentos(true);
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function encerrarAfastamento(id) {
+    var item = (afastamentosState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var dataFim = window.prompt('Informe a data de encerramento do afastamento (AAAA-MM-DD):', todayISO());
+    if (!dataFim) return;
+    var payload = { colaboradorId: item.colaboradorId, tipo: item.tipo, dataInicio: item.dataInicio, dataFim: dataFim, documentoReferencia: item.documentoReferencia, motivo: item.motivo };
+    apiRequest('/api/afastamentos/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Afastamento encerrado', item.colaboradorNome);
+      audit('Afastamento encerrado', item.colaboradorNome);
+      loadAfastamentos(true);
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível encerrar', error.message, 'error'); });
+  }
+  function deleteAfastamento(id) {
+    var item = (afastamentosState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este registro de afastamento de ' + item.colaboradorNome + '?')) return;
+    apiRequest('/api/afastamentos/' + id, { method: 'DELETE' }).then(function () {
+      toast('Registro excluído', item.colaboradorNome);
+      loadAfastamentos(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderAfastamentosList() {
+    var client = currentClient(), ui = afastamentosUi();
+    if (!client) return pageHeading('Afastamentos', 'Selecione um cliente no topo da página para gerenciar os afastamentos.', '');
+    var items = (afastamentosState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      return true;
+    });
+    var rows = items.map(function (item) {
+      var actions = item.status === 'em_andamento' ? '<button class="row-button" data-action="afastamento-encerrar" data-id="' + item.id + '" title="Encerrar">✔</button>' : '';
+      actions += '<button class="row-button" data-action="afastamento-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + esc(afastamentoTipoLabel(item.tipo)) + '</td>' +
+        '<td>' + brDate(item.dataInicio) + '</td>' +
+        '<td>' + (item.dataFim ? brDate(item.dataFim) : '—') + '</td>' +
+        '<td><span class="tag ' + (item.status === 'em_andamento' ? 'tag--warning' : 'tag--success') + '">' + (item.status === 'em_andamento' ? 'Em andamento' : 'Encerrado') + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Afastamentos', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="afastamento-new">+ Novo afastamento</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Colaborador</span><select id="afastamento-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="afastamento-status-filter"><option value="">Todos</option><option value="em_andamento"' + (ui.statusFilter === 'em_andamento' ? ' selected' : '') + '>Em andamento</option><option value="encerrado"' + (ui.statusFilter === 'encerrado' ? ' selected' : '') + '>Encerrado</option></select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Tipo</th><th>Início</th><th>Fim</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty-state"><h3>Nenhum afastamento registrado</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderAfastamentos() { return afastamentosUi().view === 'form' ? renderAfastamentoForm() : renderAfastamentosList(); }
+
   var ALIMONY_INSS_2026 = [
     { limit: 1621.00, rate: .075 },
     { limit: 2902.84, rate: .09 },
@@ -9951,6 +10232,16 @@
     else if (action === 'colab-delete') deleteColaborador(actionEl.getAttribute('data-id'));
     else if (action === 'colab-dep-add') addColabDependente();
     else if (action === 'colab-dep-remove') removeColabDependente(Number(actionEl.getAttribute('data-index')));
+    else if (action === 'ferias-new') openFeriasForm();
+    else if (action === 'ferias-cancel') closeFeriasForm();
+    else if (action === 'ferias-save') submitFeriasForm();
+    else if (action === 'ferias-status') setFeriasStatus(actionEl.getAttribute('data-id'), actionEl.getAttribute('data-status'));
+    else if (action === 'ferias-delete') deleteFerias(actionEl.getAttribute('data-id'));
+    else if (action === 'afastamento-new') openAfastamentoForm();
+    else if (action === 'afastamento-cancel') closeAfastamentoForm();
+    else if (action === 'afastamento-save') submitAfastamentoForm();
+    else if (action === 'afastamento-encerrar') encerrarAfastamento(actionEl.getAttribute('data-id'));
+    else if (action === 'afastamento-delete') deleteAfastamento(actionEl.getAttribute('data-id'));
     else if (action === 'cest-export-json') exportCestResults('json');
     else if (action === 'cest-export-csv') exportCestResults('csv');
     else if (action === 'cest-print') window.print();
@@ -10277,6 +10568,10 @@
       colaboradoresUi().query = event.target.value;
       window.clearTimeout(state.colabQueryTimer);
       state.colabQueryTimer = window.setTimeout(function () { route(); }, 200);
+    } else if (event.target.matches('[data-ferias-input]')) {
+      feriasCaptureFormState();
+      window.clearTimeout(state.feriasFormTimer);
+      state.feriasFormTimer = window.setTimeout(function () { route(); }, 200);
     } else if (event.target.matches('[data-rental-input]')) {
       updateRentalSimulator();
     } else if (event.target.matches('[data-trc-input]')) {
@@ -10353,6 +10648,11 @@
     else if (['portfolio-responsible', 'portfolio-regime', 'portfolio-stage', 'portfolio-status'].indexOf(event.target.id) >= 0) filterPortfolioDashboard();
     else if (event.target.id === 'portfolio-progress-stage') { var selectedPortfolioStage = portfolioStage(event.target.value); if ($('#portfolio-progress-value')) $('#portfolio-progress-value').value = selectedPortfolioStage.progress; }
     else if (event.target.id === 'colab-status-filter') { colaboradoresUi().statusFilter = event.target.value; route(); }
+    else if (event.target.matches('[data-ferias-input]')) { feriasCaptureFormState(); route(); }
+    else if (event.target.id === 'ferias-colaborador-filter') { feriasUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'ferias-status-filter') { feriasUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'afastamento-colaborador-filter') { afastamentosUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'afastamento-status-filter') { afastamentosUi().statusFilter = event.target.value; route(); }
     else if (event.target.matches('[data-kanban-move]')) moveKanbanCard(event.target.getAttribute('data-id'), event.target.value);
     else if (['cest-filter-uf', 'cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
     else if (event.target.matches('[data-hr-calc-input]')) updateHrCalc();
