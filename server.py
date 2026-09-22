@@ -165,7 +165,7 @@ ERP_MODULES = {
     "tab_inscricao_estadual": "Inscrição Estadual",
     "tab_cnae_servicos": "CNAE × Serviços",
     "tab_ncm_tipi": "NCM / TIPI",
-    "tab_consulta_cest": "Consulta CEST",
+    "tab_consulta_cest": "ICMS Substituição Tributária (CEST)",
     "tab_cfop": "CFOP",
     "tab_icms_difal": "ICMS / DIFAL",
     "tab_aliquotas_beneficios": "Alíquotas e Benefícios",

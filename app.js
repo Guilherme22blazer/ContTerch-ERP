@@ -292,7 +292,7 @@
     { route: 'inscricao-estadual', label: 'Inscrição Estadual', icon: '▤', desc: 'Portais estaduais e consulta SINTEGRA' },
     { route: 'cnae-servicos', label: 'CNAE × Serviços', icon: '🏷', desc: 'Correlação de atividades e serviços' },
     { route: 'ncm-tipi', label: 'NCM / TIPI', icon: '▦', desc: 'Pesquisa de classificação fiscal e alíquotas' },
-    { route: 'consulta-cest', label: 'Consulta CEST', icon: '▦', desc: 'Pesquisa de CEST por NCM, código, mercadoria e segmento' },
+    { route: 'consulta-cest', label: 'ICMS Substituição Tributária (CEST)', icon: '▦', desc: 'Lista de mercadorias sujeitas a ST por Estado de referência, NCM, CEST, palavra-chave ou segmento' },
     { route: 'cfop', label: 'CFOP', icon: '▧', desc: 'Consulta de códigos fiscais de operações' },
     { route: 'icms-difal', label: 'ICMS / DIFAL', icon: '∑', desc: 'Matriz estadual e calculadora de diferencial' },
     { route: 'aliquotas-beneficios', label: 'Alíquotas Internas e Benefícios Fiscais', icon: '%', desc: 'Consulta de ICMS, FCP, operações interestaduais e benefícios por UF' },
@@ -4027,11 +4027,12 @@
     return String(value || '').replace(/\D/g, '');
   }
   function cestSavedFilters() {
-    return Object.assign({ ncm: '', cest: '', keyword: '', segment: '', noNcm: false, doorToDoor: false }, state.settings.cestFilters || {});
+    return Object.assign({ uf: '', ncm: '', cest: '', keyword: '', segment: '', noNcm: false, doorToDoor: false }, state.settings.cestFilters || {});
   }
   function cestFiltersFromView() {
     var fallback = cestSavedFilters();
     return {
+      uf: $('#cest-filter-uf') ? $('#cest-filter-uf').value : fallback.uf,
       ncm: $('#cest-filter-ncm') ? $('#cest-filter-ncm').value : fallback.ncm,
       cest: $('#cest-filter-code') ? $('#cest-filter-code').value : fallback.cest,
       keyword: $('#cest-filter-keyword') ? $('#cest-filter-keyword').value : fallback.keyword,
@@ -4041,6 +4042,8 @@
     };
   }
   function cestFilteredRows(filters) {
+    // uf é só referência: a base é nacional (Convênio 142/2018) e não indica,
+    // por si só, quais segmentos cada UF internalizou — por isso não filtra linhas.
     var ncm = cestDigits(filters.ncm);
     var code = cestDigits(filters.cest);
     var keyword = cestNormalize(filters.keyword);
@@ -4065,9 +4068,10 @@
     var doorCount = (window.CEST_CATALOG || []).filter(function (item) { return item.doorToDoor; }).length;
     var noNcmCount = (window.CEST_CATALOG || []).filter(function (item) { return item.noNcm; }).length;
     return [
-      pageHeading('Código Especificador da Substituição Tributária — CEST', 'Pesquise a base dos anexos do Convênio ICMS 142/2018 por NCM, CEST, palavra-chave ou segmento.', '<div class="page-actions cest-page-actions"><button class="secondary-button" data-action="cest-export-json">↧ JSON</button><button class="secondary-button" data-action="cest-export-csv">▦ CSV</button><button class="secondary-button" data-action="cest-print">▣ PDF / imprimir</button></div>'),
-      '<div class="info-banner cest-law-banner"><span>i</span><div><strong>Base oficial organizada para consulta rápida.</strong> O enquadramento exige correspondência simultânea entre a descrição da mercadoria e a classificação NCM/CEST. A existência do código no Convênio não confirma, sozinha, a aplicação de ICMS-ST em determinada UF.</div><span class="tag tag--success">Consulta local instantânea</span></div>',
-      '<section class="card cest-search-card"><header class="card-header"><div><h2>Consultar mercadoria</h2><small>Preencha um ou mais campos; os resultados são atualizados durante a digitação</small></div><span class="tag tag--info">Convênio ICMS 142/2018</span></header><div class="card-body"><form id="cest-search-form" class="cest-search-grid"><label class="field"><span>Código NCM</span><input id="cest-filter-ncm" inputmode="numeric" value="' + esc(filters.ncm) + '" placeholder="Ex.: 84212300"></label><label class="field"><span>Código CEST</span><input id="cest-filter-code" inputmode="numeric" value="' + esc(filters.cest) + '" placeholder="Ex.: 01.037.00"></label><label class="field cest-keyword-field"><span>Palavra-chave</span><input id="cest-filter-keyword" inputmode="search" value="' + esc(filters.keyword) + '" placeholder="Ex.: filtro de óleo, chocolate, pneu"></label><label class="field"><span>Segmento</span><select id="cest-filter-segment">' + cestSegmentOptions(filters.segment) + '</select></label><div class="cest-search-checks"><label class="check"><input id="cest-filter-no-ncm" type="checkbox"' + (filters.noNcm ? ' checked' : '') + '> Mercadorias sem classificação NCM</label><label class="check"><input id="cest-filter-door" type="checkbox"' + (filters.doorToDoor ? ' checked' : '') + '> Venda pelo sistema porta a porta</label></div><div class="cest-search-actions"><button class="secondary-button" type="button" data-action="cest-clear">Limpar</button><button class="primary-button" type="submit">⌕ Buscar na base</button></div></form></div></section>',
+      pageHeading('ICMS Substituição Tributária — Mercadorias Sujeitas a ST (CEST)', 'Pesquise a base oficial dos anexos do Convênio ICMS 142/2018 por Estado de referência, NCM, CEST, palavra-chave ou segmento.', '<div class="page-actions cest-page-actions"><button class="secondary-button" data-action="cest-export-json">↧ JSON</button><button class="secondary-button" data-action="cest-export-csv">▦ CSV</button><button class="secondary-button" data-action="cest-print">▣ PDF / imprimir</button></div>'),
+      '<section class="card cest-search-card"><header class="card-header"><div><h2>Lista ST — mercadorias sujeitas a substituição tributária</h2><small>Preencha um ou mais campos; os resultados são atualizados durante a digitação</small></div><span class="tag tag--info">Convênio ICMS 142/2018</span></header><div class="card-body"><form id="cest-search-form" class="cest-search-grid"><label class="field cest-uf-field"><span>Estado (UF) de referência — opcional</span><select id="cest-filter-uf"><option value="">Selecione um Estado (opcional)</option>' + icmsStateOptions(filters.uf) + '</select></label><label class="field"><span>Código NCM</span><input id="cest-filter-ncm" inputmode="numeric" value="' + esc(filters.ncm) + '" placeholder="Ex.: 84212300"></label><label class="field"><span>Código CEST</span><input id="cest-filter-code" inputmode="numeric" value="' + esc(filters.cest) + '" placeholder="Ex.: 01.037.00"></label><label class="field cest-keyword-field"><span>Palavra-chave</span><input id="cest-filter-keyword" inputmode="search" value="' + esc(filters.keyword) + '" placeholder="Ex.: filtro de óleo, chocolate, pneu"></label><label class="field"><span>Segmento</span><select id="cest-filter-segment">' + cestSegmentOptions(filters.segment) + '</select></label><div class="cest-search-checks"><label class="check"><input id="cest-filter-no-ncm" type="checkbox"' + (filters.noNcm ? ' checked' : '') + '> Exibir apenas mercadorias sem classificação fiscal (NCM)</label><label class="check"><input id="cest-filter-door" type="checkbox"' + (filters.doorToDoor ? ' checked' : '') + '> Exibir mercadorias aptas à venda pelo sistema porta a porta</label></div><div class="cest-search-actions"><button class="secondary-button" type="button" data-action="cest-clear">Limpar</button><button class="primary-button" type="submit">⌕ Buscar na base</button></div></form></div></section>',
+      '<div class="warning-banner cest-law-banner" id="cest-uf-note"></div>',
+      '<div class="info-banner cest-law-banner"><span>i</span><div><strong>Base oficial organizada para consulta rápida.</strong> O enquadramento exige correspondência simultânea entre a descrição da mercadoria e a classificação NCM/CEST. A existência do código no Convênio não confirma, sozinha, a aplicação de ICMS-ST em determinada UF, pois cada Estado pode restringir, ampliar ou dispensar o regime por protocolo ou convênio próprio.</div><span class="tag tag--success">Consulta local instantânea</span></div>',
       '<section class="cest-metrics"><article><span>▦</span><div><strong>' + Number(meta.recordCount || 0).toLocaleString('pt-BR') + '</strong><small>registros oficiais</small></div></article><article><span>▤</span><div><strong>' + Number(meta.segmentCount || 0) + '</strong><small>segmentos CEST</small></div></article><article><span>⌕</span><div><strong id="cest-metric-matches">—</strong><small>resultados encontrados</small></div></article><article><span>✓</span><div><strong>' + esc(String(meta.reviewedAt || '2026-08-20').split('-').reverse().join('/')) + '</strong><small>última conferência</small></div></article></section>',
       '<section class="card cest-results-card"><header class="card-header"><div><h2>Resultado da consulta</h2><small id="cest-result-status">Preparando a base...</small></div><span class="tag tag--success" id="cest-filter-status">Base completa</span></header><div class="card-body"><div class="table-wrap cest-table-wrap"><table class="cest-table"><thead><tr><th>CEST</th><th>NCM/SH</th><th>Descrição da mercadoria</th><th>Segmento</th><th>Anexo</th><th></th></tr></thead><tbody id="cest-results-body"><tr><td colspan="6">Carregando registros...</td></tr></tbody></table></div><div class="cest-pagination" id="cest-pagination"></div><p class="cest-result-note">A pesquisa considera a grafia informada nos anexos oficiais. Para concluir o enquadramento, confira também a legislação da UF de origem e destino, protocolos, convênios aplicáveis e eventuais regimes especiais.</p></div></section>',
       '<section class="card cest-guide"><header class="card-header"><div><h2>Como interpretar o resultado</h2><small>CEST e NCM exercem funções diferentes</small></div></header><div class="card-body"><article><span>01</span><div><b>Confira a NCM</b><p>Valide a classificação fiscal atual da mercadoria no Sistema Classif da Receita Federal.</p></div></article><article><span>02</span><div><b>Compare a descrição</b><p>O enquadramento não deve ser feito apenas pelo número: a descrição legal precisa abranger o produto.</p></div></article><article><span>03</span><div><b>Consulte a legislação estadual</b><p>O Convênio relaciona bens passíveis de ST; cada UF define a aplicação em suas operações.</p></div></article></div></section>',
@@ -4091,14 +4095,20 @@
     var end = Math.min(start + pageSize, rows.length);
     $('#cest-result-status').textContent = rows.length ? 'Exibindo ' + (start + 1) + '–' + end + ' de ' + rows.length.toLocaleString('pt-BR') + ' resultado(s)' : 'Nenhum resultado para os filtros informados';
     $('#cest-metric-matches').textContent = rows.length.toLocaleString('pt-BR');
-    var activeCount = [filters.ncm, filters.cest, filters.keyword, filters.segment, filters.noNcm, filters.doorToDoor].filter(Boolean).length;
+    var activeCount = [filters.uf, filters.ncm, filters.cest, filters.keyword, filters.segment, filters.noNcm, filters.doorToDoor].filter(Boolean).length;
     $('#cest-filter-status').textContent = activeCount ? activeCount + ' filtro(s) ativo(s)' : 'Base completa';
+    if ($('#cest-uf-note')) {
+      var ufInfo = filters.uf ? ICMS_STATES.find(function (item) { return item.uf === filters.uf; }) : null;
+      $('#cest-uf-note').innerHTML = filters.uf ? ('<span>!</span><div><strong>Confira a legislação de ' + esc(ufInfo ? ufInfo.name : filters.uf) + '.</strong> Esta lista é a base nacional do Convênio ICMS 142/2018 — algumas Unidades Federadas estabelecem a aplicação do regime de substituição tributária ou de antecipação do ICMS para mercadorias listadas ou não nos Anexos do Convênio, por meio de protocolo ou legislação própria. O resultado acima não substitui a consulta ao RICMS de ' + esc(filters.uf) + '.</div>') : '';
+      $('#cest-uf-note').style.display = filters.uf ? '' : 'none';
+    }
     $('#cest-pagination').innerHTML = '<span>Página <b>' + state.cestPage + '</b> de ' + pages + '</span><div><button class="secondary-button" data-action="cest-page" data-page="' + (state.cestPage - 1) + '"' + (state.cestPage <= 1 ? ' disabled' : '') + '>← Anterior</button><button class="secondary-button" data-action="cest-page" data-page="' + (state.cestPage + 1) + '"' + (state.cestPage >= pages ? ' disabled' : '') + '>Próxima →</button></div>';
     state.settings.cestFilters = filters;
     storageSet(KEYS.settings, state.settings);
   }
   function clearCestFilters() {
     ['cest-filter-ncm', 'cest-filter-code', 'cest-filter-keyword'].forEach(function (id) { if ($('#' + id)) $('#' + id).value = ''; });
+    if ($('#cest-filter-uf')) $('#cest-filter-uf').value = '';
     if ($('#cest-filter-segment')) $('#cest-filter-segment').value = '';
     if ($('#cest-filter-no-ncm')) $('#cest-filter-no-ncm').checked = false;
     if ($('#cest-filter-door')) $('#cest-filter-door').checked = false;
@@ -9601,7 +9611,7 @@
     else if (['portfolio-responsible', 'portfolio-regime', 'portfolio-stage', 'portfolio-status'].indexOf(event.target.id) >= 0) filterPortfolioDashboard();
     else if (event.target.id === 'portfolio-progress-stage') { var selectedPortfolioStage = portfolioStage(event.target.value); if ($('#portfolio-progress-value')) $('#portfolio-progress-value').value = selectedPortfolioStage.progress; }
     else if (event.target.matches('[data-kanban-move]')) moveKanbanCard(event.target.getAttribute('data-id'), event.target.value);
-    else if (['cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
+    else if (['cest-filter-uf', 'cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
     else if (event.target.id === 'rental-year') {
       var rates = rentalYearRates(event.target.value);
       if (rates) { if ($('#rental-ibs-rate')) $('#rental-ibs-rate').value = rates.ibs; if ($('#rental-cbs-rate')) $('#rental-cbs-rate').value = rates.cbs; }
