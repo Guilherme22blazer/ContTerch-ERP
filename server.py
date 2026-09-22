@@ -188,6 +188,7 @@ ERP_MODULES = {
     "tab_pro_labore": "Pró-Labore",
     "tab_irrf_aliquota_efetiva": "Alíquota Efetiva do IRRF",
     "tab_pensao_alimenticia": "Pensão Alimentícia",
+    "tab_central_calculadoras_rh": "Central de Calculadoras RH & DP",
     "tab_kanban": "Quadro Kanban",
     "tab_central_formularios": "Central de Formulários",
     "tab_modelos_contratos": "Modelos e Contratos",
@@ -211,6 +212,7 @@ CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab
 TRABALHISTA_TAB_MODULES = {
     "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
     "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",
+    "tab_central_calculadoras_rh",
 }
 OUTROS_TAB_MODULES = {
     "tab_kanban", "tab_central_formularios", "tab_modelos_contratos", "tab_clientes",

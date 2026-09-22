@@ -794,3 +794,22 @@
 .support-admin-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px;margin-bottom:16px}
 tr.row-clickable{cursor:pointer}
 tr.row-clickable:hover{background:#f0f4f9}
+
+/* Central de Calculadoras RH & DP */
+.hr-calc-law-banner{margin-bottom:14px}
+.hr-calc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:11px}
+.hr-calc-card{display:flex;flex-direction:column;gap:9px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;box-shadow:var(--shadow);cursor:pointer;text-align:left;transition:.15s}
+.hr-calc-card:hover{border-color:#7290b9;box-shadow:0 4px 14px rgba(0,40,90,.09)}
+.hr-calc-card:focus-visible{outline:2px solid #0046a8;outline-offset:2px}
+.hr-calc-icon{width:36px;height:36px;border-radius:10px;background:#e6efff;color:#0046a8;display:grid;place-items:center;font-size:16px;font-weight:900}
+.hr-calc-card b{display:block;font-size:11px;margin-bottom:3px}
+.hr-calc-card p{margin:0;color:var(--muted);font-size:9px;line-height:1.45}
+.hr-calc-form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.hr-calc-form-grid .field--full{grid-column:1/-1}
+.hr-calc-result-hero{display:flex;gap:16px;flex-wrap:wrap;padding:14px;margin-bottom:12px;border-radius:10px;background:linear-gradient(125deg,#001a3f,#003582);color:#fff}
+.hr-calc-result-hero>div small{display:block;color:#afc5e3;font-size:8px;text-transform:uppercase;letter-spacing:.04em}
+.hr-calc-result-hero>div strong{display:block;font-size:19px;margin-top:3px}
+.hr-calc-memory-card table td:nth-child(2){color:var(--muted);font-size:9px}
+.hr-calc-total-row td{border-top:2px solid var(--line);font-weight:800;background:#f7f9fb}
+.hr-calc-warning{display:flex;gap:9px;align-items:flex-start;margin-top:12px}
+@media(max-width:700px){.hr-calc-grid,.hr-calc-form-grid{grid-template-columns:1fr}.hr-calc-result-hero{flex-direction:column;gap:10px}}

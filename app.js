@@ -267,6 +267,7 @@
     { route: 'pro-labore', label: 'Pró-Labore', icon: '♙', desc: 'Simulação de INSS e IRRF' },
     { route: 'irrf-aliquota-efetiva', label: 'Alíquota Efetiva do IRRF', icon: '%', desc: 'Simulação mensal do IRRF e da alíquota efetiva em 2026' },
     { route: 'pensao-alimenticia', label: 'Pensão Alimentícia', icon: '◫', desc: 'Percentual judicial sobre rendimento bruto, líquido ou valor fixo' },
+    { route: 'central-calculadoras-rh', label: 'Central de Calculadoras RH & DP', icon: '🧮', desc: 'Salário líquido, INSS, FGTS, férias, 13º, rescisão, encargos e outras calculadoras trabalhistas com memória de cálculo' },
     { route: 'analise-balanco', label: 'Análise de Balanço', icon: '▦', desc: 'Liquidez, endividamento, rentabilidade e diagnóstico patrimonial' },
     { route: 'lancamentos-contabeis', label: 'Lançamentos Contábeis', icon: '▤', desc: 'Índice alfabético, busca, favoritos e modelos de débito e crédito' },
     { route: 'acompanhamento-contabil', label: 'Acompanhamento Contábil', icon: '◫', desc: 'Painel mensal do status contábil (documentos, escrituração, apuração, fechamento e obrigações) de cada cliente' },
@@ -5305,6 +5306,7 @@
     else if (state.route === 'pro-labore') main.innerHTML = renderProLabore();
     else if (state.route === 'irrf-aliquota-efetiva') main.innerHTML = renderIrrfEffectiveRate();
     else if (state.route === 'pensao-alimenticia') main.innerHTML = renderAlimonyCalculator();
+    else if (state.route === 'central-calculadoras-rh') main.innerHTML = renderHrCalculatorsCenter();
     else if (state.route === 'analise-balanco') main.innerHTML = renderBalanceAnalysis();
     else if (state.route === 'lancamentos-contabeis') main.innerHTML = renderAccountingEntries();
     else if (state.route === 'acompanhamento-contabil') main.innerHTML = renderAcompanhamentoContabil();
@@ -7159,6 +7161,457 @@
     if (!data.gross) { toast('Relatório não gerado', 'Informe o rendimento tributável.', 'error'); return; }
     downloadFile('aliquota-efetiva-irrf-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.irrf-aliquota-efetiva.v1', generatedAt: nowISO(), legalReview: '20/08/2026', parameters: IRRF_MONTHLY_2026, data: data, result: result, sources: ['Receita Federal — Tributação 2026', 'Lei 15.191/2025', 'Lei 15.270/2025', 'Lei 9.430/1996, art. 67'] }, null, 2));
     audit('Alíquota efetiva do IRRF exportada', money(data.gross) + ' · JSON'); toast('Relatório exportado', 'A memória completa e os parâmetros legais foram salvos em JSON.');
+  }
+
+  var HR_CALC_LEGAL_2026 = {
+    competencia: '2026', vigenciaInicio: '2026-01-01',
+    salarioMinimo: 1621, fgtsRate: .08, fgtsMultaRate: .40,
+    inssBands: [{ limit: 1621.00, rate: .075 }, { limit: 2902.84, rate: .09 }, { limit: 4354.27, rate: .12 }, { limit: 8475.55, rate: .14 }],
+    insalubridadeRates: { minimo: .10, medio: .20, maximo: .40 },
+    periculosidadeRate: .30, valeTransporteMaxRate: .06,
+    avisoPrevioBaseDias: 30, avisoPrevioDiasPorAno: 3, avisoPrevioMaxDiasAdicionais: 60,
+    plrAnnualBrackets: [
+      { limit: 8214.40, rate: 0, deduction: 0, label: 'Até R$ 8.214,40' },
+      { limit: 9922.28, rate: .075, deduction: 616.08, label: 'De R$ 8.214,41 até R$ 9.922,28' },
+      { limit: 13167.00, rate: .15, deduction: 1360.25, label: 'De R$ 9.922,29 até R$ 13.167,00' },
+      { limit: 16380.38, rate: .225, deduction: 2347.78, label: 'De R$ 13.167,01 até R$ 16.380,38' },
+      { limit: Infinity, rate: .275, deduction: 3166.80, label: 'Acima de R$ 16.380,38' }
+    ],
+    fonte: 'INSS, Receita Federal (Lei nº 15.191/2025) e CLT — parâmetros de referência para 2026',
+    reviewedAt: '22/09/2026'
+  };
+  function hrInssProgressive2026(gross) {
+    var teto = HR_CALC_LEGAL_2026.inssBands[HR_CALC_LEGAL_2026.inssBands.length - 1].limit;
+    var base = Math.max(0, Math.min(Number(gross || 0), teto)), previous = 0, total = 0, rows = [];
+    HR_CALC_LEGAL_2026.inssBands.forEach(function (band) {
+      var slice = Math.max(0, Math.min(base, band.limit) - previous);
+      if (slice > 0) { var value = slice * band.rate; rows.push({ from: previous, to: previous + slice, rate: band.rate, base: slice, value: value }); total += value; }
+      previous = band.limit;
+    });
+    return { value: total, rows: rows, base: base, teto: teto, tetoApplied: Number(gross || 0) > teto };
+  }
+  function hrCalcMemoryRows(lines) {
+    return (lines || []).map(function (line) {
+      return '<tr' + (line.total ? ' class="hr-calc-total-row"' : '') + '><td><b>' + esc(line.label) + '</b></td><td>' + (line.formula || '') + '</td><td>' + money(line.value) + '</td></tr>';
+    }).join('');
+  }
+  function hrCalcUi() {
+    if (!state.hrCalcUi) state.hrCalcUi = { calc: null, values: {} };
+    return state.hrCalcUi;
+  }
+  function openHrCalc(id) { hrCalcUi().calc = id; route(); var main = $('.app-main') || $('main'); if (main) main.scrollTop = 0; }
+  function closeHrCalc() { hrCalcUi().calc = null; route(); }
+  function hrCalcReadInputs() {
+    var out = {};
+    $$('[data-hr-calc-input]').forEach(function (el) {
+      if (!el.id) return;
+      out[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+    });
+    return out;
+  }
+  function hrCalcData(id) {
+    var spec = HR_CALC_SPECS[id];
+    return Object.assign({}, spec && spec.defaults ? spec.defaults() : {}, hrCalcUi().values[id] || {});
+  }
+  function hrCalcNum(data, id, fallback) { return data[id] === undefined || data[id] === '' ? Number(fallback || 0) : parseLocaleNumber(data[id]); }
+
+  var HR_CALC_CARDS = [
+    { id: 'salario-liquido', title: 'Salário Líquido', desc: 'Bruto menos INSS, IRRF e outros descontos.', icon: '§', kind: 'calc' },
+    { id: 'inss', title: 'INSS', desc: 'Contribuição progressiva do empregado sobre o salário.', icon: '%', kind: 'calc' },
+    { id: 'irrf', title: 'IRRF', desc: 'Imposto de renda retido na fonte, com dependentes e deduções.', icon: '%', kind: 'route', route: 'irrf-aliquota-efetiva' },
+    { id: 'fgts', title: 'FGTS', desc: 'Depósito mensal de 8% e estimativa sobre férias e 13º.', icon: '⛁', kind: 'calc' },
+    { id: 'hora-extra', title: 'Hora Extra', desc: 'Cálculo de horas extras e reflexos no DSR.', icon: '⏱', kind: 'route', route: 'horas-extras-noturno' },
+    { id: 'dsr', title: 'DSR sobre Variáveis', desc: 'Repouso semanal remunerado sobre horas extras e comissões.', icon: '◷', kind: 'calc' },
+    { id: 'adicional-noturno', title: 'Adicional Noturno', desc: 'Hora noturna reduzida e adicional sobre o trabalho noturno.', icon: '☾', kind: 'route', route: 'horas-extras-noturno' },
+    { id: 'insalubridade', title: 'Insalubridade', desc: 'Grau mínimo, médio ou máximo sobre a base legal.', icon: '⚠', kind: 'calc' },
+    { id: 'periculosidade', title: 'Periculosidade', desc: '30% sobre o salário-base, conforme CLT art. 193.', icon: '⚡', kind: 'calc' },
+    { id: 'ferias', title: 'Férias', desc: '30, 20 ou 15 dias, com 1/3 constitucional, INSS e IRRF.', icon: '☀', kind: 'calc' },
+    { id: 'abono-ferias', title: 'Abono de Férias', desc: 'Venda de até 1/3 do período de férias, isenta de INSS/IRRF.', icon: '⇄', kind: 'calc' },
+    { id: 'decimo-terceiro', title: '13º Salário', desc: '1ª e 2ª parcelas, avos, INSS e IRRF.', icon: '⑬', kind: 'calc' },
+    { id: 'rescisao', title: 'Rescisão', desc: 'Verbas rescisórias completas por motivo de desligamento.', icon: '⇥', kind: 'route', route: 'verbas-rescisorias' },
+    { id: 'aviso-previo', title: 'Aviso-Prévio', desc: 'Proporcional ao tempo de serviço, indenizado ou trabalhado.', icon: '◲', kind: 'calc' },
+    { id: 'salario-proporcional', title: 'Salário Proporcional', desc: 'Valor devido pelos dias efetivamente trabalhados no mês.', icon: '◫', kind: 'calc' },
+    { id: 'custo-funcionario', title: 'Custo do Funcionário', desc: 'Salário, encargos, provisões e benefícios — custo mensal total.', icon: '▤', kind: 'calc' },
+    { id: 'banco-horas', title: 'Banco de Horas', desc: 'Créditos, débitos e saldo em horas ou em valor.', icon: '▧', kind: 'calc' },
+    { id: 'vale-transporte', title: 'Vale-Transporte', desc: 'Desconto de até 6% do salário-base e custo da empresa.', icon: '🚌', kind: 'calc' },
+    { id: 'vale-refeicao', title: 'Vale-Refeição/Alimentação', desc: 'Valor por dia útil e participação do colaborador.', icon: '🍽', kind: 'calc' },
+    { id: 'pensao-alimenticia', title: 'Pensão Alimentícia', desc: 'Percentual ou valor fixo sobre o rendimento.', icon: '◫', kind: 'route', route: 'pensao-alimenticia' },
+    { id: 'comissoes', title: 'Comissões', desc: 'Comissão sobre vendas e reflexo de DSR sobre a comissão.', icon: '%', kind: 'calc' },
+    { id: 'plr', title: 'PLR', desc: 'Participação nos Lucros ou Resultados com tabela exclusiva de IRRF.', icon: '⚖', kind: 'calc' },
+    { id: 'afastamentos', title: 'Afastamentos', desc: 'Dias por conta da empresa e a partir de quando o INSS assume.', icon: '⛑', kind: 'calc' },
+    { id: 'provisao-ferias', title: 'Provisão de Férias', desc: 'Acúmulo mensal de férias + 1/3 por competência.', icon: '▥', kind: 'calc' },
+    { id: 'provisao-decimo', title: 'Provisão de 13º', desc: 'Acúmulo mensal do 13º salário por competência.', icon: '▥', kind: 'calc' },
+    { id: 'encargos', title: 'Encargos Trabalhistas', desc: 'INSS patronal, RAT/FAP, Sistema S e FGTS sobre a folha.', icon: '∑', kind: 'calc' },
+    { id: 'clt-comparativo', title: 'Comparação CLT × Outras Modalidades', desc: 'Simulação financeira entre CLT e outra modalidade de contratação.', icon: '⚖', kind: 'calc' }
+  ];
+
+  function hrCalcFieldNum(id, label, value, opts) {
+    opts = opts || {};
+    return '<label class="field' + (opts.full ? ' field--full' : '') + '"><span>' + esc(label) + '</span><div class="input-prefix"><b>' + (opts.prefix || 'R$') + '</b><input id="' + id + '" data-hr-calc-input type="number" min="0" step="' + (opts.step || '0.01') + '" inputmode="decimal" value="' + Number(value || 0) + '"></div>' + (opts.hint ? '<small>' + esc(opts.hint) + '</small>' : '') + '</label>';
+  }
+  function hrCalcFieldSelect(id, label, value, options, hint) {
+    return '<label class="field"><span>' + esc(label) + '</span><select id="' + id + '" data-hr-calc-input>' + options.map(function (opt) { return '<option value="' + opt.value + '"' + (String(opt.value) === String(value) ? ' selected' : '') + '>' + esc(opt.label) + '</option>'; }).join('') + '</select>' + (hint ? '<small>' + esc(hint) + '</small>' : '') + '</label>';
+  }
+
+  var HR_CALC_SPECS = {
+    'salario-liquido': {
+      defaults: function () { return { 'hr-sl-gross': 3000, 'hr-sl-dependents': 0, 'hr-sl-other': 0 }; },
+      form: function (d) { return hrCalcFieldNum('hr-sl-gross', 'Salário bruto', d['hr-sl-gross']) + hrCalcFieldNum('hr-sl-dependents', 'Dependentes (IRRF)', d['hr-sl-dependents'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-sl-other', 'Outros descontos', d['hr-sl-other']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-sl-gross', 0), dependents = hrCalcNum(d, 'hr-sl-dependents', 0), other = hrCalcNum(d, 'hr-sl-other', 0);
+        var inss = hrInssProgressive2026(gross);
+        var irrf = calculateIrrfEffective({ gross: gross, dependents: dependents, alimony: 0, otherDeductions: 0, officialSocialSecurity: inss.value, deductionMode: 'auto' });
+        var liquido = Math.max(0, gross - inss.value - irrf.irrf - other);
+        return { lines: [
+          { label: 'Salário bruto', formula: 'Valor informado', value: gross },
+          { label: 'INSS', formula: 'Tabela progressiva 2026 (faixas de 7,5% a 14%)', value: inss.value },
+          { label: 'IRRF', formula: irrf.method + ' · alíquota da faixa ' + number(irrf.bracket.rate * 100) + '%', value: irrf.irrf },
+          { label: 'Outros descontos', formula: 'Informado pelo usuário', value: other },
+          { label: 'Salário líquido', formula: 'Bruto − INSS − IRRF − outros descontos', value: liquido, total: true }
+        ], heroHtml: hrCalcHero('Salário líquido', liquido) };
+      }
+    },
+    'inss': {
+      defaults: function () { return { 'hr-inss-gross': 3000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-inss-gross', 'Salário de contribuição', d['hr-inss-gross']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-inss-gross', 0), result = hrInssProgressive2026(gross);
+        var lines = result.rows.map(function (row) { return { label: 'Faixa ' + number(row.rate * 100) + '%', formula: 'De ' + money(row.from) + ' até ' + money(row.to), value: row.value }; });
+        lines.push({ label: 'INSS total', formula: result.tetoApplied ? 'Salário acima do teto — contribuição limitada a ' + money(result.teto) : 'Soma das faixas', value: result.value, total: true });
+        return { lines: lines, heroHtml: hrCalcHero('INSS devido', result.value) };
+      }
+    },
+    'fgts': {
+      defaults: function () { return { 'hr-fgts-gross': 3000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-fgts-gross', 'Remuneração do mês', d['hr-fgts-gross']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-fgts-gross', 0), monthly = gross * HR_CALC_LEGAL_2026.fgtsRate;
+        return { lines: [
+          { label: 'Base de cálculo', formula: 'Remuneração informada', value: gross },
+          { label: 'Depósito mensal do FGTS', formula: number(HR_CALC_LEGAL_2026.fgtsRate * 100) + '% sobre a base', value: monthly, total: true },
+          { label: 'FGTS estimado sobre 13º (se pago no mês)', formula: 'Mesma base × 8% — incidência separada', value: monthly },
+          { label: 'FGTS estimado sobre férias (se pagas no mês)', formula: 'Mesma base × 8% — incidência separada', value: monthly }
+        ], heroHtml: hrCalcHero('Depósito mensal de FGTS', monthly) };
+      }
+    },
+    'dsr': {
+      defaults: function () { return { 'hr-dsr-variable': 600, 'hr-dsr-worked': 25, 'hr-dsr-rest': 5 }; },
+      form: function (d) { return hrCalcFieldNum('hr-dsr-variable', 'Total de variáveis no mês (horas extras/comissões)', d['hr-dsr-variable']) + hrCalcFieldNum('hr-dsr-worked', 'Dias úteis no mês', d['hr-dsr-worked'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-dsr-rest', 'Domingos e feriados no mês', d['hr-dsr-rest'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var variable = hrCalcNum(d, 'hr-dsr-variable', 0), worked = Math.max(1, hrCalcNum(d, 'hr-dsr-worked', 1)), rest = hrCalcNum(d, 'hr-dsr-rest', 0);
+        var dsr = variable / worked * rest;
+        return { lines: [
+          { label: 'Total de variáveis no mês', formula: 'Horas extras + comissões informadas', value: variable },
+          { label: 'Dias úteis (divisor)', formula: '#' + worked, value: 0 },
+          { label: 'Dias de repouso (domingos e feriados)', formula: '#' + rest, value: 0 },
+          { label: 'DSR devido', formula: money(variable) + ' ÷ ' + worked + ' × ' + rest, value: dsr, total: true }
+        ], heroHtml: hrCalcHero('DSR sobre variáveis', dsr) };
+      }
+    },
+    'insalubridade': {
+      defaults: function () { return { 'hr-insal-grade': 'minimo', 'hr-insal-base': HR_CALC_LEGAL_2026.salarioMinimo }; },
+      form: function (d) { return hrCalcFieldSelect('hr-insal-grade', 'Grau de insalubridade', d['hr-insal-grade'], [{ value: 'minimo', label: 'Mínimo — 10%' }, { value: 'medio', label: 'Médio — 20%' }, { value: 'maximo', label: 'Máximo — 40%' }]) + hrCalcFieldNum('hr-insal-base', 'Base de cálculo', d['hr-insal-base'], { hint: 'Salário mínimo, salvo piso normativo/convenção mais benéfica.' }); },
+      compute: function (d) {
+        var grade = d['hr-insal-grade'] || 'minimo', rate = HR_CALC_LEGAL_2026.insalubridadeRates[grade], base = hrCalcNum(d, 'hr-insal-base', HR_CALC_LEGAL_2026.salarioMinimo);
+        var value = base * rate;
+        return { lines: [
+          { label: 'Grau de insalubridade', formula: ({ minimo: 'Mínimo', medio: 'Médio', maximo: 'Máximo' })[grade], value: 0 },
+          { label: 'Base de cálculo', formula: 'Salário mínimo, salvo previsão mais benéfica', value: base },
+          { label: 'Percentual aplicado', formula: number(rate * 100) + '%', value: 0 },
+          { label: 'Adicional de insalubridade', formula: money(base) + ' × ' + number(rate * 100) + '%', value: value, total: true }
+        ], heroHtml: hrCalcHero('Adicional de insalubridade', value) };
+      }
+    },
+    'periculosidade': {
+      defaults: function () { return { 'hr-peric-base': 2000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-peric-base', 'Salário-base (sem gratificações)', d['hr-peric-base']); },
+      compute: function (d) {
+        var base = hrCalcNum(d, 'hr-peric-base', 0), value = base * HR_CALC_LEGAL_2026.periculosidadeRate;
+        return { lines: [
+          { label: 'Base de cálculo', formula: 'Salário-base contratual, CLT art. 193 §1º', value: base },
+          { label: 'Percentual', formula: number(HR_CALC_LEGAL_2026.periculosidadeRate * 100) + '%', value: 0 },
+          { label: 'Adicional de periculosidade', formula: money(base) + ' × 30%', value: value, total: true }
+        ], heroHtml: hrCalcHero('Adicional de periculosidade', value) };
+      }
+    },
+    'ferias': {
+      defaults: function () { return { 'hr-ferias-gross': 3000, 'hr-ferias-days': '30', 'hr-ferias-dependents': 0 }; },
+      form: function (d) { return hrCalcFieldNum('hr-ferias-gross', 'Remuneração mensal', d['hr-ferias-gross']) + hrCalcFieldSelect('hr-ferias-days', 'Dias de férias', d['hr-ferias-days'], [{ value: '30', label: '30 dias' }, { value: '20', label: '20 dias' }, { value: '15', label: '15 dias' }]) + hrCalcFieldNum('hr-ferias-dependents', 'Dependentes (IRRF)', d['hr-ferias-dependents'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-ferias-gross', 0), days = hrCalcNum(d, 'hr-ferias-days', 30), dependents = hrCalcNum(d, 'hr-ferias-dependents', 0);
+        var base = gross / 30 * days, umTerco = base / 3, bruto = base + umTerco;
+        var inss = hrInssProgressive2026(bruto), irrf = calculateIrrfEffective({ gross: bruto, dependents: dependents, alimony: 0, otherDeductions: 0, officialSocialSecurity: inss.value, deductionMode: 'auto' });
+        var liquido = Math.max(0, bruto - inss.value - irrf.irrf);
+        return { lines: [
+          { label: 'Valor proporcional aos dias', formula: money(gross) + ' ÷ 30 × ' + days, value: base },
+          { label: '1/3 constitucional', formula: 'Valor das férias ÷ 3', value: umTerco },
+          { label: 'Total bruto de férias', formula: 'Valor + 1/3', value: bruto },
+          { label: 'INSS', formula: 'Tabela progressiva sobre o bruto de férias', value: inss.value },
+          { label: 'IRRF', formula: irrf.method, value: irrf.irrf },
+          { label: 'Férias líquidas', formula: 'Bruto − INSS − IRRF', value: liquido, total: true }
+        ], heroHtml: hrCalcHero('Férias líquidas', liquido) };
+      }
+    },
+    'abono-ferias': {
+      defaults: function () { return { 'hr-abono-gross': 3000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-abono-gross', 'Remuneração mensal', d['hr-abono-gross']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-abono-gross', 0), valor = gross / 30 * 10, terco = valor / 3, total = valor + terco;
+        return { lines: [
+          { label: 'Dias vendidos', formula: 'Máximo de 10 dias — 1/3 de 30', value: 0 },
+          { label: 'Valor do abono', formula: money(gross) + ' ÷ 30 × 10', value: valor },
+          { label: '1/3 constitucional sobre o abono', formula: 'Valor do abono ÷ 3', value: terco },
+          { label: 'Total do abono (isento de INSS e IRRF)', formula: 'Valor + 1/3', value: total, total: true }
+        ], heroHtml: hrCalcHero('Abono pecuniário', total) };
+      }
+    },
+    'decimo-terceiro': {
+      defaults: function () { return { 'hr-13-gross': 3000, 'hr-13-months': 12, 'hr-13-dependents': 0, 'hr-13-other': 0 }; },
+      form: function (d) { return hrCalcFieldNum('hr-13-gross', 'Remuneração mensal', d['hr-13-gross']) + hrCalcFieldNum('hr-13-months', 'Meses trabalhados no ano (avos)', d['hr-13-months'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-13-dependents', 'Dependentes (IRRF)', d['hr-13-dependents'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-13-other', 'Outras deduções', d['hr-13-other']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-13-gross', 0), months = Math.min(12, hrCalcNum(d, 'hr-13-months', 12)), dependents = hrCalcNum(d, 'hr-13-dependents', 0), other = hrCalcNum(d, 'hr-13-other', 0);
+        var total = gross / 12 * months, first = total / 2, inss = hrInssProgressive2026(total), irrf = calculateIrrfEffective({ gross: total, dependents: dependents, alimony: 0, otherDeductions: other, officialSocialSecurity: inss.value, deductionMode: 'auto' });
+        var second = Math.max(0, total - first - inss.value - irrf.irrf);
+        return { lines: [
+          { label: 'Avos trabalhados', formula: months + '/12', value: 0 },
+          { label: '13º bruto total', formula: money(gross) + ' ÷ 12 × ' + months, value: total },
+          { label: '1ª parcela (sem descontos)', formula: 'Metade do 13º bruto', value: first },
+          { label: 'INSS (sobre o total)', formula: 'Tabela progressiva 2026', value: inss.value },
+          { label: 'IRRF (sobre o total)', formula: irrf.method, value: irrf.irrf },
+          { label: '2ª parcela líquida', formula: 'Total − 1ª parcela − INSS − IRRF', value: second, total: true }
+        ], heroHtml: hrCalcHero('2ª parcela líquida', second) };
+      }
+    },
+    'aviso-previo': {
+      defaults: function () { return { 'hr-aviso-gross': 3000, 'hr-aviso-years': 2, 'hr-aviso-type': 'indenizado' }; },
+      form: function (d) { return hrCalcFieldNum('hr-aviso-gross', 'Salário mensal', d['hr-aviso-gross']) + hrCalcFieldNum('hr-aviso-years', 'Anos completos de casa', d['hr-aviso-years'], { step: '1', prefix: '#' }) + hrCalcFieldSelect('hr-aviso-type', 'Modalidade', d['hr-aviso-type'], [{ value: 'indenizado', label: 'Indenizado' }, { value: 'trabalhado', label: 'Trabalhado' }]); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-aviso-gross', 0), years = Math.max(0, hrCalcNum(d, 'hr-aviso-years', 0)), type = d['hr-aviso-type'] || 'indenizado';
+        var extra = Math.min(HR_CALC_LEGAL_2026.avisoPrevioMaxDiasAdicionais, years * HR_CALC_LEGAL_2026.avisoPrevioDiasPorAno), totalDays = HR_CALC_LEGAL_2026.avisoPrevioBaseDias + extra, daily = gross / 30, value = daily * totalDays;
+        return { lines: [
+          { label: 'Anos completos de casa', formula: '#' + years, value: 0 },
+          { label: 'Dias adicionais', formula: years + ' × 3 dias, limitado a 60', value: 0 },
+          { label: 'Total de dias de aviso', formula: '30 + ' + extra, value: 0 },
+          { label: 'Valor diário', formula: money(gross) + ' ÷ 30', value: daily },
+          { label: type === 'trabalhado' ? 'Valor do período trabalhado (sem indenização adicional)' : 'Valor do aviso-prévio indenizado', formula: money(daily) + ' × ' + totalDays + ' dias', value: value, total: true }
+        ], heroHtml: hrCalcHero('Aviso-prévio (' + totalDays + ' dias)', value) };
+      }
+    },
+    'salario-proporcional': {
+      defaults: function () { return { 'hr-prop-gross': 3000, 'hr-prop-worked': 15, 'hr-prop-month-days': 30 }; },
+      form: function (d) { return hrCalcFieldNum('hr-prop-gross', 'Salário mensal', d['hr-prop-gross']) + hrCalcFieldNum('hr-prop-worked', 'Dias efetivamente trabalhados', d['hr-prop-worked'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-prop-month-days', 'Dias considerados no mês', d['hr-prop-month-days'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-prop-gross', 0), worked = hrCalcNum(d, 'hr-prop-worked', 0), monthDays = Math.max(1, hrCalcNum(d, 'hr-prop-month-days', 30));
+        var value = gross / monthDays * worked;
+        return { lines: [
+          { label: 'Salário mensal', formula: 'Valor informado', value: gross },
+          { label: 'Dias considerados no mês', formula: '#' + monthDays, value: 0 },
+          { label: 'Dias trabalhados', formula: '#' + worked, value: 0 },
+          { label: 'Salário proporcional', formula: money(gross) + ' ÷ ' + monthDays + ' × ' + worked, value: value, total: true }
+        ], heroHtml: hrCalcHero('Salário proporcional', value) };
+      }
+    },
+    'custo-funcionario': {
+      defaults: function () { return { 'hr-custo-gross': 3000, 'hr-custo-inss-patronal': 20, 'hr-custo-rat': 2, 'hr-custo-sistema-s': 5.8, 'hr-custo-beneficios': 0 }; },
+      form: function (d) { return hrCalcFieldNum('hr-custo-gross', 'Salário bruto', d['hr-custo-gross']) + hrCalcFieldNum('hr-custo-inss-patronal', 'INSS patronal', d['hr-custo-inss-patronal'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-custo-rat', 'RAT/FAP', d['hr-custo-rat'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-custo-sistema-s', 'Sistema S (terceiros)', d['hr-custo-sistema-s'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-custo-beneficios', 'Benefícios mensais (VT, VR, plano etc.)', d['hr-custo-beneficios']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-custo-gross', 0), inssP = hrCalcNum(d, 'hr-custo-inss-patronal', 20) / 100, rat = hrCalcNum(d, 'hr-custo-rat', 2) / 100, sistemaS = hrCalcNum(d, 'hr-custo-sistema-s', 5.8) / 100, beneficios = hrCalcNum(d, 'hr-custo-beneficios', 0);
+        var fgts = gross * HR_CALC_LEGAL_2026.fgtsRate, provFerias = gross / 12 * (1 + 1 / 3), provDecimo = gross / 12;
+        var encargos = gross * (inssP + rat + sistemaS) + fgts, total = gross + encargos + provFerias + provDecimo + beneficios;
+        return { lines: [
+          { label: 'Salário bruto', formula: 'Valor informado', value: gross },
+          { label: 'FGTS', formula: '8% sobre o salário', value: fgts },
+          { label: 'INSS patronal + RAT/FAP + Sistema S', formula: number((inssP + rat + sistemaS) * 100) + '% sobre o salário', value: gross * (inssP + rat + sistemaS) },
+          { label: 'Provisão de férias + 1/3', formula: 'Salário ÷ 12 × 1,333', value: provFerias },
+          { label: 'Provisão de 13º', formula: 'Salário ÷ 12', value: provDecimo },
+          { label: 'Benefícios mensais', formula: 'Informado pelo usuário', value: beneficios },
+          { label: 'Custo total do funcionário', formula: 'Soma de todos os itens acima', value: total, total: true }
+        ], heroHtml: hrCalcHero('Custo mensal estimado', total) };
+      }
+    },
+    'banco-horas': {
+      defaults: function () { return { 'hr-banco-credit': 10, 'hr-banco-debit': 4, 'hr-banco-hour-value': 20, 'hr-banco-extra': 50 }; },
+      form: function (d) { return hrCalcFieldNum('hr-banco-credit', 'Créditos (horas)', d['hr-banco-credit'], { step: '0.5', prefix: 'h' }) + hrCalcFieldNum('hr-banco-debit', 'Débitos (horas)', d['hr-banco-debit'], { step: '0.5', prefix: 'h' }) + hrCalcFieldNum('hr-banco-hour-value', 'Valor da hora normal', d['hr-banco-hour-value']) + hrCalcFieldNum('hr-banco-extra', 'Adicional se pago em dinheiro', d['hr-banco-extra'], { prefix: '%', step: '1' }); },
+      compute: function (d) {
+        var credit = hrCalcNum(d, 'hr-banco-credit', 0), debit = hrCalcNum(d, 'hr-banco-debit', 0), hourValue = hrCalcNum(d, 'hr-banco-hour-value', 0), extra = hrCalcNum(d, 'hr-banco-extra', 50) / 100;
+        var saldo = credit - debit, valor = saldo > 0 ? saldo * hourValue * (1 + extra) : 0;
+        return { lines: [
+          { label: 'Créditos', formula: credit + ' horas', value: 0 },
+          { label: 'Débitos', formula: debit + ' horas', value: 0 },
+          { label: 'Saldo do banco de horas', formula: credit + ' − ' + debit, value: 0 },
+          { label: 'Valor estimado se pago em dinheiro', formula: 'Saldo × valor da hora × (1 + adicional)', value: valor, total: true }
+        ], heroHtml: hrCalcHero('Saldo', number(saldo) + ' h') };
+      }
+    },
+    'vale-transporte': {
+      defaults: function () { return { 'hr-vt-base': 3000, 'hr-vt-daily': 12, 'hr-vt-days': 22 }; },
+      form: function (d) { return hrCalcFieldNum('hr-vt-base', 'Salário-base', d['hr-vt-base']) + hrCalcFieldNum('hr-vt-daily', 'Custo diário do transporte', d['hr-vt-daily']) + hrCalcFieldNum('hr-vt-days', 'Dias úteis no mês', d['hr-vt-days'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var base = hrCalcNum(d, 'hr-vt-base', 0), daily = hrCalcNum(d, 'hr-vt-daily', 0), days = hrCalcNum(d, 'hr-vt-days', 0);
+        var custoTotal = daily * days, limite = base * HR_CALC_LEGAL_2026.valeTransporteMaxRate, desconto = Math.min(custoTotal, limite), custoEmpresa = Math.max(0, custoTotal - desconto);
+        return { lines: [
+          { label: 'Custo total do transporte no mês', formula: money(daily) + ' × ' + days, value: custoTotal },
+          { label: 'Limite legal de desconto', formula: '6% do salário-base', value: limite },
+          { label: 'Desconto do colaborador', formula: 'Menor valor entre custo total e o limite legal', value: desconto },
+          { label: 'Custo assumido pela empresa', formula: 'Custo total − desconto do colaborador', value: custoEmpresa, total: true }
+        ], heroHtml: hrCalcHero('Custo da empresa', custoEmpresa) };
+      }
+    },
+    'vale-refeicao': {
+      defaults: function () { return { 'hr-vr-daily': 35, 'hr-vr-days': 22, 'hr-vr-share': 20 }; },
+      form: function (d) { return hrCalcFieldNum('hr-vr-daily', 'Valor diário', d['hr-vr-daily']) + hrCalcFieldNum('hr-vr-days', 'Dias úteis no mês', d['hr-vr-days'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-vr-share', 'Participação do colaborador', d['hr-vr-share'], { prefix: '%', step: '1' }); },
+      compute: function (d) {
+        var daily = hrCalcNum(d, 'hr-vr-daily', 0), days = hrCalcNum(d, 'hr-vr-days', 0), share = hrCalcNum(d, 'hr-vr-share', 20) / 100;
+        var total = daily * days, employee = total * share, company = total - employee;
+        return { lines: [
+          { label: 'Valor total do benefício', formula: money(daily) + ' × ' + days, value: total },
+          { label: 'Participação do colaborador', formula: number(share * 100) + '% do total', value: employee },
+          { label: 'Custo da empresa', formula: 'Total − participação do colaborador', value: company, total: true }
+        ], heroHtml: hrCalcHero('Custo da empresa', company) };
+      }
+    },
+    'comissoes': {
+      defaults: function () { return { 'hr-com-sales': 20000, 'hr-com-rate': 3, 'hr-com-worked': 25, 'hr-com-rest': 5 }; },
+      form: function (d) { return hrCalcFieldNum('hr-com-sales', 'Total de vendas no mês', d['hr-com-sales']) + hrCalcFieldNum('hr-com-rate', 'Percentual de comissão', d['hr-com-rate'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-com-worked', 'Dias úteis no mês', d['hr-com-worked'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-com-rest', 'Domingos e feriados no mês', d['hr-com-rest'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var sales = hrCalcNum(d, 'hr-com-sales', 0), rate = hrCalcNum(d, 'hr-com-rate', 0) / 100, worked = Math.max(1, hrCalcNum(d, 'hr-com-worked', 1)), rest = hrCalcNum(d, 'hr-com-rest', 0);
+        var commission = sales * rate, dsr = commission / worked * rest, total = commission + dsr;
+        return { lines: [
+          { label: 'Total de vendas', formula: 'Valor informado', value: sales },
+          { label: 'Comissão devida', formula: money(sales) + ' × ' + number(rate * 100) + '%', value: commission },
+          { label: 'DSR sobre a comissão', formula: money(commission) + ' ÷ ' + worked + ' × ' + rest, value: dsr },
+          { label: 'Total a receber', formula: 'Comissão + DSR', value: total, total: true }
+        ], heroHtml: hrCalcHero('Total a receber', total) };
+      }
+    },
+    'plr': {
+      defaults: function () { return { 'hr-plr-value': 6000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-plr-value', 'Valor da PLR', d['hr-plr-value']); },
+      compute: function (d) {
+        var value = hrCalcNum(d, 'hr-plr-value', 0);
+        var bracket = HR_CALC_LEGAL_2026.plrAnnualBrackets.filter(function (b) { return value <= b.limit; })[0] || HR_CALC_LEGAL_2026.plrAnnualBrackets[HR_CALC_LEGAL_2026.plrAnnualBrackets.length - 1];
+        var irrf = Math.max(0, value * bracket.rate - bracket.deduction), liquido = value - irrf;
+        return { lines: [
+          { label: 'Valor da PLR', formula: 'Valor informado', value: value },
+          { label: 'Faixa aplicada', formula: bracket.label, value: 0 },
+          { label: 'IRRF devido (tabela exclusiva da PLR)', formula: money(value) + ' × ' + number(bracket.rate * 100) + '% − ' + money(bracket.deduction), value: irrf },
+          { label: 'PLR líquida', formula: 'Valor − IRRF (sem INSS/FGTS)', value: liquido, total: true }
+        ], heroHtml: hrCalcHero('PLR líquida', liquido), disclaimer: 'A PLR usa uma tabela anual exclusiva de IRRF (não é a tabela mensal do salário), não tem INSS nem FGTS (Lei nº 10.101/2000) e a tributação é definitiva na fonte. Tabela de referência vigente desde maio/2025 (Lei nº 15.191/2025) — confirme a tabela atualizada na Receita Federal antes de aplicar, e some outros valores de PLR já recebidos no mesmo ano-calendário para apurar a base acumulada corretamente.' };
+      }
+    },
+    'afastamentos': {
+      defaults: function () { return { 'hr-afast-days': 20, 'hr-afast-daily': 100 }; },
+      form: function (d) { return hrCalcFieldNum('hr-afast-days', 'Total de dias afastado', d['hr-afast-days'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-afast-daily', 'Valor diário do salário', d['hr-afast-daily']); },
+      compute: function (d) {
+        var totalDays = hrCalcNum(d, 'hr-afast-days', 0), daily = hrCalcNum(d, 'hr-afast-daily', 0);
+        var companyDays = Math.min(totalDays, 15), inssDays = Math.max(0, totalDays - 15), companyValue = companyDays * daily;
+        return { lines: [
+          { label: 'Total de dias afastado', formula: '#' + totalDays, value: 0 },
+          { label: 'Dias por conta da empresa', formula: 'Primeiros 15 dias (auxílio-doença comum/acidente)', value: 0 },
+          { label: 'Dias sob responsabilidade do INSS', formula: 'A partir do 16º dia, mediante perícia', value: 0 },
+          { label: 'Valor pago pela empresa', formula: money(daily) + ' × ' + companyDays + ' dias', value: companyValue, total: true }
+        ], heroHtml: hrCalcHero('Dias empresa / INSS', companyDays + ' / ' + inssDays), disclaimer: 'Este simulador é informativo: a concessão do benefício pelo INSS depende de perícia própria e o FGTS continua sendo depositado durante o afastamento em caso de acidente de trabalho. Não representa decisão do INSS nem substitui o atestado/perícia.' };
+      }
+    },
+    'provisao-ferias': {
+      defaults: function () { return { 'hr-provf-gross': 3000, 'hr-provf-months': 1 }; },
+      form: function (d) { return hrCalcFieldNum('hr-provf-gross', 'Salário mensal', d['hr-provf-gross']) + hrCalcFieldNum('hr-provf-months', 'Meses a provisionar', d['hr-provf-months'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-provf-gross', 0), months = hrCalcNum(d, 'hr-provf-months', 1), monthly = gross / 12 * (1 + 1 / 3), total = monthly * months;
+        return { lines: [
+          { label: 'Base mensal de provisão', formula: 'Salário ÷ 12 × 1,333 (inclui 1/3)', value: monthly },
+          { label: 'Meses considerados', formula: '#' + months, value: 0 },
+          { label: 'Provisão total', formula: money(monthly) + ' × ' + months, value: total, total: true }
+        ], heroHtml: hrCalcHero('Provisão de férias', total) };
+      }
+    },
+    'provisao-decimo': {
+      defaults: function () { return { 'hr-provd-gross': 3000, 'hr-provd-months': 1 }; },
+      form: function (d) { return hrCalcFieldNum('hr-provd-gross', 'Salário mensal', d['hr-provd-gross']) + hrCalcFieldNum('hr-provd-months', 'Meses a provisionar', d['hr-provd-months'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-provd-gross', 0), months = hrCalcNum(d, 'hr-provd-months', 1), monthly = gross / 12, total = monthly * months;
+        return { lines: [
+          { label: 'Base mensal de provisão', formula: 'Salário ÷ 12', value: monthly },
+          { label: 'Meses considerados', formula: '#' + months, value: 0 },
+          { label: 'Provisão total', formula: money(monthly) + ' × ' + months, value: total, total: true }
+        ], heroHtml: hrCalcHero('Provisão de 13º', total) };
+      }
+    },
+    'encargos': {
+      defaults: function () { return { 'hr-enc-payroll': 50000, 'hr-enc-inss-patronal': 20, 'hr-enc-rat': 2, 'hr-enc-sistema-s': 5.8 }; },
+      form: function (d) { return hrCalcFieldNum('hr-enc-payroll', 'Folha bruta total', d['hr-enc-payroll']) + hrCalcFieldNum('hr-enc-inss-patronal', 'INSS patronal', d['hr-enc-inss-patronal'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-enc-rat', 'RAT/FAP', d['hr-enc-rat'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-enc-sistema-s', 'Sistema S (terceiros)', d['hr-enc-sistema-s'], { prefix: '%', step: '0.1' }); },
+      compute: function (d) {
+        var payroll = hrCalcNum(d, 'hr-enc-payroll', 0), inssP = hrCalcNum(d, 'hr-enc-inss-patronal', 20) / 100, rat = hrCalcNum(d, 'hr-enc-rat', 2) / 100, sistemaS = hrCalcNum(d, 'hr-enc-sistema-s', 5.8) / 100;
+        var fgts = payroll * HR_CALC_LEGAL_2026.fgtsRate, inssValue = payroll * inssP, ratValue = payroll * rat, sistemaSValue = payroll * sistemaS, total = fgts + inssValue + ratValue + sistemaSValue;
+        return { lines: [
+          { label: 'Folha bruta total', formula: 'Valor informado', value: payroll },
+          { label: 'INSS patronal', formula: number(inssP * 100) + '% sobre a folha', value: inssValue },
+          { label: 'RAT/FAP', formula: number(rat * 100) + '% sobre a folha', value: ratValue },
+          { label: 'Sistema S (terceiros)', formula: number(sistemaS * 100) + '% sobre a folha', value: sistemaSValue },
+          { label: 'FGTS', formula: '8% sobre a folha', value: fgts },
+          { label: 'Total de encargos', formula: 'Soma dos itens acima — ' + number(payroll ? total / payroll * 100 : 0) + '% da folha', value: total, total: true }
+        ], heroHtml: hrCalcHero('Total de encargos', total), disclaimer: 'As alíquotas de INSS patronal, RAT/FAP e Sistema S variam por CNAE, FAP próprio e regime tributário (o Simples Nacional, por exemplo, segue regras próprias no Anexo IV). Confirme os percentuais aplicáveis à empresa antes de usar o resultado.' };
+      }
+    },
+    'clt-comparativo': {
+      defaults: function () { return { 'hr-clt-gross': 3000, 'hr-clt-beneficios': 300, 'hr-clt-pj': 3800 }; },
+      form: function (d) { return hrCalcFieldNum('hr-clt-gross', 'Salário CLT bruto', d['hr-clt-gross']) + hrCalcFieldNum('hr-clt-beneficios', 'Benefícios mensais (CLT)', d['hr-clt-beneficios']) + hrCalcFieldNum('hr-clt-pj', 'Valor mensal contratado (outra modalidade)', d['hr-clt-pj']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-clt-gross', 0), beneficios = hrCalcNum(d, 'hr-clt-beneficios', 0), outra = hrCalcNum(d, 'hr-clt-pj', 0);
+        var fgts = gross * HR_CALC_LEGAL_2026.fgtsRate, encargos = gross * .278, provFerias = gross / 12 * (1 + 1 / 3), provDecimo = gross / 12;
+        var cltTotal = gross + fgts + encargos + provFerias + provDecimo + beneficios, diff = cltTotal - outra;
+        return { lines: [
+          { label: 'Salário CLT bruto', formula: 'Valor informado', value: gross },
+          { label: 'Encargos estimados (INSS patronal + RAT + Sistema S)', formula: '27,8% sobre o salário (referencial)', value: encargos },
+          { label: 'FGTS', formula: '8% sobre o salário', value: fgts },
+          { label: 'Provisões (férias + 1/3 e 13º)', formula: 'Salário ÷ 12 × 1,333 + salário ÷ 12', value: provFerias + provDecimo },
+          { label: 'Benefícios mensais', formula: 'Informado pelo usuário', value: beneficios },
+          { label: 'Custo total CLT', formula: 'Soma dos itens acima', value: cltTotal },
+          { label: 'Custo da outra modalidade contratada', formula: 'Valor mensal informado', value: outra },
+          { label: 'Diferença (CLT − outra modalidade)', formula: 'Custo total CLT − valor contratado', value: diff, total: true }
+        ], heroHtml: hrCalcHero('Diferença de custo', diff), disclaimer: 'Esta é uma SIMULAÇÃO FINANCEIRA SIMPLIFICADA, sem qualquer recomendação jurídica ou de enquadramento. Contratar como PJ ou outra modalidade para substituir uma relação que tenha os elementos do vínculo empregatício (subordinação, pessoalidade, habitualidade e onerosidade) pode configurar pejotização e gerar reconhecimento de vínculo, multas e passivos trabalhistas. Consulte a área jurídica/trabalhista antes de qualquer decisão de contratação.' };
+      }
+    }
+  };
+
+  function hrCalcHero(label, value) {
+    return '<div><small>' + esc(label) + '</small><strong>' + (typeof value === 'number' ? money(value) : esc(value)) + '</strong></div>';
+  }
+  function renderHrCalcGrid() {
+    var cards = HR_CALC_CARDS.map(function (card) {
+      var attrs = card.kind === 'route' ? ' data-route="' + card.route + '"' : ' data-action="hr-calc-open" data-calc="' + card.id + '"';
+      return '<article class="hr-calc-card"' + attrs + ' tabindex="0" role="button"><span class="hr-calc-icon">' + card.icon + '</span><div><b>' + esc(card.title) + '</b><p>' + esc(card.desc) + '</p></div><span class="tag ' + (card.kind === 'route' ? 'tag--info' : 'tag--success') + '">' + (card.kind === 'route' ? 'Página completa' : 'Abrir calculadora') + '</span></article>';
+    }).join('');
+    return [
+      pageHeading('Central de Calculadoras RH & DP', 'Calculadoras trabalhistas e previdenciárias com memória de cálculo completa — parâmetros de referência para a competência ' + HR_CALC_LEGAL_2026.competencia + '.', ''),
+      '<div class="info-banner hr-calc-law-banner"><span>i</span><div><strong>Ferramenta de apoio, não substitui a folha oficial.</strong> Os parâmetros usados (INSS, IRRF, salário mínimo, FGTS e tabela de PLR) seguem referências legais vigentes em ' + HR_CALC_LEGAL_2026.competencia + '. Convenção coletiva, regime especial, decisão judicial ou peculiaridades do caso concreto podem alterar o resultado — confirme com o RH, o DP ou a contabilidade responsável antes de aplicar oficialmente.</div><span class="tag tag--success">' + esc(HR_CALC_LEGAL_2026.fonte) + '</span></div>',
+      '<section class="hr-calc-grid">' + cards + '</section>'
+    ].join('');
+  }
+  function renderHrCalcDetail(id) {
+    var card = HR_CALC_CARDS.find(function (c) { return c.id === id; }), spec = HR_CALC_SPECS[id];
+    if (!card || card.kind !== 'calc' || !spec) { hrCalcUi().calc = null; return renderHrCalcGrid(); }
+    var data = hrCalcData(id);
+    return [
+      pageHeading(card.title, card.desc, '<button class="secondary-button" data-action="hr-calc-back">← Central de Calculadoras</button>'),
+      '<section class="card hr-calc-form-card"><header class="card-header"><div><h2>Dados para o cálculo</h2><small>O resultado é atualizado automaticamente</small></div><span class="live-badge"><i></i> Cálculo instantâneo</span></header><div class="card-body"><div class="form-grid hr-calc-form-grid" id="hr-calc-form">' + spec.form(data) + '</div></div></section>',
+      '<section class="card hr-calc-memory-card"><header class="card-header"><div><h2>Memória de cálculo</h2><small>Regra utilizada e competência de referência</small></div><span class="tag tag--info">Competência ' + HR_CALC_LEGAL_2026.competencia + '</span></header><div class="card-body"><div class="hr-calc-result-hero" id="hr-calc-result-hero"></div><div class="table-wrap"><table><thead><tr><th>Parcela</th><th>Fórmula aplicada</th><th>Valor</th></tr></thead><tbody id="hr-calc-memory-body"></tbody></table></div></div></section>',
+      '<div class="warning-banner hr-calc-warning"><span>!</span><div>' + esc(spec.disclaimer || 'Cálculo de apoio para conferência; confirme com o RH/DP ou a contabilidade responsável antes de aplicar oficialmente na folha.') + '</div></div>'
+    ].join('');
+  }
+  function renderHrCalculatorsCenter() {
+    return hrCalcUi().calc ? renderHrCalcDetail(hrCalcUi().calc) : renderHrCalcGrid();
+  }
+  function updateHrCalc() {
+    var ui = hrCalcUi();
+    if (!ui.calc || !$('#hr-calc-form')) return;
+    var spec = HR_CALC_SPECS[ui.calc];
+    if (!spec) return;
+    var data = hrCalcReadInputs();
+    ui.values[ui.calc] = data;
+    var result = spec.compute(Object.assign({}, hrCalcData(ui.calc), data));
+    var body = $('#hr-calc-memory-body'); if (body) body.innerHTML = hrCalcMemoryRows(result.lines);
+    var hero = $('#hr-calc-result-hero'); if (hero) hero.innerHTML = result.heroHtml || '';
   }
 
   var ALIMONY_INSS_2026 = [
@@ -9067,6 +9520,7 @@
     if ($('#icms-state-result')) updateTaxBenefitsPanel();
     if ($('#iss-service-query')) { filterIssRates(); updateIssEstimate(); }
     if ($('#cest-results-body')) renderCestResults(false);
+    if ($('#hr-calc-form')) updateHrCalc();
     if ($('#rental-simulator')) updateRentalSimulator();
     if ($('#trc-summary')) updateTaxRegimeCompare(false);
     if ($('#portfolio-query')) filterPortfolioDashboard();
@@ -9215,6 +9669,8 @@
     else if (action === 'cest-page') { state.cestPage = Number(actionEl.getAttribute('data-page') || 1); renderCestResults(false); var cestResults = $('.cest-results-card'); if (cestResults) cestResults.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
     else if (action === 'cest-detail') openCestDetail(actionEl.getAttribute('data-cest'));
     else if (action === 'cest-copy') copyCestCode(actionEl.getAttribute('data-cest'));
+    else if (action === 'hr-calc-open') openHrCalc(actionEl.getAttribute('data-calc'));
+    else if (action === 'hr-calc-back') closeHrCalc();
     else if (action === 'cest-export-json') exportCestResults('json');
     else if (action === 'cest-export-csv') exportCestResults('csv');
     else if (action === 'cest-print') window.print();
@@ -9535,6 +9991,8 @@
     } else if (['cest-filter-ncm', 'cest-filter-code', 'cest-filter-keyword'].indexOf(event.target.id) >= 0) {
       window.clearTimeout(state.cestFilterTimer);
       state.cestFilterTimer = window.setTimeout(function () { renderCestResults(true); }, 90);
+    } else if (event.target.matches('[data-hr-calc-input]')) {
+      updateHrCalc();
     } else if (event.target.matches('[data-rental-input]')) {
       updateRentalSimulator();
     } else if (event.target.matches('[data-trc-input]')) {
@@ -9612,6 +10070,7 @@
     else if (event.target.id === 'portfolio-progress-stage') { var selectedPortfolioStage = portfolioStage(event.target.value); if ($('#portfolio-progress-value')) $('#portfolio-progress-value').value = selectedPortfolioStage.progress; }
     else if (event.target.matches('[data-kanban-move]')) moveKanbanCard(event.target.getAttribute('data-id'), event.target.value);
     else if (['cest-filter-uf', 'cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
+    else if (event.target.matches('[data-hr-calc-input]')) updateHrCalc();
     else if (event.target.id === 'rental-year') {
       var rates = rentalYearRates(event.target.value);
       if (rates) { if ($('#rental-ibs-rate')) $('#rental-ibs-rate').value = rates.ibs; if ($('#rental-cbs-rate')) $('#rental-cbs-rate').value = rates.cbs; }
