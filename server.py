@@ -180,6 +180,8 @@ ERP_MODULES = {
     "tab_analise_balanco": "Análise de Balanço",
     "tab_lancamentos_contabeis": "Lançamentos Contábeis",
     "tab_acompanhamento_contabil": "Acompanhamento Contábil",
+    "tab_rh_dashboard": "Dashboard de RH",
+    "tab_colaboradores": "Cadastro de Colaboradores",
     "tab_folha": "Folha de Pagamento",
     "tab_horas_extras_noturno": "Horas Extras e Trabalho Noturno",
     "tab_verbas_rescisorias": "Verbas Rescisórias",
@@ -209,6 +211,7 @@ FISCAL_TAB_MODULES = {
     "tab_comparativo_regimes",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab_acompanhamento_contabil"}
+RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores"}
 TRABALHISTA_TAB_MODULES = {
     "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
     "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",
@@ -220,11 +223,11 @@ OUTROS_TAB_MODULES = {
 }
 DEFAULT_PLAN_MODULES = {
     "erp-start": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico", "tab_central_suporte"},
-    "erp-profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
+    "erp-profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | RH_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
     "erp-business": set(ERP_MODULES) - {"tab_gestao_usuarios", "tab_configuracoes"},
     "erp-enterprise": set(ERP_MODULES),
     "basico": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico", "tab_central_suporte"},
-    "profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
+    "profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | RH_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
     "empresarial": set(ERP_MODULES) - {"tab_gestao_usuarios", "tab_configuracoes"},
     "completo": set(ERP_MODULES),
     "personalizado": {"tab_inicio"},
@@ -377,6 +380,73 @@ def verify_password(password: str, salt: str, stored_hash: str, algo: str) -> bo
 
 def local_now() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+COLABORADOR_TEXT_FIELDS = {
+    "matricula": "matricula", "nomeSocial": "nome_social", "rg": "rg",
+    "dataNascimento": "data_nascimento", "sexo": "sexo", "estadoCivil": "estado_civil",
+    "nacionalidade": "nacionalidade", "naturalidade": "naturalidade",
+    "enderecoLogradouro": "endereco_logradouro", "enderecoNumero": "endereco_numero",
+    "enderecoComplemento": "endereco_complemento", "enderecoBairro": "endereco_bairro",
+    "enderecoCidade": "endereco_cidade", "enderecoUf": "endereco_uf", "enderecoCep": "endereco_cep",
+    "telefone": "telefone", "email": "email",
+    "bancoNome": "banco_nome", "bancoAgencia": "banco_agencia", "bancoConta": "banco_conta", "bancoTipoConta": "banco_tipo_conta",
+    "pixChave": "pix_chave", "pisPasep": "pis_pasep", "ctpsNumero": "ctps_numero", "ctpsSerie": "ctps_serie",
+    "cnhNumero": "cnh_numero", "cnhCategoria": "cnh_categoria",
+    "departamento": "departamento", "setor": "setor", "cargo": "cargo", "funcao": "funcao", "cbo": "cbo",
+    "centroCusto": "centro_custo", "gestorNome": "gestor_nome",
+    "dataAdmissao": "data_admissao", "dataDesligamento": "data_desligamento", "motivoDesligamento": "motivo_desligamento",
+    "tipoContrato": "tipo_contrato", "regimeTrabalho": "regime_trabalho", "jornada": "jornada", "escala": "escala",
+    "categoriaProfissional": "categoria_profissional", "sindicato": "sindicato",
+    "convencaoColetiva": "convencao_coletiva", "dataBase": "data_base", "notas": "notas",
+}
+COLABORADOR_STATUS_VALUES = {"ativo", "afastado", "desligado"}
+
+
+def colaborador_fields_from_payload(payload: dict) -> dict:
+    """Valida e normaliza o payload de colaborador (JSON do frontend, chaves
+    camelCase) para as colunas snake_case da tabela `colaboradores`."""
+    nome_completo = str(payload.get("nomeCompleto", "")).strip()[:200]
+    if not nome_completo:
+        raise ValueError("Informe o nome completo.")
+    cpf = re.sub(r"\D", "", str(payload.get("cpf", "")))
+    if len(cpf) != 11:
+        raise ValueError("CPF inválido — informe os 11 dígitos.")
+    status = str(payload.get("status", "ativo")).strip()
+    if status not in COLABORADOR_STATUS_VALUES:
+        raise ValueError("Status inválido.")
+    try:
+        salario = round(float(payload.get("salario", 0) or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Salário inválido.")
+    if salario < 0:
+        raise ValueError("Salário inválido.")
+    dependentes_raw = payload.get("dependentes", [])
+    if not isinstance(dependentes_raw, list):
+        raise ValueError("Dependentes inválidos.")
+    dependentes = []
+    for item in dependentes_raw[:30]:
+        if not isinstance(item, dict):
+            continue
+        nome_dep = str(item.get("nome", "")).strip()[:150]
+        if not nome_dep:
+            continue
+        dependentes.append({
+            "nome": nome_dep,
+            "cpf": re.sub(r"\D", "", str(item.get("cpf", "")))[:11],
+            "dataNascimento": str(item.get("dataNascimento", ""))[:10],
+            "parentesco": str(item.get("parentesco", ""))[:60],
+            "dependenteIrrf": bool(item.get("dependenteIrrf")),
+            "dependenteSalarioFamilia": bool(item.get("dependenteSalarioFamilia")),
+        })
+    fields = {
+        "nome_completo": nome_completo, "cpf": cpf, "status": status, "salario": salario,
+        "dependentes": json.dumps(dependentes, ensure_ascii=False),
+    }
+    for camel, snake in COLABORADOR_TEXT_FIELDS.items():
+        value = payload.get(camel)
+        fields[snake] = str(value).strip()[:250] if value not in (None, "") else None
+    return fields
 
 
 def masked_database_url() -> str:
@@ -3845,6 +3915,47 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "updatedBy": row["updated_by"] or "", "updatedAt": row["updated_at"],
         }
 
+    def colaborador_row(self, row: sqlite3.Row) -> dict:
+        dependentes_raw = row["dependentes"]
+        if isinstance(dependentes_raw, str):
+            try:
+                dependentes_raw = json.loads(dependentes_raw)
+            except (json.JSONDecodeError, TypeError):
+                dependentes_raw = []
+        if not isinstance(dependentes_raw, list):
+            dependentes_raw = []
+        data = {
+            "id": row["id"], "clientId": row["client_id"], "clientName": row["client_name"],
+            "matricula": row["matricula"] or "", "status": row["status"],
+            "nomeCompleto": row["nome_completo"], "nomeSocial": row["nome_social"] or "",
+            "cpf": row["cpf"], "rg": row["rg"] or "", "dataNascimento": row["data_nascimento"] or "",
+            "sexo": row["sexo"] or "", "estadoCivil": row["estado_civil"] or "",
+            "nacionalidade": row["nacionalidade"] or "", "naturalidade": row["naturalidade"] or "",
+            "enderecoLogradouro": row["endereco_logradouro"] or "", "enderecoNumero": row["endereco_numero"] or "",
+            "enderecoComplemento": row["endereco_complemento"] or "", "enderecoBairro": row["endereco_bairro"] or "",
+            "enderecoCidade": row["endereco_cidade"] or "", "enderecoUf": row["endereco_uf"] or "", "enderecoCep": row["endereco_cep"] or "",
+            "telefone": row["telefone"] or "", "email": row["email"] or "",
+            "bancoNome": row["banco_nome"] or "", "bancoAgencia": row["banco_agencia"] or "",
+            "bancoConta": row["banco_conta"] or "", "bancoTipoConta": row["banco_tipo_conta"] or "",
+            "pixChave": row["pix_chave"] or "", "pisPasep": row["pis_pasep"] or "",
+            "ctpsNumero": row["ctps_numero"] or "", "ctpsSerie": row["ctps_serie"] or "",
+            "cnhNumero": row["cnh_numero"] or "", "cnhCategoria": row["cnh_categoria"] or "",
+            "departamento": row["departamento"] or "", "setor": row["setor"] or "", "cargo": row["cargo"] or "",
+            "funcao": row["funcao"] or "", "cbo": row["cbo"] or "", "centroCusto": row["centro_custo"] or "",
+            "gestorNome": row["gestor_nome"] or "",
+            "dataAdmissao": row["data_admissao"] or "", "dataDesligamento": row["data_desligamento"] or "",
+            "motivoDesligamento": row["motivo_desligamento"] or "",
+            "tipoContrato": row["tipo_contrato"] or "", "regimeTrabalho": row["regime_trabalho"] or "",
+            "jornada": row["jornada"] or "", "escala": row["escala"] or "",
+            "salario": float(row["salario"]) if row["salario"] is not None else 0.0,
+            "categoriaProfissional": row["categoria_profissional"] or "", "sindicato": row["sindicato"] or "",
+            "convencaoColetiva": row["convencao_coletiva"] or "", "dataBase": row["data_base"] or "",
+            "dependentes": dependentes_raw, "notas": row["notas"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+        return data
+
     def support_ticket_summary(self, row: sqlite3.Row) -> dict:
         ai_triage_raw = row["ai_triage"]
         if isinstance(ai_triage_raw, str):
@@ -6278,6 +6389,93 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 "items": [self.acompanhamento_contabil_row(row) for row in rows],
             })
             return
+        if path == "/api/colaboradores":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_colaboradores"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            search = query_params.get("query", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["company_id = ?", "client_id = ?"], [user["company_id"], client_id]
+            if status_filter in ("ativo", "afastado", "desligado"):
+                conditions.append("status = ?"); values.append(status_filter)
+            if search:
+                conditions.append("(nome_completo ILIKE ? OR cpf ILIKE ? OR matricula ILIKE ?)")
+                like = f"%{search}%"; values.extend([like, like, like])
+            with connect() as database:
+                rows = database.execute(
+                    f"SELECT * FROM colaboradores WHERE {' AND '.join(conditions)} ORDER BY nome_completo",
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.colaborador_row(row) for row in rows]})
+            return
+        if path == "/api/colaboradores/dashboard":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_rh_dashboard"):
+                return
+            client_id = parse_qs(parsed_url.query).get("clientId", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            today = dt.date.today()
+            month_prefix = today.strftime("%Y-%m")
+            with connect() as database:
+                rows = database.execute(
+                    "SELECT * FROM colaboradores WHERE company_id = ? AND client_id = ?",
+                    (user["company_id"], client_id),
+                ).fetchall()
+            ativos = [row for row in rows if row["status"] == "ativo"]
+            afastados = [row for row in rows if row["status"] == "afastado"]
+            admitidos_mes = [row for row in rows if (row["data_admissao"] or "").startswith(month_prefix)]
+            desligados_mes = [row for row in rows if (row["data_desligamento"] or "").startswith(month_prefix)]
+            aniversariantes = []
+            for row in rows:
+                nascimento = row["data_nascimento"] or ""
+                if len(nascimento) >= 10 and nascimento[5:7] == today.strftime("%m"):
+                    aniversariantes.append({"nome": row["nome_completo"], "dataNascimento": nascimento, "cargo": row["cargo"] or ""})
+            experiencia_vencendo = []
+            for row in ativos:
+                if row["tipo_contrato"] != "experiencia" or not row["data_admissao"]:
+                    continue
+                try:
+                    admissao = dt.date.fromisoformat(row["data_admissao"][:10])
+                except ValueError:
+                    continue
+                fim_experiencia = admissao + dt.timedelta(days=90)
+                dias_restantes = (fim_experiencia - today).days
+                if -5 <= dias_restantes <= 15:
+                    experiencia_vencendo.append({"nome": row["nome_completo"], "cargo": row["cargo"] or "", "diasRestantes": dias_restantes, "dataFim": fim_experiencia.isoformat()})
+            por_departamento: dict[str, int] = {}
+            for row in ativos:
+                key = row["departamento"] or "Sem departamento"
+                por_departamento[key] = por_departamento.get(key, 0) + 1
+            self.send_json({
+                "headcountAtivos": len(ativos), "afastados": len(afastados),
+                "admitidosMes": len(admitidos_mes), "desligadosMes": len(desligados_mes),
+                "aniversariantes": aniversariantes, "experienciaVencendo": experiencia_vencendo,
+                "porDepartamento": [{"departamento": key, "total": total} for key, total in sorted(por_departamento.items(), key=lambda item: -item[1])],
+                "custoTotalFolha": sum(float(row["salario"] or 0) for row in ativos),
+            })
+            return
+        colaborador_get_match = re.fullmatch(r"/api/colaboradores/([a-f0-9]{32})", path)
+        if colaborador_get_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_colaboradores"):
+                return
+            with connect() as database:
+                row = database.execute(
+                    "SELECT * FROM colaboradores WHERE id = ? AND company_id = ?",
+                    (colaborador_get_match.group(1), user["company_id"]),
+                ).fetchone()
+            if row is None:
+                self.send_json({"error": "Colaborador não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"item": self.colaborador_row(row)})
+            return
         if path == "/api/support/categories":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_central_suporte"):
@@ -7423,6 +7621,39 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             self.send_json({"ticket": self.support_ticket_summary(updated)})
             return
 
+        if path == "/api/colaboradores":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_colaboradores"):
+                return
+            try:
+                fields = colaborador_fields_from_payload(payload)
+                client_id = str(payload.get("clientId", "")).strip()
+                client_name = str(payload.get("clientName", "")).strip()[:200]
+                if not client_id or not client_name:
+                    raise ValueError("Informe o cliente.")
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    existing = database.execute(
+                        "SELECT id FROM colaboradores WHERE company_id = ? AND client_id = ? AND cpf = ?",
+                        (user["company_id"], client_id, fields["cpf"]),
+                    ).fetchone()
+                    if existing is not None:
+                        raise ValueError("Já existe um colaborador com este CPF para este cliente.")
+                    columns = ["id", "company_id", "client_id", "client_name", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], client_id, client_name, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(
+                        f"INSERT INTO colaboradores({', '.join(columns)}) VALUES ({placeholders})",
+                        values,
+                    )
+                    saved = database.execute("SELECT * FROM colaboradores WHERE id = ?", (row_id,)).fetchone()
+                self.audit(user["email"], "colaborador_criado", f"{fields['nome_completo']} · {client_name}")
+                self.send_json({"ok": True, "item": self.colaborador_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
         if path == "/api/acompanhamento-contabil":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_acompanhamento_contabil"):
@@ -7718,6 +7949,23 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = self._alias_users_path(urlparse(self.path).path)
+        colaborador_delete_match = re.fullmatch(r"/api/colaboradores/([a-f0-9]{32})", path)
+        if colaborador_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute(
+                    "SELECT * FROM colaboradores WHERE id = ? AND company_id = ?",
+                    (colaborador_delete_match.group(1), administrator["company_id"]),
+                ).fetchone()
+                if target is None:
+                    self.send_json({"error": "Colaborador não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM colaboradores WHERE id = ?", (colaborador_delete_match.group(1),))
+            self.audit(administrator["email"], "colaborador_excluido", f"{target['nome_completo']} · {target['client_name']}")
+            self.send_json({"ok": True})
+            return
         managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
         if managed_user_match:
             administrator = self.require_admin()
@@ -7802,6 +8050,39 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         path = self._alias_users_path(urlparse(self.path).path)
+
+        colaborador_put_match = re.fullmatch(r"/api/colaboradores/([a-f0-9]{32})", path)
+        if colaborador_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_colaboradores"):
+                return
+            try:
+                payload = self.read_json()
+                fields = colaborador_fields_from_payload(payload)
+                with connect() as database:
+                    existing = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_put_match.group(1), user["company_id"]),
+                    ).fetchone()
+                    if existing is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    duplicate = database.execute(
+                        "SELECT id FROM colaboradores WHERE company_id = ? AND client_id = (SELECT client_id FROM colaboradores WHERE id = ?) AND cpf = ? AND id != ?",
+                        (user["company_id"], colaborador_put_match.group(1), fields["cpf"], colaborador_put_match.group(1)),
+                    ).fetchone()
+                    if duplicate is not None:
+                        raise ValueError("Já existe outro colaborador com este CPF para este cliente.")
+                    assignments = ", ".join(f"{column} = ?" for column in fields.keys())
+                    database.execute(
+                        f"UPDATE colaboradores SET {assignments}, updated_by = ?, updated_at = ? WHERE id = ?",
+                        list(fields.values()) + [user["email"], local_now(), colaborador_put_match.group(1)],
+                    )
+                    saved = database.execute("SELECT * FROM colaboradores WHERE id = ?", (colaborador_put_match.group(1),)).fetchone()
+                self.audit(user["email"], "colaborador_atualizado", f"{fields['nome_completo']} · {saved['client_name']}")
+                self.send_json({"ok": True, "item": self.colaborador_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
 
         user_permissions_match = re.fullmatch(r"/api/users/([a-f0-9]{32})/permissions", path)
         if user_permissions_match:

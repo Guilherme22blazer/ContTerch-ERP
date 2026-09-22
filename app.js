@@ -271,6 +271,8 @@
     { route: 'analise-balanco', label: 'Análise de Balanço', icon: '▦', desc: 'Liquidez, endividamento, rentabilidade e diagnóstico patrimonial' },
     { route: 'lancamentos-contabeis', label: 'Lançamentos Contábeis', icon: '▤', desc: 'Índice alfabético, busca, favoritos e modelos de débito e crédito' },
     { route: 'acompanhamento-contabil', label: 'Acompanhamento Contábil', icon: '◫', desc: 'Painel mensal do status contábil (documentos, escrituração, apuração, fechamento e obrigações) de cada cliente' },
+    { route: 'rh-dashboard', label: 'Dashboard de RH', icon: '◉', desc: 'Headcount, admissões, desligamentos, aniversariantes e contratos de experiência do cliente selecionado' },
+    { route: 'colaboradores', label: 'Cadastro de Colaboradores', icon: '♟', desc: 'Ficha completa do colaborador — dados pessoais, profissionais e dependentes' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -5310,6 +5312,8 @@
     else if (state.route === 'analise-balanco') main.innerHTML = renderBalanceAnalysis();
     else if (state.route === 'lancamentos-contabeis') main.innerHTML = renderAccountingEntries();
     else if (state.route === 'acompanhamento-contabil') main.innerHTML = renderAcompanhamentoContabil();
+    else if (state.route === 'rh-dashboard') main.innerHTML = renderRhDashboard();
+    else if (state.route === 'colaboradores') main.innerHTML = renderColaboradores();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -5335,6 +5339,8 @@
     if (state.route === 'emissor-nfe') { if (!nfeioState.loaded) loadNfeioSettings(); loadNfeioInvoices(); }
     if (state.route === 'nfse-nacional') { if (!nfseNacionalState.loaded) loadNfseNacionalInfo(); if (!nfseNacionalState.sync.running) loadNfseNacionalConsulta(); }
     if (state.route === 'acompanhamento-contabil' && !acompanhamentoContabilState.loaded) loadAcompanhamentoContabil();
+    if (state.route === 'rh-dashboard' && rhDashboardState.loadedForClient !== (currentClient() && currentClient().id)) loadRhDashboard();
+    if (state.route === 'colaboradores' && colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
     if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
     if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
     if (state.route === 'configuracoes') loadStripeSettings();
@@ -7614,6 +7620,272 @@
     var hero = $('#hr-calc-result-hero'); if (hero) hero.innerHTML = result.heroHtml || '';
   }
 
+  function brDate(value) {
+    var text = String(value || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text.split('-').reverse().join('/') : (text || '—');
+  }
+
+  var rhDashboardState = { loadedForClient: null, loading: false, data: null };
+  var colaboradoresState = { loadedForClient: null, loading: false, items: [] };
+  function colaboradoresUi() {
+    if (!state.colaboradoresUi) state.colaboradoresUi = { view: 'list', editingId: null, query: '', statusFilter: '', formSeed: null, formDependentes: [] };
+    return state.colaboradoresUi;
+  }
+  function loadRhDashboard(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && rhDashboardState.loadedForClient === client.id) return Promise.resolve();
+    rhDashboardState.loading = true;
+    return apiRequest('/api/colaboradores/dashboard?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      rhDashboardState.data = payload;
+      rhDashboardState.loadedForClient = client.id;
+      rhDashboardState.loading = false;
+      if (state.route === 'rh-dashboard') route();
+    }).catch(function (error) {
+      rhDashboardState.loading = false;
+      toast('Não foi possível carregar o dashboard', error.message, 'error');
+    });
+  }
+  function renderRhDashboard() {
+    var client = currentClient();
+    if (!client) return pageHeading('Dashboard de RH', 'Selecione um cliente no topo da página para ver os indicadores.', '');
+    var data = rhDashboardState.loadedForClient === client.id ? rhDashboardState.data : null;
+    var kpis = data ? [
+      { label: 'Colaboradores ativos', value: data.headcountAtivos, icon: '♟' },
+      { label: 'Admitidos no mês', value: data.admitidosMes, icon: '↳' },
+      { label: 'Desligados no mês', value: data.desligadosMes, icon: '↴' },
+      { label: 'Afastados', value: data.afastados, icon: '⛑' },
+      { label: 'Aniversariantes no mês', value: data.aniversariantes.length, icon: '★' },
+      { label: 'Experiência vencendo (±15 dias)', value: data.experienciaVencendo.length, icon: '◲' }
+    ] : [];
+    return [
+      pageHeading('Dashboard de RH — ' + esc(client.name), 'Indicadores de headcount, admissões, desligamentos e alertas do mês para o cliente selecionado.', '<button class="secondary-button" data-action="rh-dashboard-refresh">⟲ Atualizar</button>'),
+      !data ? '<div class="info-banner"><span>i</span><div>Carregando indicadores...</div></div>' : '',
+      '<section class="kpi-grid">' + kpis.map(function (item) { return '<article class="kpi-card"><span class="kpi-icon">' + item.icon + '</span><div><b>' + item.value + '</b><small>' + esc(item.label) + '</small></div></article>'; }).join('') + '</section>',
+      !data ? '' : ('<section class="card"><header class="card-header"><div><h2>Aniversariantes do mês</h2></div></header><div class="card-body">' + (data.aniversariantes.length ? '<ul class="rh-simple-list">' + data.aniversariantes.map(function (item) { return '<li><b>' + esc(item.nome) + '</b><span>' + esc(item.cargo || 'Sem cargo') + ' · ' + brDate(item.dataNascimento) + '</span></li>'; }).join('') + '</ul>' : '<p class="subtle">Nenhum aniversariante este mês.</p>') + '</div></section>'),
+      !data ? '' : ('<section class="card"><header class="card-header"><div><h2>Contratos de experiência vencendo</h2><small>Janela de 90 dias a partir da admissão, ±15 dias</small></div></header><div class="card-body">' + (data.experienciaVencendo.length ? '<ul class="rh-simple-list">' + data.experienciaVencendo.map(function (item) { return '<li><b>' + esc(item.nome) + '</b><span>' + esc(item.cargo || 'Sem cargo') + ' · ' + (item.diasRestantes >= 0 ? 'vence em ' + item.diasRestantes + ' dia(s)' : 'venceu há ' + Math.abs(item.diasRestantes) + ' dia(s)') + '</span></li>'; }).join('') + '</ul>' : '<p class="subtle">Nenhum contrato de experiência vencendo nos próximos 15 dias.</p>') + '</div></section>'),
+      !data ? '' : ('<section class="card"><header class="card-header"><div><h2>Colaboradores ativos por departamento</h2></div></header><div class="card-body">' + (data.porDepartamento.length ? data.porDepartamento.map(function (item) { return '<div class="rh-dept-bar"><span>' + esc(item.departamento) + '</span><b>' + item.total + '</b></div>'; }).join('') : '<p class="subtle">Cadastre colaboradores para ver a distribuição por departamento.</p>') + '</div></section>'),
+      !data ? '' : ('<div class="info-banner"><span>i</span><div><strong>Custo total estimado da folha ativa:</strong> ' + money(data.custoTotalFolha) + ' — soma dos salários cadastrados dos colaboradores ativos. Não inclui encargos, benefícios ou provisões (use a Central de Calculadoras RH & DP para esses cálculos).</div></div>')
+    ].join('');
+  }
+  function loadColaboradores(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && colaboradoresState.loadedForClient === client.id) return Promise.resolve();
+    colaboradoresState.loading = true;
+    return apiRequest('/api/colaboradores?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      colaboradoresState.items = payload.items || [];
+      colaboradoresState.loadedForClient = client.id;
+      colaboradoresState.loading = false;
+      if (state.route === 'colaboradores') route();
+    }).catch(function (error) {
+      colaboradoresState.loading = false;
+      toast('Não foi possível carregar os colaboradores', error.message, 'error');
+    });
+  }
+  function colabField(id, label, value, opts) {
+    opts = opts || {};
+    return '<label class="field' + (opts.full ? ' field--full' : '') + '"><span>' + esc(label) + '</span><input id="colab-' + id + '" data-colab-input type="' + (opts.type || 'text') + '"' + (opts.step ? ' step="' + opts.step + '" min="0"' : '') + ' value="' + esc(value == null ? '' : value) + '" placeholder="' + esc(opts.placeholder || '') + '"></label>';
+  }
+  function colabSelect(id, label, value, options, opts) {
+    opts = opts || {};
+    return '<label class="field' + (opts.full ? ' field--full' : '') + '"><span>' + esc(label) + '</span><select id="colab-' + id + '" data-colab-input>' + options.map(function (item) { return '<option value="' + item.value + '"' + (String(item.value) === String(value || '') ? ' selected' : '') + '>' + esc(item.label) + '</option>'; }).join('') + '</select></label>';
+  }
+  function colabDependentesHtml(list) {
+    var parentescoOptions = ['', 'Cônjuge', 'Filho(a)', 'Enteado(a)', 'Outro'];
+    return (list || []).map(function (dep, index) {
+      return '<div class="colab-dependente-row" data-dep-row data-index="' + index + '">' +
+        '<input type="text" placeholder="Nome do dependente" value="' + esc(dep.nome || '') + '" data-dep-field="nome">' +
+        '<input type="text" placeholder="CPF" value="' + esc(dep.cpf || '') + '" data-dep-field="cpf">' +
+        '<input type="date" data-dep-field="dataNascimento" value="' + esc(dep.dataNascimento || '') + '">' +
+        '<select data-dep-field="parentesco">' + parentescoOptions.map(function (item) { return '<option value="' + item + '"' + (dep.parentesco === item ? ' selected' : '') + '>' + (item || 'Parentesco') + '</option>'; }).join('') + '</select>' +
+        '<label class="check"><input type="checkbox" data-dep-field="dependenteIrrf"' + (dep.dependenteIrrf ? ' checked' : '') + '> IRRF</label>' +
+        '<label class="check"><input type="checkbox" data-dep-field="dependenteSalarioFamilia"' + (dep.dependenteSalarioFamilia ? ' checked' : '') + '> Sal. família</label>' +
+        '<button type="button" class="row-button" data-action="colab-dep-remove" data-index="' + index + '" title="Remover dependente">✕</button>' +
+      '</div>';
+    }).join('');
+  }
+  function colabDependentesFromDom() {
+    return $$('.colab-dependente-row').map(function (row) {
+      var field = function (name) { return row.querySelector('[data-dep-field="' + name + '"]'); };
+      return {
+        nome: (field('nome') || {}).value || '', cpf: (field('cpf') || {}).value || '',
+        dataNascimento: (field('dataNascimento') || {}).value || '', parentesco: (field('parentesco') || {}).value || '',
+        dependenteIrrf: !!(field('dependenteIrrf') || {}).checked, dependenteSalarioFamilia: !!(field('dependenteSalarioFamilia') || {}).checked
+      };
+    });
+  }
+  function colabCaptureFormState() {
+    var raw = {};
+    $$('[data-colab-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^colab-/, '')] = el.value; });
+    colaboradoresUi().formSeed = Object.assign({}, colaboradoresUi().formSeed || {}, raw);
+  }
+  function addColabDependente() {
+    colabCaptureFormState();
+    colaboradoresUi().formDependentes = colabDependentesFromDom().concat([{ nome: '', cpf: '', dataNascimento: '', parentesco: '', dependenteIrrf: false, dependenteSalarioFamilia: false }]);
+    route();
+  }
+  function removeColabDependente(index) {
+    colabCaptureFormState();
+    var list = colabDependentesFromDom();
+    list.splice(index, 1);
+    colaboradoresUi().formDependentes = list;
+    route();
+  }
+  function openColaboradorForm(id) {
+    var ui = colaboradoresUi();
+    if (id) {
+      var item = (colaboradoresState.items || []).find(function (row) { return row.id === id; });
+      if (!item) return;
+      ui.editingId = id; ui.formSeed = Object.assign({}, item); ui.formDependentes = (item.dependentes || []).slice();
+    } else {
+      ui.editingId = null; ui.formSeed = { status: 'ativo', nacionalidade: 'Brasileira' }; ui.formDependentes = [];
+    }
+    ui.view = 'form';
+    route();
+  }
+  function closeColaboradorForm() {
+    var ui = colaboradoresUi();
+    ui.view = 'list'; ui.editingId = null; ui.formSeed = null; ui.formDependentes = [];
+    route();
+  }
+  function submitColaboradorForm() {
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página antes de cadastrar um colaborador.', 'error'); return; }
+    colabCaptureFormState();
+    var seed = colaboradoresUi().formSeed || {};
+    if (!String(seed.nomeCompleto || '').trim()) { toast('Nome obrigatório', 'Informe o nome completo do colaborador.', 'error'); return; }
+    var payload = Object.assign({}, seed, {
+      dependentes: colabDependentesFromDom().filter(function (dep) { return String(dep.nome || '').trim(); }),
+      clientId: client.id, clientName: client.name
+    });
+    var editingId = colaboradoresUi().editingId;
+    var request = editingId
+      ? apiRequest('/api/colaboradores/' + editingId, { method: 'PUT', body: JSON.stringify(payload) })
+      : apiRequest('/api/colaboradores', { method: 'POST', body: JSON.stringify(payload) });
+    request.then(function (result) {
+      toast(editingId ? 'Colaborador atualizado' : 'Colaborador cadastrado', result.item.nomeCompleto);
+      audit(editingId ? 'Colaborador atualizado' : 'Colaborador cadastrado', result.item.nomeCompleto + ' · ' + client.name);
+      closeColaboradorForm();
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível salvar', error.message, 'error'); });
+  }
+  function deleteColaborador(id) {
+    var item = (colaboradoresState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir definitivamente o colaborador ' + item.nomeCompleto + '? Esta ação não pode ser desfeita.')) return;
+    apiRequest('/api/colaboradores/' + id, { method: 'DELETE' }).then(function () {
+      toast('Colaborador excluído', item.nomeCompleto);
+      audit('Colaborador excluído', item.nomeCompleto);
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderColaboradorForm() {
+    var ui = colaboradoresUi(), seed = ui.formSeed || {}, client = currentClient();
+    var sexoOptions = [{ value: '', label: 'Selecione' }, { value: 'Feminino', label: 'Feminino' }, { value: 'Masculino', label: 'Masculino' }, { value: 'Outro', label: 'Outro' }];
+    var estadoCivilOptions = [{ value: '', label: 'Selecione' }, { value: 'Solteiro(a)', label: 'Solteiro(a)' }, { value: 'Casado(a)', label: 'Casado(a)' }, { value: 'Divorciado(a)', label: 'Divorciado(a)' }, { value: 'Viúvo(a)', label: 'Viúvo(a)' }, { value: 'União estável', label: 'União estável' }];
+    var statusOptions = [{ value: 'ativo', label: 'Ativo' }, { value: 'afastado', label: 'Afastado' }, { value: 'desligado', label: 'Desligado' }];
+    var tipoContratoOptions = [{ value: '', label: 'Selecione' }, { value: 'indeterminado', label: 'Prazo indeterminado' }, { value: 'determinado', label: 'Prazo determinado' }, { value: 'experiencia', label: 'Experiência' }, { value: 'temporario', label: 'Temporário' }, { value: 'aprendiz', label: 'Aprendiz' }, { value: 'estagio', label: 'Estágio' }, { value: 'intermitente', label: 'Intermitente' }];
+    var regimeOptions = [{ value: '', label: 'Selecione' }, { value: 'presencial', label: 'Presencial' }, { value: 'teletrabalho', label: 'Teletrabalho' }, { value: 'hibrido', label: 'Híbrido' }];
+    return [
+      pageHeading(ui.editingId ? 'Editar Colaborador' : 'Novo Colaborador', client ? ('Cliente: ' + client.name) : '', '<button class="secondary-button" data-action="colab-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados pessoais</h2></div></header><div class="card-body"><div class="form-grid">' +
+        colabField('nomeCompleto', 'Nome completo', seed.nomeCompleto, { full: true }) +
+        colabField('nomeSocial', 'Nome social', seed.nomeSocial) +
+        colabField('cpf', 'CPF', seed.cpf, { placeholder: 'Somente números' }) +
+        colabField('rg', 'RG', seed.rg) +
+        colabField('dataNascimento', 'Data de nascimento', seed.dataNascimento, { type: 'date' }) +
+        colabSelect('sexo', 'Sexo', seed.sexo, sexoOptions) +
+        colabSelect('estadoCivil', 'Estado civil', seed.estadoCivil, estadoCivilOptions) +
+        colabField('nacionalidade', 'Nacionalidade', seed.nacionalidade) +
+        colabField('naturalidade', 'Naturalidade', seed.naturalidade) +
+        colabField('telefone', 'Telefone', seed.telefone) +
+        colabField('email', 'E-mail', seed.email, { type: 'email' }) +
+        colabField('enderecoCep', 'CEP', seed.enderecoCep) +
+        colabField('enderecoLogradouro', 'Logradouro', seed.enderecoLogradouro) +
+        colabField('enderecoNumero', 'Número', seed.enderecoNumero) +
+        colabField('enderecoComplemento', 'Complemento', seed.enderecoComplemento) +
+        colabField('enderecoBairro', 'Bairro', seed.enderecoBairro) +
+        colabField('enderecoCidade', 'Cidade', seed.enderecoCidade) +
+        colabField('enderecoUf', 'UF', seed.enderecoUf) +
+        colabField('bancoNome', 'Banco', seed.bancoNome) +
+        colabField('bancoAgencia', 'Agência', seed.bancoAgencia) +
+        colabField('bancoConta', 'Conta', seed.bancoConta) +
+        colabField('bancoTipoConta', 'Tipo de conta', seed.bancoTipoConta) +
+        colabField('pixChave', 'Chave Pix', seed.pixChave) +
+        colabField('pisPasep', 'PIS/PASEP', seed.pisPasep) +
+        colabField('ctpsNumero', 'CTPS — Número', seed.ctpsNumero) +
+        colabField('ctpsSerie', 'CTPS — Série', seed.ctpsSerie) +
+        colabField('cnhNumero', 'CNH — Número', seed.cnhNumero) +
+        colabField('cnhCategoria', 'CNH — Categoria', seed.cnhCategoria) +
+      '</div></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>Dados profissionais</h2></div></header><div class="card-body"><div class="form-grid">' +
+        colabField('matricula', 'Matrícula', seed.matricula) +
+        colabSelect('status', 'Status', seed.status || 'ativo', statusOptions) +
+        colabField('departamento', 'Departamento', seed.departamento) +
+        colabField('setor', 'Setor', seed.setor) +
+        colabField('cargo', 'Cargo', seed.cargo) +
+        colabField('funcao', 'Função', seed.funcao) +
+        colabField('cbo', 'CBO', seed.cbo) +
+        colabField('centroCusto', 'Centro de custo', seed.centroCusto) +
+        colabField('gestorNome', 'Gestor', seed.gestorNome) +
+        colabField('dataAdmissao', 'Data de admissão', seed.dataAdmissao, { type: 'date' }) +
+        colabSelect('tipoContrato', 'Tipo de contrato', seed.tipoContrato, tipoContratoOptions) +
+        colabSelect('regimeTrabalho', 'Regime de trabalho', seed.regimeTrabalho, regimeOptions) +
+        colabField('jornada', 'Jornada', seed.jornada, { placeholder: 'Ex.: 44h semanais' }) +
+        colabField('escala', 'Escala', seed.escala, { placeholder: 'Ex.: 5x2' }) +
+        colabField('salario', 'Salário', seed.salario, { type: 'number', step: '0.01' }) +
+        colabField('categoriaProfissional', 'Categoria profissional', seed.categoriaProfissional) +
+        colabField('sindicato', 'Sindicato', seed.sindicato) +
+        colabField('convencaoColetiva', 'Convenção coletiva', seed.convencaoColetiva) +
+        colabField('dataBase', 'Data-base', seed.dataBase, { type: 'date' }) +
+        colabField('dataDesligamento', 'Data de desligamento', seed.dataDesligamento, { type: 'date' }) +
+        colabField('motivoDesligamento', 'Motivo do desligamento', seed.motivoDesligamento, { full: true }) +
+        colabField('notas', 'Observações', seed.notas, { full: true }) +
+      '</div></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>Dependentes</h2><small>Cônjuge, filhos e outros dependentes — para IRRF e salário-família</small></div><button class="secondary-button" type="button" data-action="colab-dep-add">+ Adicionar dependente</button></header><div class="card-body"><div class="colab-dependentes-list">' + colabDependentesHtml(ui.formDependentes) + '</div>' + (ui.formDependentes.length ? '' : '<p class="subtle">Nenhum dependente cadastrado.</p>') + '</div></section>',
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="colab-cancel">Cancelar</button><button class="primary-button" data-action="colab-save">💾 Salvar colaborador</button></div>'
+    ].join('');
+  }
+  function renderColaboradoresList() {
+    var client = currentClient(), ui = colaboradoresUi();
+    if (!client) return pageHeading('Cadastro de Colaboradores', 'Selecione um cliente no topo da página para gerenciar os colaboradores.', '');
+    var items = (colaboradoresState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.query) {
+        var q = cestNormalize(ui.query);
+        if (cestNormalize(item.nomeCompleto + ' ' + item.cpf + ' ' + (item.matricula || '')).indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    var statusLabel = { ativo: 'Ativo', afastado: 'Afastado', desligado: 'Desligado' };
+    var statusTag = { ativo: 'tag--success', afastado: 'tag--warning', desligado: 'tag--danger' };
+    var rows = items.map(function (item) {
+      return '<tr><td><b>' + esc(item.nomeCompleto) + '</b><br><small class="subtle">' + esc(item.matricula || '—') + '</small></td>' +
+        '<td>' + esc(item.cargo || '—') + '</td>' +
+        '<td>' + esc(item.departamento || '—') + '</td>' +
+        '<td>' + brDate(item.dataAdmissao) + '</td>' +
+        '<td>' + money(item.salario) + '</td>' +
+        '<td><span class="tag ' + (statusTag[item.status] || '') + '">' + (statusLabel[item.status] || item.status) + '</span></td>' +
+        '<td><button class="row-button" data-action="colab-edit" data-id="' + item.id + '" title="Editar">✎</button><button class="row-button" data-action="colab-delete" data-id="' + item.id + '" title="Excluir">🗑</button></td></tr>';
+    }).join('');
+    return [
+      pageHeading('Cadastro de Colaboradores', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' colaborador(es)', '<button class="primary-button" data-action="colab-new">+ Novo colaborador</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Buscar</span><input id="colab-query" type="text" value="' + esc(ui.query) + '" placeholder="Nome, CPF ou matrícula"></label>' +
+        '<label class="field"><span>Status</span><select id="colab-status-filter"><option value="">Todos</option><option value="ativo"' + (ui.statusFilter === 'ativo' ? ' selected' : '') + '>Ativo</option><option value="afastado"' + (ui.statusFilter === 'afastado' ? ' selected' : '') + '>Afastado</option><option value="desligado"' + (ui.statusFilter === 'desligado' ? ' selected' : '') + '>Desligado</option></select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Cargo</th><th>Departamento</th><th>Admissão</th><th>Salário</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty-state"><h3>Nenhum colaborador encontrado</h3><p>Cadastre o primeiro colaborador deste cliente.</p></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderColaboradores() {
+    return colaboradoresUi().view === 'form' ? renderColaboradorForm() : renderColaboradoresList();
+  }
+
   var ALIMONY_INSS_2026 = [
     { limit: 1621.00, rate: .075 },
     { limit: 2902.84, rate: .09 },
@@ -9671,6 +9943,14 @@
     else if (action === 'cest-copy') copyCestCode(actionEl.getAttribute('data-cest'));
     else if (action === 'hr-calc-open') openHrCalc(actionEl.getAttribute('data-calc'));
     else if (action === 'hr-calc-back') closeHrCalc();
+    else if (action === 'rh-dashboard-refresh') loadRhDashboard(true);
+    else if (action === 'colab-new') openColaboradorForm();
+    else if (action === 'colab-edit') openColaboradorForm(actionEl.getAttribute('data-id'));
+    else if (action === 'colab-cancel') closeColaboradorForm();
+    else if (action === 'colab-save') submitColaboradorForm();
+    else if (action === 'colab-delete') deleteColaborador(actionEl.getAttribute('data-id'));
+    else if (action === 'colab-dep-add') addColabDependente();
+    else if (action === 'colab-dep-remove') removeColabDependente(Number(actionEl.getAttribute('data-index')));
     else if (action === 'cest-export-json') exportCestResults('json');
     else if (action === 'cest-export-csv') exportCestResults('csv');
     else if (action === 'cest-print') window.print();
@@ -9993,6 +10273,10 @@
       state.cestFilterTimer = window.setTimeout(function () { renderCestResults(true); }, 90);
     } else if (event.target.matches('[data-hr-calc-input]')) {
       updateHrCalc();
+    } else if (event.target.id === 'colab-query') {
+      colaboradoresUi().query = event.target.value;
+      window.clearTimeout(state.colabQueryTimer);
+      state.colabQueryTimer = window.setTimeout(function () { route(); }, 200);
     } else if (event.target.matches('[data-rental-input]')) {
       updateRentalSimulator();
     } else if (event.target.matches('[data-trc-input]')) {
@@ -10068,6 +10352,7 @@
     else if (event.target.id === 'contracts-favorites-filter') { contractsUi().favoritesOnly = event.target.checked; contractsUi().page = 1; refreshContractsResults(false); }
     else if (['portfolio-responsible', 'portfolio-regime', 'portfolio-stage', 'portfolio-status'].indexOf(event.target.id) >= 0) filterPortfolioDashboard();
     else if (event.target.id === 'portfolio-progress-stage') { var selectedPortfolioStage = portfolioStage(event.target.value); if ($('#portfolio-progress-value')) $('#portfolio-progress-value').value = selectedPortfolioStage.progress; }
+    else if (event.target.id === 'colab-status-filter') { colaboradoresUi().statusFilter = event.target.value; route(); }
     else if (event.target.matches('[data-kanban-move]')) moveKanbanCard(event.target.getAttribute('data-id'), event.target.value);
     else if (['cest-filter-uf', 'cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
     else if (event.target.matches('[data-hr-calc-input]')) updateHrCalc();
