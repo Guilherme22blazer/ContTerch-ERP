@@ -22,7 +22,7 @@
     'cnpj-simples': 'tab_cnpj_simples', 'analise-balanco': 'tab_analise_balanco',
     'lancamentos-contabeis': 'tab_lancamentos_contabeis', 'acompanhamento-contabil': 'tab_acompanhamento_contabil',
     'rh-dashboard': 'tab_rh_dashboard', colaboradores: 'tab_colaboradores', ferias: 'tab_ferias', afastamentos: 'tab_afastamentos', beneficios: 'tab_beneficios',
-    'ponto-eletronico': 'tab_ponto_eletronico', 'banco-horas': 'tab_banco_horas', rescisoes: 'tab_rescisoes', folha: 'tab_folha',
+    'ponto-eletronico': 'tab_ponto_eletronico', 'banco-horas': 'tab_banco_horas', rescisoes: 'tab_rescisoes', holerite: 'tab_holerite', folha: 'tab_folha',
     'horas-extras-noturno': 'tab_horas_extras_noturno', 'verbas-rescisorias': 'tab_verbas_rescisorias',
     'seguro-desemprego': 'tab_seguro_desemprego', 'gps-atraso': 'tab_gps_atraso',
     'pro-labore': 'tab_pro_labore', 'irrf-aliquota-efetiva': 'tab_irrf_aliquota_efetiva',
@@ -36,7 +36,7 @@
     { label: 'Visão geral', keys: ['tab_inicio'] },
     { label: 'Área Fiscal', keys: ['tab_sefaz_portal', 'tab_captador_notas_fiscais', 'tab_auditor_fiscal', 'tab_dashboard', 'tab_conttech_simples_nacional', 'tab_diagnostico', 'tab_mei', 'tab_controle_mei', 'tab_obrigacoes', 'tab_certidao_regularidade_fiscal', 'tab_ibs_cbs', 'tab_transicao_reforma', 'tab_recuperador_pis_cofins', 'tab_planejamento_tributario', 'tab_lei_complementar', 'tab_mei_ibs_cbs', 'tab_parametros_2026', 'tab_consulta_cnpj', 'tab_inscricao_estadual', 'tab_cnae_servicos', 'tab_ncm_tipi', 'tab_consulta_cest', 'tab_cfop', 'tab_icms_difal', 'tab_aliquotas_beneficios', 'tab_aliquotas_iss', 'tab_emissor_nfe', 'tab_nfse_nacional', 'tab_simulador_locacao', 'tab_nbs_cclasstrib', 'tab_calculadora_tributaria', 'tab_cnpj_simples', 'tab_comparativo_regimes'] },
     { label: 'Área Contábil', keys: ['tab_analise_balanco', 'tab_lancamentos_contabeis', 'tab_acompanhamento_contabil'] },
-    { label: 'RH & Departamento Pessoal', keys: ['tab_rh_dashboard', 'tab_colaboradores', 'tab_ferias', 'tab_afastamentos', 'tab_beneficios', 'tab_ponto_eletronico', 'tab_banco_horas', 'tab_rescisoes'] },
+    { label: 'RH & Departamento Pessoal', keys: ['tab_rh_dashboard', 'tab_colaboradores', 'tab_ferias', 'tab_afastamentos', 'tab_beneficios', 'tab_ponto_eletronico', 'tab_banco_horas', 'tab_rescisoes', 'tab_holerite'] },
     { label: 'Área Trabalhista', keys: ['tab_folha', 'tab_horas_extras_noturno', 'tab_verbas_rescisorias', 'tab_seguro_desemprego', 'tab_gps_atraso', 'tab_pro_labore', 'tab_irrf_aliquota_efetiva', 'tab_pensao_alimenticia', 'tab_central_calculadoras_rh'] },
     { label: 'Outros', keys: ['tab_kanban', 'tab_central_formularios', 'tab_modelos_contratos', 'tab_clientes', 'tab_gestao_usuarios', 'tab_configuracoes', 'tab_historico', 'tab_central_suporte'] }
   ];

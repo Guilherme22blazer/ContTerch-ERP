@@ -188,6 +188,7 @@ ERP_MODULES = {
     "tab_ponto_eletronico": "Ponto Eletrônico",
     "tab_banco_horas": "Banco de Horas",
     "tab_rescisoes": "Rescisão",
+    "tab_holerite": "Holerite",
     "tab_folha": "Folha de Pagamento",
     "tab_horas_extras_noturno": "Horas Extras e Trabalho Noturno",
     "tab_verbas_rescisorias": "Verbas Rescisórias",
@@ -217,7 +218,7 @@ FISCAL_TAB_MODULES = {
     "tab_comparativo_regimes",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab_acompanhamento_contabil"}
-RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos", "tab_beneficios", "tab_ponto_eletronico", "tab_banco_horas", "tab_rescisoes"}
+RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos", "tab_beneficios", "tab_ponto_eletronico", "tab_banco_horas", "tab_rescisoes", "tab_holerite"}
 TRABALHISTA_TAB_MODULES = {
     "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
     "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",

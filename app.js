@@ -279,6 +279,7 @@
     { route: 'ponto-eletronico', label: 'Ponto Eletrônico', icon: '◷', desc: 'Registro diário de entrada, saída, intervalo, faltas e trabalho noturno por colaborador' },
     { route: 'banco-horas', label: 'Banco de Horas', icon: '▧', desc: 'Saldo de horas por colaborador, ajustes manuais e valor estimado' },
     { route: 'rescisoes', label: 'Rescisão', icon: '⇥', desc: 'Cálculo completo de rescisão por colaborador, com desligamento automático e demonstrativo' },
+    { route: 'holerite', label: 'Holerite', icon: '▤', desc: 'Demonstrativo de pagamento por colaborador e competência, pronto para impressão' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -5326,6 +5327,7 @@
     else if (state.route === 'ponto-eletronico') main.innerHTML = renderPonto();
     else if (state.route === 'banco-horas') main.innerHTML = renderBancoHoras();
     else if (state.route === 'rescisoes') main.innerHTML = renderRescisoes();
+    else if (state.route === 'holerite') main.innerHTML = renderHolerite();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -5359,6 +5361,11 @@
     if (state.route === 'ponto-eletronico') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (pontoState.loadedForClient !== (currentClient() && currentClient().id)) loadPonto(); }
     if (state.route === 'banco-horas') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (bancoHorasState.loadedForClient !== (currentClient() && currentClient().id)) loadBancoHoras(); }
     if (state.route === 'rescisoes') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (rescisoesState.loadedForClient !== (currentClient() && currentClient().id)) loadRescisoes(); }
+    if (state.route === 'holerite') {
+      if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
+      if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios();
+      if (pontoState.loadedForClient !== (currentClient() && currentClient().id)) loadPonto();
+    }
     if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
     if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
     if (state.route === 'configuracoes') loadStripeSettings();
@@ -8786,6 +8793,72 @@
   }
   function renderRescisoes() { return rescisoesUi().view === 'form' ? renderRescisaoForm() : renderRescisoesList(); }
 
+  function holeriteUi() {
+    if (!state.holeriteUi) state.holeriteUi = { colaboradorId: '', competencia: todayISO().slice(0, 7) };
+    return state.holeriteUi;
+  }
+  function holeriteColaboradorOptions(selected) {
+    return '<option value="">Selecione um colaborador</option>' + (colaboradoresState.items || []).map(function (item) {
+      return '<option value="' + item.id + '"' + (item.id === selected ? ' selected' : '') + '>' + esc(item.nomeCompleto) + (item.cargo ? ' — ' + esc(item.cargo) : '') + '</option>';
+    }).join('');
+  }
+  function holeriteCompute(colaborador, competencia) {
+    var pontoDoMes = (pontoState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id && item.data.indexOf(competencia) === 0 && item.status === 'aprovado'; });
+    var horaValor = colaborador.salario ? colaborador.salario / 220 : 0;
+    var horasExtras = 0, horasFalta = 0;
+    pontoDoMes.forEach(function (item) {
+      if (item.saldoDia > 0) horasExtras += item.saldoDia;
+      else if (item.tipoDia === 'falta') horasFalta += Math.abs(item.saldoDia);
+    });
+    var valorHorasExtras = horasExtras * horaValor * 1.5;
+    var valorFaltas = horasFalta * horaValor;
+    var beneficiosDoColaborador = (beneficiosState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id && item.status === 'ativo'; });
+    var proventos = [{ descricao: 'Salário base', valor: Number(colaborador.salario || 0) }];
+    if (valorHorasExtras > 0) proventos.push({ descricao: 'Horas extras (' + number(horasExtras) + 'h a 50%)', valor: valorHorasExtras });
+    var descontos = [];
+    if (valorFaltas > 0) descontos.push({ descricao: 'Faltas (' + number(horasFalta) + 'h)', valor: valorFaltas });
+    beneficiosDoColaborador.forEach(function (item) {
+      if (item.valorDescontoColaborador > 0) descontos.push({ descricao: beneficioTipoLabel(item.tipo) + (item.descricao ? ' — ' + item.descricao : ''), valor: item.valorDescontoColaborador });
+    });
+    var totalProventos = proventos.reduce(function (sum, item) { return sum + item.valor; }, 0);
+    var baseInss = totalProventos;
+    var inss = hrInssProgressive2026(baseInss).value;
+    var dependentCount = (colaborador.dependentes || []).filter(function (dep) { return dep.dependenteIrrf; }).length;
+    var irrfResult = calculateIrrfEffective({ gross: baseInss, dependents: dependentCount, alimony: 0, otherDeductions: 0, officialSocialSecurity: inss, deductionMode: 'auto' });
+    var totalDescontosBeneficios = descontos.reduce(function (sum, item) { return sum + item.valor; }, 0);
+    var totalDescontos = inss + irrfResult.irrf + totalDescontosBeneficios;
+    var beneficiosCustoEmpresa = beneficiosDoColaborador.reduce(function (sum, item) { return sum + item.valorCustoEmpresa; }, 0);
+    return {
+      proventos: proventos, descontos: descontos, totalProventos: totalProventos, inss: inss, irrf: irrfResult.irrf,
+      totalDescontos: totalDescontos, liquido: totalProventos - totalDescontos, fgts: baseInss * HR_CALC_LEGAL_2026.fgtsRate,
+      baseInss: baseInss, horasExtras: horasExtras, horasFalta: horasFalta, beneficiosCustoEmpresa: beneficiosCustoEmpresa
+    };
+  }
+  function renderHolerite() {
+    var client = currentClient();
+    if (!client) return pageHeading('Holerite', 'Selecione um cliente no topo da página para gerar o holerite.', '');
+    var ui = holeriteUi();
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === ui.colaboradorId; });
+    var resultado = colaborador ? holeriteCompute(colaborador, ui.competencia) : null;
+    var competenciaLabel = ui.competencia ? ui.competencia.split('-').reverse().join('/') : '';
+    return [
+      pageHeading('Holerite', 'Cliente: ' + esc(client.name), colaborador ? '<button class="secondary-button" data-action="print-page">▣ PDF / imprimir</button>' : ''),
+      '<section class="card"><div class="card-body"><div class="form-grid" style="grid-template-columns:2fr 1fr">' +
+        '<label class="field"><span>Colaborador</span><select id="holerite-colaboradorId">' + holeriteColaboradorOptions(ui.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Competência</span><input id="holerite-competencia" type="month" value="' + esc(ui.competencia) + '"></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador e a competência para gerar o holerite.</div></div>' : (
+        '<section class="card holerite-sheet"><div class="card-body">' +
+          '<div class="holerite-header"><div><b>' + esc(client.name) + '</b><small>Recibo de pagamento — competência ' + esc(competenciaLabel) + '</small></div><div><b>' + esc(colaborador.nomeCompleto) + '</b><small>' + esc(colaborador.cargo || '') + (colaborador.matricula ? ' · matrícula ' + esc(colaborador.matricula) : '') + '</small></div></div>' +
+          '<div class="table-wrap"><table><thead><tr><th>Proventos</th><th>Valor</th></tr></thead><tbody>' + resultado.proventos.map(function (item) { return '<tr><td>' + esc(item.descricao) + '</td><td>' + money(item.valor) + '</td></tr>'; }).join('') + '<tr class="hr-calc-total-row"><td><b>Total de proventos</b></td><td><b>' + money(resultado.totalProventos) + '</b></td></tr></tbody></table></div>' +
+          '<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Descontos</th><th>Valor</th></tr></thead><tbody>' + resultado.descontos.map(function (item) { return '<tr><td>' + esc(item.descricao) + '</td><td>' + money(item.valor) + '</td></tr>'; }).join('') + '<tr><td>INSS (base ' + money(resultado.baseInss) + ')</td><td>' + money(resultado.inss) + '</td></tr><tr><td>IRRF</td><td>' + money(resultado.irrf) + '</td></tr><tr class="hr-calc-total-row"><td><b>Total de descontos</b></td><td><b>' + money(resultado.totalDescontos) + '</b></td></tr></tbody></table></div>' +
+          '<div class="hr-calc-result-hero" style="margin-top:14px"><div><small>Líquido a receber</small><strong>' + money(resultado.liquido) + '</strong></div><div><small>FGTS do mês (informativo)</small><strong>' + money(resultado.fgts) + '</strong></div><div><small>Custo empresa em benefícios</small><strong>' + money(resultado.beneficiosCustoEmpresa) + '</strong></div></div>' +
+          '<div class="info-banner" style="margin-top:14px"><span>i</span><div>Holerite gerado a partir dos dados cadastrados (salário, benefícios ativos e ponto aprovado do mês). Não substitui o fechamento oficial da folha nem o processamento no sistema de folha de pagamento contratado.</div></div>' +
+        '</div></section>'
+      )
+    ].join('');
+  }
+
   var ALIMONY_INSS_2026 = [
     { limit: 1621.00, rate: .075 },
     { limit: 2902.84, rate: .09 },
@@ -11310,6 +11383,8 @@
     else if (event.target.matches('[data-rescisao-input]')) { updateRescisaoForm(); }
     else if (event.target.id === 'rescisao-colaborador-filter') { rescisoesUi().colaboradorFilter = event.target.value; route(); }
     else if (event.target.id === 'rescisao-status-filter') { rescisoesUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'holerite-colaboradorId') { holeriteUi().colaboradorId = event.target.value; route(); }
+    else if (event.target.id === 'holerite-competencia') { holeriteUi().competencia = event.target.value; route(); }
     else if (event.target.id === 'ponto-tipoDia') { pontoCaptureFormState(); route(); }
     else if (event.target.id === 'ponto-competencia-filter') { pontoUi().competencia = event.target.value; route(); }
     else if (event.target.id === 'ponto-colaborador-filter') { pontoUi().colaboradorFilter = event.target.value; route(); }
