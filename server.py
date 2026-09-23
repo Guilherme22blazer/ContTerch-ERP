@@ -165,7 +165,7 @@ ERP_MODULES = {
     "tab_inscricao_estadual": "Inscrição Estadual",
     "tab_cnae_servicos": "CNAE × Serviços",
     "tab_ncm_tipi": "NCM / TIPI",
-    "tab_consulta_cest": "Consulta CEST",
+    "tab_consulta_cest": "ICMS Substituição Tributária (CEST)",
     "tab_cfop": "CFOP",
     "tab_icms_difal": "ICMS / DIFAL",
     "tab_aliquotas_beneficios": "Alíquotas e Benefícios",
@@ -180,6 +180,16 @@ ERP_MODULES = {
     "tab_analise_balanco": "Análise de Balanço",
     "tab_lancamentos_contabeis": "Lançamentos Contábeis",
     "tab_acompanhamento_contabil": "Acompanhamento Contábil",
+    "tab_rh_dashboard": "Dashboard de RH",
+    "tab_colaboradores": "Cadastro de Colaboradores",
+    "tab_ferias": "Férias",
+    "tab_afastamentos": "Afastamentos",
+    "tab_beneficios": "Benefícios",
+    "tab_ponto_eletronico": "Ponto Eletrônico",
+    "tab_banco_horas": "Banco de Horas",
+    "tab_rescisoes": "Rescisão",
+    "tab_holerite": "Holerite",
+    "tab_documentos_rh": "Documentos",
     "tab_folha": "Folha de Pagamento",
     "tab_horas_extras_noturno": "Horas Extras e Trabalho Noturno",
     "tab_verbas_rescisorias": "Verbas Rescisórias",
@@ -188,6 +198,7 @@ ERP_MODULES = {
     "tab_pro_labore": "Pró-Labore",
     "tab_irrf_aliquota_efetiva": "Alíquota Efetiva do IRRF",
     "tab_pensao_alimenticia": "Pensão Alimentícia",
+    "tab_central_calculadoras_rh": "Central de Calculadoras RH & DP",
     "tab_kanban": "Quadro Kanban",
     "tab_central_formularios": "Central de Formulários",
     "tab_modelos_contratos": "Modelos e Contratos",
@@ -208,9 +219,11 @@ FISCAL_TAB_MODULES = {
     "tab_comparativo_regimes",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab_acompanhamento_contabil"}
+RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos", "tab_beneficios", "tab_ponto_eletronico", "tab_banco_horas", "tab_rescisoes", "tab_holerite", "tab_documentos_rh"}
 TRABALHISTA_TAB_MODULES = {
     "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
     "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",
+    "tab_central_calculadoras_rh",
 }
 OUTROS_TAB_MODULES = {
     "tab_kanban", "tab_central_formularios", "tab_modelos_contratos", "tab_clientes",
@@ -218,11 +231,11 @@ OUTROS_TAB_MODULES = {
 }
 DEFAULT_PLAN_MODULES = {
     "erp-start": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico", "tab_central_suporte"},
-    "erp-profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
+    "erp-profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | RH_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
     "erp-business": set(ERP_MODULES) - {"tab_gestao_usuarios", "tab_configuracoes"},
     "erp-enterprise": set(ERP_MODULES),
     "basico": {"tab_inicio", "tab_dashboard", "tab_diagnostico", "tab_mei", "tab_controle_mei", "tab_obrigacoes", "tab_clientes", "tab_historico", "tab_central_suporte"},
-    "profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
+    "profissional": {"tab_inicio"} | FISCAL_TAB_MODULES | CONTABIL_TAB_MODULES | RH_TAB_MODULES | TRABALHISTA_TAB_MODULES | (OUTROS_TAB_MODULES - {"tab_gestao_usuarios", "tab_configuracoes"}),
     "empresarial": set(ERP_MODULES) - {"tab_gestao_usuarios", "tab_configuracoes"},
     "completo": set(ERP_MODULES),
     "personalizado": {"tab_inicio"},
@@ -375,6 +388,317 @@ def verify_password(password: str, salt: str, stored_hash: str, algo: str) -> bo
 
 def local_now() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+COLABORADOR_TEXT_FIELDS = {
+    "matricula": "matricula", "nomeSocial": "nome_social", "rg": "rg",
+    "dataNascimento": "data_nascimento", "sexo": "sexo", "estadoCivil": "estado_civil",
+    "nacionalidade": "nacionalidade", "naturalidade": "naturalidade",
+    "enderecoLogradouro": "endereco_logradouro", "enderecoNumero": "endereco_numero",
+    "enderecoComplemento": "endereco_complemento", "enderecoBairro": "endereco_bairro",
+    "enderecoCidade": "endereco_cidade", "enderecoUf": "endereco_uf", "enderecoCep": "endereco_cep",
+    "telefone": "telefone", "email": "email",
+    "bancoNome": "banco_nome", "bancoAgencia": "banco_agencia", "bancoConta": "banco_conta", "bancoTipoConta": "banco_tipo_conta",
+    "pixChave": "pix_chave", "pisPasep": "pis_pasep", "ctpsNumero": "ctps_numero", "ctpsSerie": "ctps_serie",
+    "cnhNumero": "cnh_numero", "cnhCategoria": "cnh_categoria",
+    "departamento": "departamento", "setor": "setor", "cargo": "cargo", "funcao": "funcao", "cbo": "cbo",
+    "centroCusto": "centro_custo", "gestorNome": "gestor_nome",
+    "dataAdmissao": "data_admissao", "dataDesligamento": "data_desligamento", "motivoDesligamento": "motivo_desligamento",
+    "tipoContrato": "tipo_contrato", "regimeTrabalho": "regime_trabalho", "jornada": "jornada", "escala": "escala",
+    "categoriaProfissional": "categoria_profissional", "sindicato": "sindicato",
+    "convencaoColetiva": "convencao_coletiva", "dataBase": "data_base", "notas": "notas",
+}
+COLABORADOR_STATUS_VALUES = {"ativo", "afastado", "desligado"}
+
+
+def colaborador_fields_from_payload(payload: dict) -> dict:
+    """Valida e normaliza o payload de colaborador (JSON do frontend, chaves
+    camelCase) para as colunas snake_case da tabela `colaboradores`."""
+    nome_completo = str(payload.get("nomeCompleto", "")).strip()[:200]
+    if not nome_completo:
+        raise ValueError("Informe o nome completo.")
+    cpf = re.sub(r"\D", "", str(payload.get("cpf", "")))
+    if len(cpf) != 11:
+        raise ValueError("CPF inválido — informe os 11 dígitos.")
+    status = str(payload.get("status", "ativo")).strip()
+    if status not in COLABORADOR_STATUS_VALUES:
+        raise ValueError("Status inválido.")
+    try:
+        salario = round(float(payload.get("salario", 0) or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Salário inválido.")
+    if salario < 0:
+        raise ValueError("Salário inválido.")
+    dependentes_raw = payload.get("dependentes", [])
+    if not isinstance(dependentes_raw, list):
+        raise ValueError("Dependentes inválidos.")
+    dependentes = []
+    for item in dependentes_raw[:30]:
+        if not isinstance(item, dict):
+            continue
+        nome_dep = str(item.get("nome", "")).strip()[:150]
+        if not nome_dep:
+            continue
+        dependentes.append({
+            "nome": nome_dep,
+            "cpf": re.sub(r"\D", "", str(item.get("cpf", "")))[:11],
+            "dataNascimento": str(item.get("dataNascimento", ""))[:10],
+            "parentesco": str(item.get("parentesco", ""))[:60],
+            "dependenteIrrf": bool(item.get("dependenteIrrf")),
+            "dependenteSalarioFamilia": bool(item.get("dependenteSalarioFamilia")),
+        })
+    fields = {
+        "nome_completo": nome_completo, "cpf": cpf, "status": status, "salario": salario,
+        "dependentes": json.dumps(dependentes, ensure_ascii=False),
+    }
+    for camel, snake in COLABORADOR_TEXT_FIELDS.items():
+        value = payload.get(camel)
+        fields[snake] = str(value).strip()[:250] if value not in (None, "") else None
+    return fields
+
+
+DATE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+FERIAS_STATUS_VALUES = {"programada", "aprovada", "em_gozo", "concluida", "cancelada"}
+FERIAS_DIAS_GOZO_VALUES = {30, 20, 15, 10, 5}
+
+
+def ferias_fields_from_payload(payload: dict) -> dict:
+    aquisitivo_inicio = str(payload.get("periodoAquisitivoInicio", "")).strip()
+    aquisitivo_fim = str(payload.get("periodoAquisitivoFim", "")).strip()
+    if not DATE_ISO_RE.match(aquisitivo_inicio) or not DATE_ISO_RE.match(aquisitivo_fim):
+        raise ValueError("Informe o período aquisitivo (início e fim) corretamente.")
+    try:
+        dias_gozo = int(payload.get("diasGozo", 30))
+    except (TypeError, ValueError):
+        raise ValueError("Dias de férias inválidos.")
+    if dias_gozo not in FERIAS_DIAS_GOZO_VALUES:
+        raise ValueError("Dias de férias inválidos — use 30, 20, 15, 10 ou 5.")
+    try:
+        dias_abono = int(payload.get("diasAbono", 0))
+    except (TypeError, ValueError):
+        raise ValueError("Dias de abono inválidos.")
+    if dias_abono < 0 or dias_abono > 10:
+        raise ValueError("Dias de abono inválidos — máximo de 10 dias (1/3 de 30).")
+    status = str(payload.get("status", "programada")).strip()
+    if status not in FERIAS_STATUS_VALUES:
+        raise ValueError("Status de férias inválido.")
+    data_inicio_gozo = str(payload.get("dataInicioGozo", "")).strip()
+    if data_inicio_gozo and not DATE_ISO_RE.match(data_inicio_gozo):
+        raise ValueError("Data de início do gozo inválida.")
+    try:
+        periodo_concessivo_fim = str(payload.get("periodoConcessivoFim", "")).strip()
+        if not DATE_ISO_RE.match(periodo_concessivo_fim):
+            base = dt.date.fromisoformat(aquisitivo_fim)
+            periodo_concessivo_fim = (base + dt.timedelta(days=365)).isoformat()
+    except ValueError:
+        raise ValueError("Período aquisitivo inválido.")
+
+    def money_field(key: str) -> float:
+        try:
+            value = round(float(payload.get(key, 0) or 0), 2)
+        except (TypeError, ValueError):
+            raise ValueError("Valor monetário inválido.")
+        if value < 0:
+            raise ValueError("Valor monetário inválido.")
+        return value
+
+    return {
+        "periodo_aquisitivo_inicio": aquisitivo_inicio, "periodo_aquisitivo_fim": aquisitivo_fim,
+        "periodo_concessivo_fim": periodo_concessivo_fim, "data_inicio_gozo": data_inicio_gozo or None,
+        "dias_gozo": dias_gozo, "dias_abono": dias_abono, "status": status,
+        "valor_base": money_field("valorBase"), "valor_bruto": money_field("valorBruto"),
+        "valor_inss": money_field("valorInss"), "valor_irrf": money_field("valorIrrf"),
+        "valor_liquido": money_field("valorLiquido"), "valor_abono": money_field("valorAbono"),
+        "observacoes": str(payload.get("observacoes", "")).strip()[:2000] or None,
+    }
+
+
+AFASTAMENTO_TIPO_VALUES = {"doenca", "acidente_trabalho", "licenca_maternidade", "licenca_paternidade", "licenca_nao_remunerada", "outro"}
+
+
+def afastamento_fields_from_payload(payload: dict) -> dict:
+    tipo = str(payload.get("tipo", "")).strip()
+    if tipo not in AFASTAMENTO_TIPO_VALUES:
+        raise ValueError("Tipo de afastamento inválido.")
+    data_inicio = str(payload.get("dataInicio", "")).strip()
+    if not DATE_ISO_RE.match(data_inicio):
+        raise ValueError("Informe a data de início do afastamento.")
+    data_fim = str(payload.get("dataFim", "")).strip()
+    if data_fim and not DATE_ISO_RE.match(data_fim):
+        raise ValueError("Data de fim do afastamento inválida.")
+    if data_fim and data_fim < data_inicio:
+        raise ValueError("A data de fim não pode ser anterior à data de início.")
+    return {
+        "tipo": tipo, "data_inicio": data_inicio, "data_fim": data_fim or None,
+        "documento_referencia": str(payload.get("documentoReferencia", "")).strip()[:150] or None,
+        "motivo": str(payload.get("motivo", "")).strip()[:2000] or None,
+        "status": "encerrado" if data_fim else "em_andamento",
+    }
+
+
+BENEFICIO_TIPO_VALUES = {
+    "vale_transporte", "vale_refeicao", "vale_alimentacao", "plano_saude",
+    "plano_odontologico", "seguro_vida", "auxilio_creche", "auxilio_educacao", "outro",
+}
+
+
+def beneficio_fields_from_payload(payload: dict) -> dict:
+    tipo = str(payload.get("tipo", "")).strip()
+    if tipo not in BENEFICIO_TIPO_VALUES:
+        raise ValueError("Tipo de benefício inválido.")
+    data_inicio = str(payload.get("dataInicio", "")).strip()
+    if not DATE_ISO_RE.match(data_inicio):
+        raise ValueError("Informe a data de início do benefício.")
+    data_fim = str(payload.get("dataFim", "")).strip()
+    if data_fim and not DATE_ISO_RE.match(data_fim):
+        raise ValueError("Data de fim inválida.")
+    if data_fim and data_fim < data_inicio:
+        raise ValueError("A data de fim não pode ser anterior à data de início.")
+    status = str(payload.get("status", "ativo")).strip()
+    if status not in ("ativo", "inativo"):
+        raise ValueError("Status de benefício inválido.")
+
+    def money_field(key: str) -> float:
+        try:
+            value = round(float(payload.get(key, 0) or 0), 2)
+        except (TypeError, ValueError):
+            raise ValueError("Valor monetário inválido.")
+        if value < 0:
+            raise ValueError("Valor monetário inválido.")
+        return value
+
+    valor_beneficio = money_field("valorBeneficio")
+    valor_desconto = money_field("valorDescontoColaborador")
+    if valor_desconto > valor_beneficio:
+        raise ValueError("O desconto do colaborador não pode ser maior do que o valor do benefício.")
+    return {
+        "tipo": tipo, "descricao": str(payload.get("descricao", "")).strip()[:200] or None,
+        "valor_beneficio": valor_beneficio, "valor_desconto_colaborador": valor_desconto,
+        "valor_custo_empresa": round(valor_beneficio - valor_desconto, 2),
+        "status": status, "data_inicio": data_inicio, "data_fim": data_fim or None,
+        "observacoes": str(payload.get("observacoes", "")).strip()[:2000] or None,
+    }
+
+
+TIME_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+PONTO_TIPO_DIA_VALUES = {"normal", "feriado_trabalhado", "falta", "falta_justificada", "folga", "atestado"}
+PONTO_SEM_PONTO_TIPOS = {"falta", "falta_justificada", "folga", "atestado"}
+
+
+def parse_hhmm_to_minutes(value: str) -> int:
+    match = TIME_HHMM_RE.match(value)
+    if not match:
+        raise ValueError("Horário inválido — use o formato HH:MM.")
+    return int(match.group(1)) * 60 + int(match.group(2))
+
+
+def ponto_registro_fields_from_payload(payload: dict) -> dict:
+    data = str(payload.get("data", "")).strip()
+    if not DATE_ISO_RE.match(data):
+        raise ValueError("Informe a data do registro.")
+    tipo_dia = str(payload.get("tipoDia", "normal")).strip()
+    if tipo_dia not in PONTO_TIPO_DIA_VALUES:
+        raise ValueError("Tipo de dia inválido.")
+    try:
+        horas_esperadas = round(float(payload.get("horasEsperadas", 8) or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Horas esperadas inválidas.")
+    if horas_esperadas < 0 or horas_esperadas > 24:
+        raise ValueError("Horas esperadas inválidas.")
+    trabalho_noturno = bool(payload.get("trabalhoNoturno"))
+    entrada1 = str(payload.get("entrada1", "")).strip()
+    saida1 = str(payload.get("saida1", "")).strip()
+    entrada2 = str(payload.get("entrada2", "")).strip()
+    saida2 = str(payload.get("saida2", "")).strip()
+
+    if tipo_dia in PONTO_SEM_PONTO_TIPOS:
+        horas_trabalhadas = 0.0
+        saldo_dia = 0.0 if tipo_dia != "falta" else -horas_esperadas
+        entrada1 = saida1 = entrada2 = saida2 = ""
+    else:
+        for label, value in (("Entrada 1", entrada1), ("Saída 1", saida1), ("Entrada 2", entrada2), ("Saída 2", saida2)):
+            if not value:
+                raise ValueError(f"Informe o horário de {label.lower()}.")
+        minutos_manha = parse_hhmm_to_minutes(saida1) - parse_hhmm_to_minutes(entrada1)
+        minutos_tarde = parse_hhmm_to_minutes(saida2) - parse_hhmm_to_minutes(entrada2)
+        if minutos_manha <= 0 or minutos_tarde <= 0:
+            raise ValueError("Os horários informados são inconsistentes (saída antes da entrada).")
+        horas_trabalhadas = round((minutos_manha + minutos_tarde) / 60, 2)
+        saldo_dia = round(horas_trabalhadas - horas_esperadas, 2)
+
+    return {
+        "data": data, "tipo_dia": tipo_dia,
+        "entrada1": entrada1 or None, "saida1": saida1 or None, "entrada2": entrada2 or None, "saida2": saida2 or None,
+        "trabalho_noturno": trabalho_noturno, "horas_esperadas": horas_esperadas,
+        "horas_trabalhadas": horas_trabalhadas, "saldo_dia": saldo_dia,
+        "observacoes": str(payload.get("observacoes", "")).strip()[:2000] or None,
+    }
+
+
+BANCO_HORAS_AJUSTE_TIPO_VALUES = {"credito", "debito"}
+
+
+def banco_horas_ajuste_fields_from_payload(payload: dict) -> dict:
+    tipo = str(payload.get("tipo", "")).strip()
+    if tipo not in BANCO_HORAS_AJUSTE_TIPO_VALUES:
+        raise ValueError("Tipo de ajuste inválido.")
+    data = str(payload.get("data", "")).strip()
+    if not DATE_ISO_RE.match(data):
+        raise ValueError("Informe a data do ajuste.")
+    try:
+        horas = round(float(payload.get("horas", 0) or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Quantidade de horas inválida.")
+    if horas <= 0:
+        raise ValueError("Informe uma quantidade de horas maior que zero.")
+    return {
+        "tipo": tipo, "data": data, "horas": horas,
+        "motivo": str(payload.get("motivo", "")).strip()[:500] or None,
+    }
+
+
+RESCISAO_MOTIVO_VALUES = {
+    "sem-justa-causa", "pedido-demissao", "justa-causa", "acordo",
+    "rescisao-indireta", "termino-prazo", "antecipada-empregador", "antecipada-empregado",
+}
+RESCISAO_AVISO_VALUES = {"trabalhado", "indenizado", "dispensado", "nao-cumprido"}
+RESCISAO_STATUS_VALUES = {"calculada", "aprovada", "paga", "arquivada"}
+
+
+def rescisao_fields_from_payload(payload: dict) -> dict:
+    motivo = str(payload.get("motivo", "")).strip()
+    if motivo not in RESCISAO_MOTIVO_VALUES:
+        raise ValueError("Motivo de rescisão inválido.")
+    data_desligamento = str(payload.get("dataDesligamento", "")).strip()
+    if not DATE_ISO_RE.match(data_desligamento):
+        raise ValueError("Informe a data de desligamento.")
+    aviso_tipo = str(payload.get("avisoPrevioTipo", "indenizado")).strip()
+    if aviso_tipo not in RESCISAO_AVISO_VALUES:
+        raise ValueError("Tipo de aviso-prévio inválido.")
+    status = str(payload.get("status", "calculada")).strip()
+    if status not in RESCISAO_STATUS_VALUES:
+        raise ValueError("Status de rescisão inválido.")
+
+    def money_field(key: str) -> float:
+        try:
+            value = round(float(payload.get(key, 0) or 0), 2)
+        except (TypeError, ValueError):
+            raise ValueError("Valor monetário inválido.")
+        if value < 0:
+            raise ValueError("Valor monetário inválido.")
+        return value
+
+    dados_calculo = payload.get("dadosCalculo", {})
+    resultado_calculo = payload.get("resultadoCalculo", {})
+    if not isinstance(dados_calculo, dict) or not isinstance(resultado_calculo, dict):
+        raise ValueError("Dados de cálculo inválidos.")
+    return {
+        "motivo": motivo, "data_desligamento": data_desligamento, "aviso_previo_tipo": aviso_tipo, "status": status,
+        "valor_bruto": money_field("valorBruto"), "valor_descontos": money_field("valorDescontos"), "valor_liquido": money_field("valorLiquido"),
+        "fgts_deposito": money_field("fgtsDeposito"), "fgts_multa": money_field("fgtsMulta"),
+        "dados_calculo": json.dumps(dados_calculo, ensure_ascii=False), "resultado_calculo": json.dumps(resultado_calculo, ensure_ascii=False),
+        "observacoes": str(payload.get("observacoes", "")).strip()[:2000] or None,
+    }
 
 
 def masked_database_url() -> str:
@@ -3843,6 +4167,127 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "updatedBy": row["updated_by"] or "", "updatedAt": row["updated_at"],
         }
 
+    def colaborador_row(self, row: sqlite3.Row) -> dict:
+        dependentes_raw = row["dependentes"]
+        if isinstance(dependentes_raw, str):
+            try:
+                dependentes_raw = json.loads(dependentes_raw)
+            except (json.JSONDecodeError, TypeError):
+                dependentes_raw = []
+        if not isinstance(dependentes_raw, list):
+            dependentes_raw = []
+        data = {
+            "id": row["id"], "clientId": row["client_id"], "clientName": row["client_name"],
+            "matricula": row["matricula"] or "", "status": row["status"],
+            "nomeCompleto": row["nome_completo"], "nomeSocial": row["nome_social"] or "",
+            "cpf": row["cpf"], "rg": row["rg"] or "", "dataNascimento": row["data_nascimento"] or "",
+            "sexo": row["sexo"] or "", "estadoCivil": row["estado_civil"] or "",
+            "nacionalidade": row["nacionalidade"] or "", "naturalidade": row["naturalidade"] or "",
+            "enderecoLogradouro": row["endereco_logradouro"] or "", "enderecoNumero": row["endereco_numero"] or "",
+            "enderecoComplemento": row["endereco_complemento"] or "", "enderecoBairro": row["endereco_bairro"] or "",
+            "enderecoCidade": row["endereco_cidade"] or "", "enderecoUf": row["endereco_uf"] or "", "enderecoCep": row["endereco_cep"] or "",
+            "telefone": row["telefone"] or "", "email": row["email"] or "",
+            "bancoNome": row["banco_nome"] or "", "bancoAgencia": row["banco_agencia"] or "",
+            "bancoConta": row["banco_conta"] or "", "bancoTipoConta": row["banco_tipo_conta"] or "",
+            "pixChave": row["pix_chave"] or "", "pisPasep": row["pis_pasep"] or "",
+            "ctpsNumero": row["ctps_numero"] or "", "ctpsSerie": row["ctps_serie"] or "",
+            "cnhNumero": row["cnh_numero"] or "", "cnhCategoria": row["cnh_categoria"] or "",
+            "departamento": row["departamento"] or "", "setor": row["setor"] or "", "cargo": row["cargo"] or "",
+            "funcao": row["funcao"] or "", "cbo": row["cbo"] or "", "centroCusto": row["centro_custo"] or "",
+            "gestorNome": row["gestor_nome"] or "",
+            "dataAdmissao": row["data_admissao"] or "", "dataDesligamento": row["data_desligamento"] or "",
+            "motivoDesligamento": row["motivo_desligamento"] or "",
+            "tipoContrato": row["tipo_contrato"] or "", "regimeTrabalho": row["regime_trabalho"] or "",
+            "jornada": row["jornada"] or "", "escala": row["escala"] or "",
+            "salario": float(row["salario"]) if row["salario"] is not None else 0.0,
+            "categoriaProfissional": row["categoria_profissional"] or "", "sindicato": row["sindicato"] or "",
+            "convencaoColetiva": row["convencao_coletiva"] or "", "dataBase": row["data_base"] or "",
+            "dependentes": dependentes_raw, "notas": row["notas"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+        return data
+
+    def ferias_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "periodoAquisitivoInicio": row["periodo_aquisitivo_inicio"], "periodoAquisitivoFim": row["periodo_aquisitivo_fim"],
+            "periodoConcessivoFim": row["periodo_concessivo_fim"], "dataInicioGozo": row["data_inicio_gozo"] or "",
+            "diasGozo": row["dias_gozo"], "diasAbono": row["dias_abono"], "status": row["status"],
+            "valorBase": float(row["valor_base"] or 0), "valorBruto": float(row["valor_bruto"] or 0),
+            "valorInss": float(row["valor_inss"] or 0), "valorIrrf": float(row["valor_irrf"] or 0),
+            "valorLiquido": float(row["valor_liquido"] or 0), "valorAbono": float(row["valor_abono"] or 0),
+            "observacoes": row["observacoes"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def afastamento_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"], "tipo": row["tipo"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "dataInicio": row["data_inicio"], "dataFim": row["data_fim"] or "",
+            "documentoReferencia": row["documento_referencia"] or "", "motivo": row["motivo"] or "",
+            "status": row["status"],
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def beneficio_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "tipo": row["tipo"], "descricao": row["descricao"] or "",
+            "valorBeneficio": float(row["valor_beneficio"] or 0), "valorDescontoColaborador": float(row["valor_desconto_colaborador"] or 0),
+            "valorCustoEmpresa": float(row["valor_custo_empresa"] or 0), "status": row["status"],
+            "dataInicio": row["data_inicio"], "dataFim": row["data_fim"] or "", "observacoes": row["observacoes"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def ponto_registro_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "data": row["data"], "tipoDia": row["tipo_dia"],
+            "entrada1": row["entrada1"] or "", "saida1": row["saida1"] or "",
+            "entrada2": row["entrada2"] or "", "saida2": row["saida2"] or "",
+            "trabalhoNoturno": bool(row["trabalho_noturno"]),
+            "horasEsperadas": float(row["horas_esperadas"] or 0), "horasTrabalhadas": float(row["horas_trabalhadas"] or 0),
+            "saldoDia": float(row["saldo_dia"] or 0), "status": row["status"], "observacoes": row["observacoes"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def banco_horas_ajuste_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "data": row["data"], "tipo": row["tipo"], "horas": float(row["horas"] or 0), "motivo": row["motivo"] or "",
+            "createdBy": row["created_by"] or "", "createdAt": row["created_at"],
+        }
+
+    def rescisao_row(self, row: sqlite3.Row) -> dict:
+        def parse_json(value):
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    return {}
+            return value or {}
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "motivo": row["motivo"], "dataDesligamento": row["data_desligamento"], "avisoPrevioTipo": row["aviso_previo_tipo"],
+            "status": row["status"], "valorBruto": float(row["valor_bruto"] or 0), "valorDescontos": float(row["valor_descontos"] or 0),
+            "valorLiquido": float(row["valor_liquido"] or 0), "fgtsDeposito": float(row["fgts_deposito"] or 0), "fgtsMulta": float(row["fgts_multa"] or 0),
+            "dadosCalculo": parse_json(row["dados_calculo"]), "resultadoCalculo": parse_json(row["resultado_calculo"]),
+            "observacoes": row["observacoes"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
     def support_ticket_summary(self, row: sqlite3.Row) -> dict:
         ai_triage_raw = row["ai_triage"]
         if isinstance(ai_triage_raw, str):
@@ -6276,6 +6721,297 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 "items": [self.acompanhamento_contabil_row(row) for row in rows],
             })
             return
+        if path == "/api/colaboradores":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_colaboradores"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            search = query_params.get("query", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["company_id = ?", "client_id = ?"], [user["company_id"], client_id]
+            if status_filter in ("ativo", "afastado", "desligado"):
+                conditions.append("status = ?"); values.append(status_filter)
+            if search:
+                conditions.append("(nome_completo ILIKE ? OR cpf ILIKE ? OR matricula ILIKE ?)")
+                like = f"%{search}%"; values.extend([like, like, like])
+            with connect() as database:
+                rows = database.execute(
+                    f"SELECT * FROM colaboradores WHERE {' AND '.join(conditions)} ORDER BY nome_completo",
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.colaborador_row(row) for row in rows]})
+            return
+        if path == "/api/colaboradores/dashboard":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_rh_dashboard"):
+                return
+            client_id = parse_qs(parsed_url.query).get("clientId", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            today = dt.date.today()
+            month_prefix = today.strftime("%Y-%m")
+            with connect() as database:
+                rows = database.execute(
+                    "SELECT * FROM colaboradores WHERE company_id = ? AND client_id = ?",
+                    (user["company_id"], client_id),
+                ).fetchall()
+            ativos = [row for row in rows if row["status"] == "ativo"]
+            afastados = [row for row in rows if row["status"] == "afastado"]
+            admitidos_mes = [row for row in rows if (row["data_admissao"] or "").startswith(month_prefix)]
+            desligados_mes = [row for row in rows if (row["data_desligamento"] or "").startswith(month_prefix)]
+            aniversariantes = []
+            for row in rows:
+                nascimento = row["data_nascimento"] or ""
+                if len(nascimento) >= 10 and nascimento[5:7] == today.strftime("%m"):
+                    aniversariantes.append({"nome": row["nome_completo"], "dataNascimento": nascimento, "cargo": row["cargo"] or ""})
+            experiencia_vencendo = []
+            for row in ativos:
+                if row["tipo_contrato"] != "experiencia" or not row["data_admissao"]:
+                    continue
+                try:
+                    admissao = dt.date.fromisoformat(row["data_admissao"][:10])
+                except ValueError:
+                    continue
+                fim_experiencia = admissao + dt.timedelta(days=90)
+                dias_restantes = (fim_experiencia - today).days
+                if -5 <= dias_restantes <= 15:
+                    experiencia_vencendo.append({"nome": row["nome_completo"], "cargo": row["cargo"] or "", "diasRestantes": dias_restantes, "dataFim": fim_experiencia.isoformat()})
+            por_departamento: dict[str, int] = {}
+            for row in ativos:
+                key = row["departamento"] or "Sem departamento"
+                por_departamento[key] = por_departamento.get(key, 0) + 1
+            self.send_json({
+                "headcountAtivos": len(ativos), "afastados": len(afastados),
+                "admitidosMes": len(admitidos_mes), "desligadosMes": len(desligados_mes),
+                "aniversariantes": aniversariantes, "experienciaVencendo": experiencia_vencendo,
+                "porDepartamento": [{"departamento": key, "total": total} for key, total in sorted(por_departamento.items(), key=lambda item: -item[1])],
+                "custoTotalFolha": sum(float(row["salario"] or 0) for row in ativos),
+            })
+            return
+        colaborador_get_match = re.fullmatch(r"/api/colaboradores/([a-f0-9]{32})", path)
+        if colaborador_get_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_colaboradores"):
+                return
+            with connect() as database:
+                row = database.execute(
+                    "SELECT * FROM colaboradores WHERE id = ? AND company_id = ?",
+                    (colaborador_get_match.group(1), user["company_id"]),
+                ).fetchone()
+            if row is None:
+                self.send_json({"error": "Colaborador não encontrado."}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"item": self.colaborador_row(row)})
+            return
+        if path == "/api/ferias":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ferias"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["f.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("f.colaborador_id = ?"); values.append(colaborador_id)
+            if status_filter in FERIAS_STATUS_VALUES:
+                conditions.append("f.status = ?"); values.append(status_filter)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT f.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM ferias f JOIN colaboradores c ON c.id = f.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY f.periodo_aquisitivo_fim DESC
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.ferias_row(row) for row in rows]})
+            return
+        if path == "/api/afastamentos":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_afastamentos"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["a.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("a.colaborador_id = ?"); values.append(colaborador_id)
+            if status_filter in ("em_andamento", "encerrado"):
+                conditions.append("a.status = ?"); values.append(status_filter)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT a.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM afastamentos a JOIN colaboradores c ON c.id = a.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY a.data_inicio DESC
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.afastamento_row(row) for row in rows]})
+            return
+        if path == "/api/beneficios":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_beneficios"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["b.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("b.colaborador_id = ?"); values.append(colaborador_id)
+            if status_filter in ("ativo", "inativo"):
+                conditions.append("b.status = ?"); values.append(status_filter)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT b.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM beneficios b JOIN colaboradores c ON c.id = b.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY c.nome_completo
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.beneficio_row(row) for row in rows]})
+            return
+        if path == "/api/ponto":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ponto_eletronico"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            competencia = query_params.get("competencia", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["p.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("p.colaborador_id = ?"); values.append(colaborador_id)
+            if re.match(r"^\d{4}-\d{2}$", competencia):
+                conditions.append("p.data LIKE ?"); values.append(competencia + "%")
+            if status_filter in ("pendente", "aprovado"):
+                conditions.append("p.status = ?"); values.append(status_filter)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT p.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM ponto_registros p JOIN colaboradores c ON c.id = p.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY p.data DESC
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.ponto_registro_row(row) for row in rows]})
+            return
+        if path == "/api/banco-horas/ajustes":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_banco_horas"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["a.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("a.colaborador_id = ?"); values.append(colaborador_id)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT a.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM banco_horas_ajustes a JOIN colaboradores c ON c.id = a.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY a.data DESC
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.banco_horas_ajuste_row(row) for row in rows]})
+            return
+        if path == "/api/banco-horas/saldo":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_banco_horas"):
+                return
+            client_id = parse_qs(parsed_url.query).get("clientId", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            with connect() as database:
+                colaboradores = database.execute(
+                    "SELECT id, nome_completo, cargo FROM colaboradores WHERE company_id = ? AND client_id = ? AND status != 'desligado' ORDER BY nome_completo",
+                    (user["company_id"], client_id),
+                ).fetchall()
+                saldos = []
+                for colaborador in colaboradores:
+                    ponto_saldo = database.execute(
+                        "SELECT COALESCE(SUM(saldo_dia), 0) AS total FROM ponto_registros WHERE colaborador_id = ? AND status = 'aprovado'",
+                        (colaborador["id"],),
+                    ).fetchone()["total"]
+                    creditos = database.execute(
+                        "SELECT COALESCE(SUM(horas), 0) AS total FROM banco_horas_ajustes WHERE colaborador_id = ? AND tipo = 'credito'",
+                        (colaborador["id"],),
+                    ).fetchone()["total"]
+                    debitos = database.execute(
+                        "SELECT COALESCE(SUM(horas), 0) AS total FROM banco_horas_ajustes WHERE colaborador_id = ? AND tipo = 'debito'",
+                        (colaborador["id"],),
+                    ).fetchone()["total"]
+                    saldo_total = float(ponto_saldo) + float(creditos) - float(debitos)
+                    saldos.append({
+                        "colaboradorId": colaborador["id"], "colaboradorNome": colaborador["nome_completo"],
+                        "colaboradorCargo": colaborador["cargo"] or "", "saldoPontoHoras": round(float(ponto_saldo), 2),
+                        "creditos": round(float(creditos), 2), "debitos": round(float(debitos), 2),
+                        "saldoTotal": round(saldo_total, 2),
+                    })
+            self.send_json({"items": saldos})
+            return
+        if path == "/api/rescisoes":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_rescisoes"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["r.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("r.colaborador_id = ?"); values.append(colaborador_id)
+            if status_filter in RESCISAO_STATUS_VALUES:
+                conditions.append("r.status = ?"); values.append(status_filter)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT r.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM rescisoes r JOIN colaboradores c ON c.id = r.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY r.data_desligamento DESC
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.rescisao_row(row) for row in rows]})
+            return
         if path == "/api/support/categories":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_central_suporte"):
@@ -7421,6 +8157,261 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             self.send_json({"ticket": self.support_ticket_summary(updated)})
             return
 
+        if path == "/api/colaboradores":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_colaboradores"):
+                return
+            try:
+                fields = colaborador_fields_from_payload(payload)
+                client_id = str(payload.get("clientId", "")).strip()
+                client_name = str(payload.get("clientName", "")).strip()[:200]
+                if not client_id or not client_name:
+                    raise ValueError("Informe o cliente.")
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    existing = database.execute(
+                        "SELECT id FROM colaboradores WHERE company_id = ? AND client_id = ? AND cpf = ?",
+                        (user["company_id"], client_id, fields["cpf"]),
+                    ).fetchone()
+                    if existing is not None:
+                        raise ValueError("Já existe um colaborador com este CPF para este cliente.")
+                    columns = ["id", "company_id", "client_id", "client_name", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], client_id, client_name, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(
+                        f"INSERT INTO colaboradores({', '.join(columns)}) VALUES ({placeholders})",
+                        values,
+                    )
+                    saved = database.execute("SELECT * FROM colaboradores WHERE id = ?", (row_id,)).fetchone()
+                self.audit(user["email"], "colaborador_criado", f"{fields['nome_completo']} · {client_name}")
+                self.send_json({"ok": True, "item": self.colaborador_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/ferias":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ferias"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = ferias_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO ferias({', '.join(columns)}) VALUES ({placeholders})", values)
+                    saved = database.execute(
+                        """
+                        SELECT f.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM ferias f JOIN colaboradores c ON c.id = f.colaborador_id WHERE f.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "ferias_registradas", f"{saved['colaborador_nome']} · {fields['dias_gozo']} dia(s)")
+                self.send_json({"ok": True, "item": self.ferias_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/afastamentos":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_afastamentos"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = afastamento_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id, status FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO afastamentos({', '.join(columns)}) VALUES ({placeholders})", values)
+                    if fields["status"] == "em_andamento" and colaborador["status"] == "ativo":
+                        database.execute("UPDATE colaboradores SET status = 'afastado', updated_by = ?, updated_at = ? WHERE id = ?", (user["email"], now, colaborador_id))
+                    saved = database.execute(
+                        """
+                        SELECT a.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM afastamentos a JOIN colaboradores c ON c.id = a.colaborador_id WHERE a.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "afastamento_registrado", f"{saved['colaborador_nome']} · {fields['tipo']}")
+                self.send_json({"ok": True, "item": self.afastamento_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/beneficios":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_beneficios"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = beneficio_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO beneficios({', '.join(columns)}) VALUES ({placeholders})", values)
+                    saved = database.execute(
+                        """
+                        SELECT b.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM beneficios b JOIN colaboradores c ON c.id = b.colaborador_id WHERE b.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "beneficio_registrado", f"{saved['colaborador_nome']} · {fields['tipo']}")
+                self.send_json({"ok": True, "item": self.beneficio_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/ponto":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ponto_eletronico"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = ponto_registro_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    existing = database.execute(
+                        "SELECT id FROM ponto_registros WHERE colaborador_id = ? AND data = ?",
+                        (colaborador_id, fields["data"]),
+                    ).fetchone()
+                    if existing is not None:
+                        raise ValueError("Já existe um registro de ponto para este colaborador nesta data.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO ponto_registros({', '.join(columns)}) VALUES ({placeholders})", values)
+                    saved = database.execute(
+                        """
+                        SELECT p.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM ponto_registros p JOIN colaboradores c ON c.id = p.colaborador_id WHERE p.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "ponto_registrado", f"{saved['colaborador_nome']} · {fields['data']}")
+                self.send_json({"ok": True, "item": self.ponto_registro_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/banco-horas/ajustes":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_banco_horas"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = banco_horas_ajuste_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "created_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO banco_horas_ajustes({', '.join(columns)}) VALUES ({placeholders})", values)
+                    saved = database.execute(
+                        """
+                        SELECT a.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM banco_horas_ajustes a JOIN colaboradores c ON c.id = a.colaborador_id WHERE a.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "banco_horas_ajuste_registrado", f"{saved['colaborador_nome']} · {fields['tipo']} {fields['horas']}h")
+                self.send_json({"ok": True, "item": self.banco_horas_ajuste_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/rescisoes":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_rescisoes"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = rescisao_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO rescisoes({', '.join(columns)}) VALUES ({placeholders})", values)
+                    database.execute(
+                        "UPDATE colaboradores SET status = 'desligado', data_desligamento = ?, motivo_desligamento = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                        (fields["data_desligamento"], fields["motivo"], user["email"], now, colaborador_id),
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT r.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM rescisoes r JOIN colaboradores c ON c.id = r.colaborador_id WHERE r.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "rescisao_registrada", f"{saved['colaborador_nome']} · {fields['motivo']}")
+                self.send_json({"ok": True, "item": self.rescisao_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
         if path == "/api/acompanhamento-contabil":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_acompanhamento_contabil"):
@@ -7716,6 +8707,113 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = self._alias_users_path(urlparse(self.path).path)
+        colaborador_delete_match = re.fullmatch(r"/api/colaboradores/([a-f0-9]{32})", path)
+        if colaborador_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute(
+                    "SELECT * FROM colaboradores WHERE id = ? AND company_id = ?",
+                    (colaborador_delete_match.group(1), administrator["company_id"]),
+                ).fetchone()
+                if target is None:
+                    self.send_json({"error": "Colaborador não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM colaboradores WHERE id = ?", (colaborador_delete_match.group(1),))
+            self.audit(administrator["email"], "colaborador_excluido", f"{target['nome_completo']} · {target['client_name']}")
+            self.send_json({"ok": True})
+            return
+        ferias_delete_match = re.fullmatch(r"/api/ferias/([a-f0-9]{32})", path)
+        if ferias_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT id FROM ferias WHERE id = ? AND company_id = ?", (ferias_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Registro de férias não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM ferias WHERE id = ?", (ferias_delete_match.group(1),))
+            self.audit(administrator["email"], "ferias_excluidas", ferias_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
+        afastamento_delete_match = re.fullmatch(r"/api/afastamentos/([a-f0-9]{32})", path)
+        if afastamento_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT id FROM afastamentos WHERE id = ? AND company_id = ?", (afastamento_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Afastamento não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM afastamentos WHERE id = ?", (afastamento_delete_match.group(1),))
+            self.audit(administrator["email"], "afastamento_excluido", afastamento_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
+        beneficio_delete_match = re.fullmatch(r"/api/beneficios/([a-f0-9]{32})", path)
+        if beneficio_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT id FROM beneficios WHERE id = ? AND company_id = ?", (beneficio_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Benefício não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM beneficios WHERE id = ?", (beneficio_delete_match.group(1),))
+            self.audit(administrator["email"], "beneficio_excluido", beneficio_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
+        ponto_delete_match = re.fullmatch(r"/api/ponto/([a-f0-9]{32})", path)
+        if ponto_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT id FROM ponto_registros WHERE id = ? AND company_id = ?", (ponto_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Registro de ponto não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM ponto_registros WHERE id = ?", (ponto_delete_match.group(1),))
+            self.audit(administrator["email"], "ponto_excluido", ponto_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
+        banco_horas_ajuste_delete_match = re.fullmatch(r"/api/banco-horas/ajustes/([a-f0-9]{32})", path)
+        if banco_horas_ajuste_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT id FROM banco_horas_ajustes WHERE id = ? AND company_id = ?", (banco_horas_ajuste_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Ajuste não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM banco_horas_ajustes WHERE id = ?", (banco_horas_ajuste_delete_match.group(1),))
+            self.audit(administrator["email"], "banco_horas_ajuste_excluido", banco_horas_ajuste_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
+        rescisao_delete_match = re.fullmatch(r"/api/rescisoes/([a-f0-9]{32})", path)
+        if rescisao_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT * FROM rescisoes WHERE id = ? AND company_id = ?", (rescisao_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Rescisão não encontrada."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM rescisoes WHERE id = ?", (rescisao_delete_match.group(1),))
+                colaborador = database.execute("SELECT status FROM colaboradores WHERE id = ?", (target["colaborador_id"],)).fetchone()
+                if colaborador is not None and colaborador["status"] == "desligado":
+                    database.execute(
+                        "UPDATE colaboradores SET status = 'ativo', data_desligamento = NULL, motivo_desligamento = NULL, updated_by = ?, updated_at = ? WHERE id = ?",
+                        (administrator["email"], local_now(), target["colaborador_id"]),
+                    )
+            self.audit(administrator["email"], "rescisao_excluida", rescisao_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
         managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
         if managed_user_match:
             administrator = self.require_admin()
@@ -7800,6 +8898,199 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         path = self._alias_users_path(urlparse(self.path).path)
+
+        colaborador_put_match = re.fullmatch(r"/api/colaboradores/([a-f0-9]{32})", path)
+        if colaborador_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_colaboradores"):
+                return
+            try:
+                payload = self.read_json()
+                fields = colaborador_fields_from_payload(payload)
+                with connect() as database:
+                    existing = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_put_match.group(1), user["company_id"]),
+                    ).fetchone()
+                    if existing is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    duplicate = database.execute(
+                        "SELECT id FROM colaboradores WHERE company_id = ? AND client_id = (SELECT client_id FROM colaboradores WHERE id = ?) AND cpf = ? AND id != ?",
+                        (user["company_id"], colaborador_put_match.group(1), fields["cpf"], colaborador_put_match.group(1)),
+                    ).fetchone()
+                    if duplicate is not None:
+                        raise ValueError("Já existe outro colaborador com este CPF para este cliente.")
+                    assignments = ", ".join(f"{column} = ?" for column in fields.keys())
+                    database.execute(
+                        f"UPDATE colaboradores SET {assignments}, updated_by = ?, updated_at = ? WHERE id = ?",
+                        list(fields.values()) + [user["email"], local_now(), colaborador_put_match.group(1)],
+                    )
+                    saved = database.execute("SELECT * FROM colaboradores WHERE id = ?", (colaborador_put_match.group(1),)).fetchone()
+                self.audit(user["email"], "colaborador_atualizado", f"{fields['nome_completo']} · {saved['client_name']}")
+                self.send_json({"ok": True, "item": self.colaborador_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        ferias_put_match = re.fullmatch(r"/api/ferias/([a-f0-9]{32})", path)
+        if ferias_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ferias"):
+                return
+            try:
+                payload = self.read_json()
+                fields = ferias_fields_from_payload(payload)
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM ferias WHERE id = ? AND company_id = ?", (ferias_put_match.group(1), user["company_id"])).fetchone()
+                    if existing is None:
+                        raise ValueError("Registro de férias não encontrado.")
+                    assignments = ", ".join(f"{column} = ?" for column in fields.keys())
+                    database.execute(
+                        f"UPDATE ferias SET {assignments}, updated_by = ?, updated_at = ? WHERE id = ?",
+                        list(fields.values()) + [user["email"], local_now(), ferias_put_match.group(1)],
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT f.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM ferias f JOIN colaboradores c ON c.id = f.colaborador_id WHERE f.id = ?
+                        """,
+                        (ferias_put_match.group(1),),
+                    ).fetchone()
+                self.audit(user["email"], "ferias_atualizadas", f"{saved['colaborador_nome']} · {fields['status']}")
+                self.send_json({"ok": True, "item": self.ferias_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        afastamento_put_match = re.fullmatch(r"/api/afastamentos/([a-f0-9]{32})", path)
+        if afastamento_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_afastamentos"):
+                return
+            try:
+                payload = self.read_json()
+                fields = afastamento_fields_from_payload(payload)
+                with connect() as database:
+                    existing = database.execute("SELECT * FROM afastamentos WHERE id = ? AND company_id = ?", (afastamento_put_match.group(1), user["company_id"])).fetchone()
+                    if existing is None:
+                        raise ValueError("Afastamento não encontrado.")
+                    assignments = ", ".join(f"{column} = ?" for column in fields.keys())
+                    database.execute(
+                        f"UPDATE afastamentos SET {assignments}, updated_by = ?, updated_at = ? WHERE id = ?",
+                        list(fields.values()) + [user["email"], local_now(), afastamento_put_match.group(1)],
+                    )
+                    if fields["status"] == "encerrado" and existing["status"] == "em_andamento":
+                        colaborador = database.execute("SELECT status FROM colaboradores WHERE id = ?", (existing["colaborador_id"],)).fetchone()
+                        if colaborador is not None and colaborador["status"] == "afastado":
+                            database.execute("UPDATE colaboradores SET status = 'ativo', updated_by = ?, updated_at = ? WHERE id = ?", (user["email"], local_now(), existing["colaborador_id"]))
+                    saved = database.execute(
+                        """
+                        SELECT a.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM afastamentos a JOIN colaboradores c ON c.id = a.colaborador_id WHERE a.id = ?
+                        """,
+                        (afastamento_put_match.group(1),),
+                    ).fetchone()
+                self.audit(user["email"], "afastamento_atualizado", f"{saved['colaborador_nome']} · {fields['status']}")
+                self.send_json({"ok": True, "item": self.afastamento_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        beneficio_put_match = re.fullmatch(r"/api/beneficios/([a-f0-9]{32})", path)
+        if beneficio_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_beneficios"):
+                return
+            try:
+                payload = self.read_json()
+                fields = beneficio_fields_from_payload(payload)
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM beneficios WHERE id = ? AND company_id = ?", (beneficio_put_match.group(1), user["company_id"])).fetchone()
+                    if existing is None:
+                        raise ValueError("Benefício não encontrado.")
+                    assignments = ", ".join(f"{column} = ?" for column in fields.keys())
+                    database.execute(
+                        f"UPDATE beneficios SET {assignments}, updated_by = ?, updated_at = ? WHERE id = ?",
+                        list(fields.values()) + [user["email"], local_now(), beneficio_put_match.group(1)],
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT b.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM beneficios b JOIN colaboradores c ON c.id = b.colaborador_id WHERE b.id = ?
+                        """,
+                        (beneficio_put_match.group(1),),
+                    ).fetchone()
+                self.audit(user["email"], "beneficio_atualizado", f"{saved['colaborador_nome']} · {fields['tipo']}")
+                self.send_json({"ok": True, "item": self.beneficio_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        ponto_put_match = re.fullmatch(r"/api/ponto/([a-f0-9]{32})", path)
+        if ponto_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ponto_eletronico"):
+                return
+            try:
+                payload = self.read_json()
+                fields = ponto_registro_fields_from_payload(payload)
+                status = str(payload.get("status", "pendente")).strip()
+                if status not in ("pendente", "aprovado"):
+                    raise ValueError("Status inválido.")
+                fields["status"] = status
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM ponto_registros WHERE id = ? AND company_id = ?", (ponto_put_match.group(1), user["company_id"])).fetchone()
+                    if existing is None:
+                        raise ValueError("Registro de ponto não encontrado.")
+                    assignments = ", ".join(f"{column} = ?" for column in fields.keys())
+                    database.execute(
+                        f"UPDATE ponto_registros SET {assignments}, updated_by = ?, updated_at = ? WHERE id = ?",
+                        list(fields.values()) + [user["email"], local_now(), ponto_put_match.group(1)],
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT p.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM ponto_registros p JOIN colaboradores c ON c.id = p.colaborador_id WHERE p.id = ?
+                        """,
+                        (ponto_put_match.group(1),),
+                    ).fetchone()
+                self.audit(user["email"], "ponto_atualizado", f"{saved['colaborador_nome']} · {fields['data']} · {status}")
+                self.send_json({"ok": True, "item": self.ponto_registro_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        rescisao_put_match = re.fullmatch(r"/api/rescisoes/([a-f0-9]{32})", path)
+        if rescisao_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_rescisoes"):
+                return
+            try:
+                payload = self.read_json()
+                status = str(payload.get("status", "")).strip()
+                if status not in RESCISAO_STATUS_VALUES:
+                    raise ValueError("Status de rescisão inválido.")
+                observacoes = str(payload.get("observacoes", "")).strip()[:2000] or None
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM rescisoes WHERE id = ? AND company_id = ?", (rescisao_put_match.group(1), user["company_id"])).fetchone()
+                    if existing is None:
+                        raise ValueError("Rescisão não encontrada.")
+                    database.execute(
+                        "UPDATE rescisoes SET status = ?, observacoes = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                        (status, observacoes, user["email"], local_now(), rescisao_put_match.group(1)),
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT r.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM rescisoes r JOIN colaboradores c ON c.id = r.colaborador_id WHERE r.id = ?
+                        """,
+                        (rescisao_put_match.group(1),),
+                    ).fetchone()
+                self.audit(user["email"], "rescisao_atualizada", f"{saved['colaborador_nome']} · {status}")
+                self.send_json({"ok": True, "item": self.rescisao_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
 
         user_permissions_match = re.fullmatch(r"/api/users/([a-f0-9]{32})/permissions", path)
         if user_permissions_match:

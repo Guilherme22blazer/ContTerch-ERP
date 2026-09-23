@@ -267,9 +267,20 @@
     { route: 'pro-labore', label: 'Pró-Labore', icon: '♙', desc: 'Simulação de INSS e IRRF' },
     { route: 'irrf-aliquota-efetiva', label: 'Alíquota Efetiva do IRRF', icon: '%', desc: 'Simulação mensal do IRRF e da alíquota efetiva em 2026' },
     { route: 'pensao-alimenticia', label: 'Pensão Alimentícia', icon: '◫', desc: 'Percentual judicial sobre rendimento bruto, líquido ou valor fixo' },
+    { route: 'central-calculadoras-rh', label: 'Central de Calculadoras RH & DP', icon: '🧮', desc: 'Salário líquido, INSS, FGTS, férias, 13º, rescisão, encargos e outras calculadoras trabalhistas com memória de cálculo' },
     { route: 'analise-balanco', label: 'Análise de Balanço', icon: '▦', desc: 'Liquidez, endividamento, rentabilidade e diagnóstico patrimonial' },
     { route: 'lancamentos-contabeis', label: 'Lançamentos Contábeis', icon: '▤', desc: 'Índice alfabético, busca, favoritos e modelos de débito e crédito' },
     { route: 'acompanhamento-contabil', label: 'Acompanhamento Contábil', icon: '◫', desc: 'Painel mensal do status contábil (documentos, escrituração, apuração, fechamento e obrigações) de cada cliente' },
+    { route: 'rh-dashboard', label: 'Dashboard de RH', icon: '◉', desc: 'Headcount, admissões, desligamentos, aniversariantes e contratos de experiência do cliente selecionado' },
+    { route: 'colaboradores', label: 'Cadastro de Colaboradores', icon: '♟', desc: 'Ficha completa do colaborador — dados pessoais, profissionais e dependentes' },
+    { route: 'ferias', label: 'Férias', icon: '☀', desc: 'Período aquisitivo, programação, abono e cálculo de férias por colaborador' },
+    { route: 'afastamentos', label: 'Afastamentos', icon: '⛑', desc: 'Registro de afastamentos por doença, acidente, licenças e outras hipóteses' },
+    { route: 'beneficios', label: 'Benefícios', icon: '◈', desc: 'Vale-transporte, vale-refeição/alimentação, planos e outros benefícios por colaborador' },
+    { route: 'ponto-eletronico', label: 'Ponto Eletrônico', icon: '◷', desc: 'Registro diário de entrada, saída, intervalo, faltas e trabalho noturno por colaborador' },
+    { route: 'banco-horas', label: 'Banco de Horas', icon: '▧', desc: 'Saldo de horas por colaborador, ajustes manuais e valor estimado' },
+    { route: 'rescisoes', label: 'Rescisão', icon: '⇥', desc: 'Cálculo completo de rescisão por colaborador, com desligamento automático e demonstrativo' },
+    { route: 'holerite', label: 'Holerite', icon: '▤', desc: 'Demonstrativo de pagamento por colaborador e competência, pronto para impressão' },
+    { route: 'documentos-rh', label: 'Documentos', icon: '▨', desc: 'Ficha de registro, contrato de trabalho e demais documentos gerados a partir dos dados do colaborador' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -292,7 +303,7 @@
     { route: 'inscricao-estadual', label: 'Inscrição Estadual', icon: '▤', desc: 'Portais estaduais e consulta SINTEGRA' },
     { route: 'cnae-servicos', label: 'CNAE × Serviços', icon: '🏷', desc: 'Correlação de atividades e serviços' },
     { route: 'ncm-tipi', label: 'NCM / TIPI', icon: '▦', desc: 'Pesquisa de classificação fiscal e alíquotas' },
-    { route: 'consulta-cest', label: 'Consulta CEST', icon: '▦', desc: 'Pesquisa de CEST por NCM, código, mercadoria e segmento' },
+    { route: 'consulta-cest', label: 'ICMS Substituição Tributária (CEST)', icon: '▦', desc: 'Lista de mercadorias sujeitas a ST por Estado de referência, NCM, CEST, palavra-chave ou segmento' },
     { route: 'cfop', label: 'CFOP', icon: '▧', desc: 'Consulta de códigos fiscais de operações' },
     { route: 'icms-difal', label: 'ICMS / DIFAL', icon: '∑', desc: 'Matriz estadual e calculadora de diferencial' },
     { route: 'aliquotas-beneficios', label: 'Alíquotas Internas e Benefícios Fiscais', icon: '%', desc: 'Consulta de ICMS, FCP, operações interestaduais e benefícios por UF' },
@@ -4027,11 +4038,12 @@
     return String(value || '').replace(/\D/g, '');
   }
   function cestSavedFilters() {
-    return Object.assign({ ncm: '', cest: '', keyword: '', segment: '', noNcm: false, doorToDoor: false }, state.settings.cestFilters || {});
+    return Object.assign({ uf: '', ncm: '', cest: '', keyword: '', segment: '', noNcm: false, doorToDoor: false }, state.settings.cestFilters || {});
   }
   function cestFiltersFromView() {
     var fallback = cestSavedFilters();
     return {
+      uf: $('#cest-filter-uf') ? $('#cest-filter-uf').value : fallback.uf,
       ncm: $('#cest-filter-ncm') ? $('#cest-filter-ncm').value : fallback.ncm,
       cest: $('#cest-filter-code') ? $('#cest-filter-code').value : fallback.cest,
       keyword: $('#cest-filter-keyword') ? $('#cest-filter-keyword').value : fallback.keyword,
@@ -4041,6 +4053,8 @@
     };
   }
   function cestFilteredRows(filters) {
+    // uf é só referência: a base é nacional (Convênio 142/2018) e não indica,
+    // por si só, quais segmentos cada UF internalizou — por isso não filtra linhas.
     var ncm = cestDigits(filters.ncm);
     var code = cestDigits(filters.cest);
     var keyword = cestNormalize(filters.keyword);
@@ -4065,9 +4079,10 @@
     var doorCount = (window.CEST_CATALOG || []).filter(function (item) { return item.doorToDoor; }).length;
     var noNcmCount = (window.CEST_CATALOG || []).filter(function (item) { return item.noNcm; }).length;
     return [
-      pageHeading('Código Especificador da Substituição Tributária — CEST', 'Pesquise a base dos anexos do Convênio ICMS 142/2018 por NCM, CEST, palavra-chave ou segmento.', '<div class="page-actions cest-page-actions"><button class="secondary-button" data-action="cest-export-json">↧ JSON</button><button class="secondary-button" data-action="cest-export-csv">▦ CSV</button><button class="secondary-button" data-action="cest-print">▣ PDF / imprimir</button></div>'),
-      '<div class="info-banner cest-law-banner"><span>i</span><div><strong>Base oficial organizada para consulta rápida.</strong> O enquadramento exige correspondência simultânea entre a descrição da mercadoria e a classificação NCM/CEST. A existência do código no Convênio não confirma, sozinha, a aplicação de ICMS-ST em determinada UF.</div><span class="tag tag--success">Consulta local instantânea</span></div>',
-      '<section class="card cest-search-card"><header class="card-header"><div><h2>Consultar mercadoria</h2><small>Preencha um ou mais campos; os resultados são atualizados durante a digitação</small></div><span class="tag tag--info">Convênio ICMS 142/2018</span></header><div class="card-body"><form id="cest-search-form" class="cest-search-grid"><label class="field"><span>Código NCM</span><input id="cest-filter-ncm" inputmode="numeric" value="' + esc(filters.ncm) + '" placeholder="Ex.: 84212300"></label><label class="field"><span>Código CEST</span><input id="cest-filter-code" inputmode="numeric" value="' + esc(filters.cest) + '" placeholder="Ex.: 01.037.00"></label><label class="field cest-keyword-field"><span>Palavra-chave</span><input id="cest-filter-keyword" inputmode="search" value="' + esc(filters.keyword) + '" placeholder="Ex.: filtro de óleo, chocolate, pneu"></label><label class="field"><span>Segmento</span><select id="cest-filter-segment">' + cestSegmentOptions(filters.segment) + '</select></label><div class="cest-search-checks"><label class="check"><input id="cest-filter-no-ncm" type="checkbox"' + (filters.noNcm ? ' checked' : '') + '> Mercadorias sem classificação NCM</label><label class="check"><input id="cest-filter-door" type="checkbox"' + (filters.doorToDoor ? ' checked' : '') + '> Venda pelo sistema porta a porta</label></div><div class="cest-search-actions"><button class="secondary-button" type="button" data-action="cest-clear">Limpar</button><button class="primary-button" type="submit">⌕ Buscar na base</button></div></form></div></section>',
+      pageHeading('ICMS Substituição Tributária — Mercadorias Sujeitas a ST (CEST)', 'Pesquise a base oficial dos anexos do Convênio ICMS 142/2018 por Estado de referência, NCM, CEST, palavra-chave ou segmento.', '<div class="page-actions cest-page-actions"><button class="secondary-button" data-action="cest-export-json">↧ JSON</button><button class="secondary-button" data-action="cest-export-csv">▦ CSV</button><button class="secondary-button" data-action="cest-print">▣ PDF / imprimir</button></div>'),
+      '<section class="card cest-search-card"><header class="card-header"><div><h2>Lista ST — mercadorias sujeitas a substituição tributária</h2><small>Preencha um ou mais campos; os resultados são atualizados durante a digitação</small></div><span class="tag tag--info">Convênio ICMS 142/2018</span></header><div class="card-body"><form id="cest-search-form" class="cest-search-grid"><label class="field cest-uf-field"><span>Estado (UF) de referência — opcional</span><select id="cest-filter-uf"><option value="">Selecione um Estado (opcional)</option>' + icmsStateOptions(filters.uf) + '</select></label><label class="field"><span>Código NCM</span><input id="cest-filter-ncm" inputmode="numeric" value="' + esc(filters.ncm) + '" placeholder="Ex.: 84212300"></label><label class="field"><span>Código CEST</span><input id="cest-filter-code" inputmode="numeric" value="' + esc(filters.cest) + '" placeholder="Ex.: 01.037.00"></label><label class="field cest-keyword-field"><span>Palavra-chave</span><input id="cest-filter-keyword" inputmode="search" value="' + esc(filters.keyword) + '" placeholder="Ex.: filtro de óleo, chocolate, pneu"></label><label class="field"><span>Segmento</span><select id="cest-filter-segment">' + cestSegmentOptions(filters.segment) + '</select></label><div class="cest-search-checks"><label class="check"><input id="cest-filter-no-ncm" type="checkbox"' + (filters.noNcm ? ' checked' : '') + '> Exibir apenas mercadorias sem classificação fiscal (NCM)</label><label class="check"><input id="cest-filter-door" type="checkbox"' + (filters.doorToDoor ? ' checked' : '') + '> Exibir mercadorias aptas à venda pelo sistema porta a porta</label></div><div class="cest-search-actions"><button class="secondary-button" type="button" data-action="cest-clear">Limpar</button><button class="primary-button" type="submit">⌕ Buscar na base</button></div></form></div></section>',
+      '<div class="warning-banner cest-law-banner" id="cest-uf-note"></div>',
+      '<div class="info-banner cest-law-banner"><span>i</span><div><strong>Base oficial organizada para consulta rápida.</strong> O enquadramento exige correspondência simultânea entre a descrição da mercadoria e a classificação NCM/CEST. A existência do código no Convênio não confirma, sozinha, a aplicação de ICMS-ST em determinada UF, pois cada Estado pode restringir, ampliar ou dispensar o regime por protocolo ou convênio próprio.</div><span class="tag tag--success">Consulta local instantânea</span></div>',
       '<section class="cest-metrics"><article><span>▦</span><div><strong>' + Number(meta.recordCount || 0).toLocaleString('pt-BR') + '</strong><small>registros oficiais</small></div></article><article><span>▤</span><div><strong>' + Number(meta.segmentCount || 0) + '</strong><small>segmentos CEST</small></div></article><article><span>⌕</span><div><strong id="cest-metric-matches">—</strong><small>resultados encontrados</small></div></article><article><span>✓</span><div><strong>' + esc(String(meta.reviewedAt || '2026-08-20').split('-').reverse().join('/')) + '</strong><small>última conferência</small></div></article></section>',
       '<section class="card cest-results-card"><header class="card-header"><div><h2>Resultado da consulta</h2><small id="cest-result-status">Preparando a base...</small></div><span class="tag tag--success" id="cest-filter-status">Base completa</span></header><div class="card-body"><div class="table-wrap cest-table-wrap"><table class="cest-table"><thead><tr><th>CEST</th><th>NCM/SH</th><th>Descrição da mercadoria</th><th>Segmento</th><th>Anexo</th><th></th></tr></thead><tbody id="cest-results-body"><tr><td colspan="6">Carregando registros...</td></tr></tbody></table></div><div class="cest-pagination" id="cest-pagination"></div><p class="cest-result-note">A pesquisa considera a grafia informada nos anexos oficiais. Para concluir o enquadramento, confira também a legislação da UF de origem e destino, protocolos, convênios aplicáveis e eventuais regimes especiais.</p></div></section>',
       '<section class="card cest-guide"><header class="card-header"><div><h2>Como interpretar o resultado</h2><small>CEST e NCM exercem funções diferentes</small></div></header><div class="card-body"><article><span>01</span><div><b>Confira a NCM</b><p>Valide a classificação fiscal atual da mercadoria no Sistema Classif da Receita Federal.</p></div></article><article><span>02</span><div><b>Compare a descrição</b><p>O enquadramento não deve ser feito apenas pelo número: a descrição legal precisa abranger o produto.</p></div></article><article><span>03</span><div><b>Consulte a legislação estadual</b><p>O Convênio relaciona bens passíveis de ST; cada UF define a aplicação em suas operações.</p></div></article></div></section>',
@@ -4091,14 +4106,20 @@
     var end = Math.min(start + pageSize, rows.length);
     $('#cest-result-status').textContent = rows.length ? 'Exibindo ' + (start + 1) + '–' + end + ' de ' + rows.length.toLocaleString('pt-BR') + ' resultado(s)' : 'Nenhum resultado para os filtros informados';
     $('#cest-metric-matches').textContent = rows.length.toLocaleString('pt-BR');
-    var activeCount = [filters.ncm, filters.cest, filters.keyword, filters.segment, filters.noNcm, filters.doorToDoor].filter(Boolean).length;
+    var activeCount = [filters.uf, filters.ncm, filters.cest, filters.keyword, filters.segment, filters.noNcm, filters.doorToDoor].filter(Boolean).length;
     $('#cest-filter-status').textContent = activeCount ? activeCount + ' filtro(s) ativo(s)' : 'Base completa';
+    if ($('#cest-uf-note')) {
+      var ufInfo = filters.uf ? ICMS_STATES.find(function (item) { return item.uf === filters.uf; }) : null;
+      $('#cest-uf-note').innerHTML = filters.uf ? ('<span>!</span><div><strong>Confira a legislação de ' + esc(ufInfo ? ufInfo.name : filters.uf) + '.</strong> Esta lista é a base nacional do Convênio ICMS 142/2018 — algumas Unidades Federadas estabelecem a aplicação do regime de substituição tributária ou de antecipação do ICMS para mercadorias listadas ou não nos Anexos do Convênio, por meio de protocolo ou legislação própria. O resultado acima não substitui a consulta ao RICMS de ' + esc(filters.uf) + '.</div>') : '';
+      $('#cest-uf-note').style.display = filters.uf ? '' : 'none';
+    }
     $('#cest-pagination').innerHTML = '<span>Página <b>' + state.cestPage + '</b> de ' + pages + '</span><div><button class="secondary-button" data-action="cest-page" data-page="' + (state.cestPage - 1) + '"' + (state.cestPage <= 1 ? ' disabled' : '') + '>← Anterior</button><button class="secondary-button" data-action="cest-page" data-page="' + (state.cestPage + 1) + '"' + (state.cestPage >= pages ? ' disabled' : '') + '>Próxima →</button></div>';
     state.settings.cestFilters = filters;
     storageSet(KEYS.settings, state.settings);
   }
   function clearCestFilters() {
     ['cest-filter-ncm', 'cest-filter-code', 'cest-filter-keyword'].forEach(function (id) { if ($('#' + id)) $('#' + id).value = ''; });
+    if ($('#cest-filter-uf')) $('#cest-filter-uf').value = '';
     if ($('#cest-filter-segment')) $('#cest-filter-segment').value = '';
     if ($('#cest-filter-no-ncm')) $('#cest-filter-no-ncm').checked = false;
     if ($('#cest-filter-door')) $('#cest-filter-door').checked = false;
@@ -5295,9 +5316,20 @@
     else if (state.route === 'pro-labore') main.innerHTML = renderProLabore();
     else if (state.route === 'irrf-aliquota-efetiva') main.innerHTML = renderIrrfEffectiveRate();
     else if (state.route === 'pensao-alimenticia') main.innerHTML = renderAlimonyCalculator();
+    else if (state.route === 'central-calculadoras-rh') main.innerHTML = renderHrCalculatorsCenter();
     else if (state.route === 'analise-balanco') main.innerHTML = renderBalanceAnalysis();
     else if (state.route === 'lancamentos-contabeis') main.innerHTML = renderAccountingEntries();
     else if (state.route === 'acompanhamento-contabil') main.innerHTML = renderAcompanhamentoContabil();
+    else if (state.route === 'rh-dashboard') main.innerHTML = renderRhDashboard();
+    else if (state.route === 'colaboradores') main.innerHTML = renderColaboradores();
+    else if (state.route === 'ferias') main.innerHTML = renderFerias();
+    else if (state.route === 'afastamentos') main.innerHTML = renderAfastamentos();
+    else if (state.route === 'beneficios') main.innerHTML = renderBeneficios();
+    else if (state.route === 'ponto-eletronico') main.innerHTML = renderPonto();
+    else if (state.route === 'banco-horas') main.innerHTML = renderBancoHoras();
+    else if (state.route === 'rescisoes') main.innerHTML = renderRescisoes();
+    else if (state.route === 'holerite') main.innerHTML = renderHolerite();
+    else if (state.route === 'documentos-rh') main.innerHTML = renderDocumentosRh();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -5323,6 +5355,25 @@
     if (state.route === 'emissor-nfe') { if (!nfeioState.loaded) loadNfeioSettings(); loadNfeioInvoices(); }
     if (state.route === 'nfse-nacional') { if (!nfseNacionalState.loaded) loadNfseNacionalInfo(); if (!nfseNacionalState.sync.running) loadNfseNacionalConsulta(); }
     if (state.route === 'acompanhamento-contabil' && !acompanhamentoContabilState.loaded) loadAcompanhamentoContabil();
+    if (state.route === 'rh-dashboard' && rhDashboardState.loadedForClient !== (currentClient() && currentClient().id)) loadRhDashboard();
+    if (state.route === 'colaboradores' && colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
+    if (state.route === 'ferias') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (feriasState.loadedForClient !== (currentClient() && currentClient().id)) loadFerias(); }
+    if (state.route === 'afastamentos') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (afastamentosState.loadedForClient !== (currentClient() && currentClient().id)) loadAfastamentos(); }
+    if (state.route === 'beneficios') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios(); }
+    if (state.route === 'ponto-eletronico') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (pontoState.loadedForClient !== (currentClient() && currentClient().id)) loadPonto(); }
+    if (state.route === 'banco-horas') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (bancoHorasState.loadedForClient !== (currentClient() && currentClient().id)) loadBancoHoras(); }
+    if (state.route === 'rescisoes') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (rescisoesState.loadedForClient !== (currentClient() && currentClient().id)) loadRescisoes(); }
+    if (state.route === 'holerite') {
+      if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
+      if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios();
+      if (pontoState.loadedForClient !== (currentClient() && currentClient().id)) loadPonto();
+    }
+    if (state.route === 'documentos-rh') {
+      if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
+      if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios();
+      if (feriasState.loadedForClient !== (currentClient() && currentClient().id)) loadFerias();
+      if (rescisoesState.loadedForClient !== (currentClient() && currentClient().id)) loadRescisoes();
+    }
     if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
     if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
     if (state.route === 'configuracoes') loadStripeSettings();
@@ -7149,6 +7200,1817 @@
     if (!data.gross) { toast('Relatório não gerado', 'Informe o rendimento tributável.', 'error'); return; }
     downloadFile('aliquota-efetiva-irrf-' + todayISO() + '.json', JSON.stringify({ schema: 'gestao-fiscal.irrf-aliquota-efetiva.v1', generatedAt: nowISO(), legalReview: '20/08/2026', parameters: IRRF_MONTHLY_2026, data: data, result: result, sources: ['Receita Federal — Tributação 2026', 'Lei 15.191/2025', 'Lei 15.270/2025', 'Lei 9.430/1996, art. 67'] }, null, 2));
     audit('Alíquota efetiva do IRRF exportada', money(data.gross) + ' · JSON'); toast('Relatório exportado', 'A memória completa e os parâmetros legais foram salvos em JSON.');
+  }
+
+  var HR_CALC_LEGAL_2026 = {
+    competencia: '2026', vigenciaInicio: '2026-01-01',
+    salarioMinimo: 1621, fgtsRate: .08, fgtsMultaRate: .40,
+    inssBands: [{ limit: 1621.00, rate: .075 }, { limit: 2902.84, rate: .09 }, { limit: 4354.27, rate: .12 }, { limit: 8475.55, rate: .14 }],
+    insalubridadeRates: { minimo: .10, medio: .20, maximo: .40 },
+    periculosidadeRate: .30, valeTransporteMaxRate: .06,
+    avisoPrevioBaseDias: 30, avisoPrevioDiasPorAno: 3, avisoPrevioMaxDiasAdicionais: 60,
+    plrAnnualBrackets: [
+      { limit: 8214.40, rate: 0, deduction: 0, label: 'Até R$ 8.214,40' },
+      { limit: 9922.28, rate: .075, deduction: 616.08, label: 'De R$ 8.214,41 até R$ 9.922,28' },
+      { limit: 13167.00, rate: .15, deduction: 1360.25, label: 'De R$ 9.922,29 até R$ 13.167,00' },
+      { limit: 16380.38, rate: .225, deduction: 2347.78, label: 'De R$ 13.167,01 até R$ 16.380,38' },
+      { limit: Infinity, rate: .275, deduction: 3166.80, label: 'Acima de R$ 16.380,38' }
+    ],
+    fonte: 'INSS, Receita Federal (Lei nº 15.191/2025) e CLT — parâmetros de referência para 2026',
+    reviewedAt: '22/09/2026'
+  };
+  function hrInssProgressive2026(gross) {
+    var teto = HR_CALC_LEGAL_2026.inssBands[HR_CALC_LEGAL_2026.inssBands.length - 1].limit;
+    var base = Math.max(0, Math.min(Number(gross || 0), teto)), previous = 0, total = 0, rows = [];
+    HR_CALC_LEGAL_2026.inssBands.forEach(function (band) {
+      var slice = Math.max(0, Math.min(base, band.limit) - previous);
+      if (slice > 0) { var value = slice * band.rate; rows.push({ from: previous, to: previous + slice, rate: band.rate, base: slice, value: value }); total += value; }
+      previous = band.limit;
+    });
+    return { value: total, rows: rows, base: base, teto: teto, tetoApplied: Number(gross || 0) > teto };
+  }
+  function hrCalcMemoryRows(lines) {
+    return (lines || []).map(function (line) {
+      return '<tr' + (line.total ? ' class="hr-calc-total-row"' : '') + '><td><b>' + esc(line.label) + '</b></td><td>' + (line.formula || '') + '</td><td>' + money(line.value) + '</td></tr>';
+    }).join('');
+  }
+  function hrCalcUi() {
+    if (!state.hrCalcUi) state.hrCalcUi = { calc: null, values: {} };
+    return state.hrCalcUi;
+  }
+  function openHrCalc(id) { hrCalcUi().calc = id; route(); var main = $('.app-main') || $('main'); if (main) main.scrollTop = 0; }
+  function closeHrCalc() { hrCalcUi().calc = null; route(); }
+  function hrCalcReadInputs() {
+    var out = {};
+    $$('[data-hr-calc-input]').forEach(function (el) {
+      if (!el.id) return;
+      out[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+    });
+    return out;
+  }
+  function hrCalcData(id) {
+    var spec = HR_CALC_SPECS[id];
+    return Object.assign({}, spec && spec.defaults ? spec.defaults() : {}, hrCalcUi().values[id] || {});
+  }
+  function hrCalcNum(data, id, fallback) { return data[id] === undefined || data[id] === '' ? Number(fallback || 0) : parseLocaleNumber(data[id]); }
+
+  var HR_CALC_CARDS = [
+    { id: 'salario-liquido', title: 'Salário Líquido', desc: 'Bruto menos INSS, IRRF e outros descontos.', icon: '§', kind: 'calc' },
+    { id: 'inss', title: 'INSS', desc: 'Contribuição progressiva do empregado sobre o salário.', icon: '%', kind: 'calc' },
+    { id: 'irrf', title: 'IRRF', desc: 'Imposto de renda retido na fonte, com dependentes e deduções.', icon: '%', kind: 'route', route: 'irrf-aliquota-efetiva' },
+    { id: 'fgts', title: 'FGTS', desc: 'Depósito mensal de 8% e estimativa sobre férias e 13º.', icon: '⛁', kind: 'calc' },
+    { id: 'hora-extra', title: 'Hora Extra', desc: 'Cálculo de horas extras e reflexos no DSR.', icon: '⏱', kind: 'route', route: 'horas-extras-noturno' },
+    { id: 'dsr', title: 'DSR sobre Variáveis', desc: 'Repouso semanal remunerado sobre horas extras e comissões.', icon: '◷', kind: 'calc' },
+    { id: 'adicional-noturno', title: 'Adicional Noturno', desc: 'Hora noturna reduzida e adicional sobre o trabalho noturno.', icon: '☾', kind: 'route', route: 'horas-extras-noturno' },
+    { id: 'insalubridade', title: 'Insalubridade', desc: 'Grau mínimo, médio ou máximo sobre a base legal.', icon: '⚠', kind: 'calc' },
+    { id: 'periculosidade', title: 'Periculosidade', desc: '30% sobre o salário-base, conforme CLT art. 193.', icon: '⚡', kind: 'calc' },
+    { id: 'ferias', title: 'Férias', desc: '30, 20 ou 15 dias, com 1/3 constitucional, INSS e IRRF.', icon: '☀', kind: 'calc' },
+    { id: 'abono-ferias', title: 'Abono de Férias', desc: 'Venda de até 1/3 do período de férias, isenta de INSS/IRRF.', icon: '⇄', kind: 'calc' },
+    { id: 'decimo-terceiro', title: '13º Salário', desc: '1ª e 2ª parcelas, avos, INSS e IRRF.', icon: '⑬', kind: 'calc' },
+    { id: 'rescisao', title: 'Rescisão', desc: 'Verbas rescisórias completas por motivo de desligamento.', icon: '⇥', kind: 'route', route: 'verbas-rescisorias' },
+    { id: 'aviso-previo', title: 'Aviso-Prévio', desc: 'Proporcional ao tempo de serviço, indenizado ou trabalhado.', icon: '◲', kind: 'calc' },
+    { id: 'salario-proporcional', title: 'Salário Proporcional', desc: 'Valor devido pelos dias efetivamente trabalhados no mês.', icon: '◫', kind: 'calc' },
+    { id: 'custo-funcionario', title: 'Custo do Funcionário', desc: 'Salário, encargos, provisões e benefícios — custo mensal total.', icon: '▤', kind: 'calc' },
+    { id: 'banco-horas', title: 'Banco de Horas', desc: 'Créditos, débitos e saldo em horas ou em valor.', icon: '▧', kind: 'calc' },
+    { id: 'vale-transporte', title: 'Vale-Transporte', desc: 'Desconto de até 6% do salário-base e custo da empresa.', icon: '🚌', kind: 'calc' },
+    { id: 'vale-refeicao', title: 'Vale-Refeição/Alimentação', desc: 'Valor por dia útil e participação do colaborador.', icon: '🍽', kind: 'calc' },
+    { id: 'pensao-alimenticia', title: 'Pensão Alimentícia', desc: 'Percentual ou valor fixo sobre o rendimento.', icon: '◫', kind: 'route', route: 'pensao-alimenticia' },
+    { id: 'comissoes', title: 'Comissões', desc: 'Comissão sobre vendas e reflexo de DSR sobre a comissão.', icon: '%', kind: 'calc' },
+    { id: 'plr', title: 'PLR', desc: 'Participação nos Lucros ou Resultados com tabela exclusiva de IRRF.', icon: '⚖', kind: 'calc' },
+    { id: 'afastamentos', title: 'Afastamentos', desc: 'Dias por conta da empresa e a partir de quando o INSS assume.', icon: '⛑', kind: 'calc' },
+    { id: 'provisao-ferias', title: 'Provisão de Férias', desc: 'Acúmulo mensal de férias + 1/3 por competência.', icon: '▥', kind: 'calc' },
+    { id: 'provisao-decimo', title: 'Provisão de 13º', desc: 'Acúmulo mensal do 13º salário por competência.', icon: '▥', kind: 'calc' },
+    { id: 'encargos', title: 'Encargos Trabalhistas', desc: 'INSS patronal, RAT/FAP, Sistema S e FGTS sobre a folha.', icon: '∑', kind: 'calc' },
+    { id: 'clt-comparativo', title: 'Comparação CLT × Outras Modalidades', desc: 'Simulação financeira entre CLT e outra modalidade de contratação.', icon: '⚖', kind: 'calc' }
+  ];
+
+  function hrCalcFieldNum(id, label, value, opts) {
+    opts = opts || {};
+    return '<label class="field' + (opts.full ? ' field--full' : '') + '"><span>' + esc(label) + '</span><div class="input-prefix"><b>' + (opts.prefix || 'R$') + '</b><input id="' + id + '" data-hr-calc-input type="number" min="0" step="' + (opts.step || '0.01') + '" inputmode="decimal" value="' + Number(value || 0) + '"></div>' + (opts.hint ? '<small>' + esc(opts.hint) + '</small>' : '') + '</label>';
+  }
+  function hrCalcFieldSelect(id, label, value, options, hint) {
+    return '<label class="field"><span>' + esc(label) + '</span><select id="' + id + '" data-hr-calc-input>' + options.map(function (opt) { return '<option value="' + opt.value + '"' + (String(opt.value) === String(value) ? ' selected' : '') + '>' + esc(opt.label) + '</option>'; }).join('') + '</select>' + (hint ? '<small>' + esc(hint) + '</small>' : '') + '</label>';
+  }
+
+  var HR_CALC_SPECS = {
+    'salario-liquido': {
+      defaults: function () { return { 'hr-sl-gross': 3000, 'hr-sl-dependents': 0, 'hr-sl-other': 0 }; },
+      form: function (d) { return hrCalcFieldNum('hr-sl-gross', 'Salário bruto', d['hr-sl-gross']) + hrCalcFieldNum('hr-sl-dependents', 'Dependentes (IRRF)', d['hr-sl-dependents'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-sl-other', 'Outros descontos', d['hr-sl-other']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-sl-gross', 0), dependents = hrCalcNum(d, 'hr-sl-dependents', 0), other = hrCalcNum(d, 'hr-sl-other', 0);
+        var inss = hrInssProgressive2026(gross);
+        var irrf = calculateIrrfEffective({ gross: gross, dependents: dependents, alimony: 0, otherDeductions: 0, officialSocialSecurity: inss.value, deductionMode: 'auto' });
+        var liquido = Math.max(0, gross - inss.value - irrf.irrf - other);
+        return { lines: [
+          { label: 'Salário bruto', formula: 'Valor informado', value: gross },
+          { label: 'INSS', formula: 'Tabela progressiva 2026 (faixas de 7,5% a 14%)', value: inss.value },
+          { label: 'IRRF', formula: irrf.method + ' · alíquota da faixa ' + number(irrf.bracket.rate * 100) + '%', value: irrf.irrf },
+          { label: 'Outros descontos', formula: 'Informado pelo usuário', value: other },
+          { label: 'Salário líquido', formula: 'Bruto − INSS − IRRF − outros descontos', value: liquido, total: true }
+        ], heroHtml: hrCalcHero('Salário líquido', liquido) };
+      }
+    },
+    'inss': {
+      defaults: function () { return { 'hr-inss-gross': 3000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-inss-gross', 'Salário de contribuição', d['hr-inss-gross']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-inss-gross', 0), result = hrInssProgressive2026(gross);
+        var lines = result.rows.map(function (row) { return { label: 'Faixa ' + number(row.rate * 100) + '%', formula: 'De ' + money(row.from) + ' até ' + money(row.to), value: row.value }; });
+        lines.push({ label: 'INSS total', formula: result.tetoApplied ? 'Salário acima do teto — contribuição limitada a ' + money(result.teto) : 'Soma das faixas', value: result.value, total: true });
+        return { lines: lines, heroHtml: hrCalcHero('INSS devido', result.value) };
+      }
+    },
+    'fgts': {
+      defaults: function () { return { 'hr-fgts-gross': 3000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-fgts-gross', 'Remuneração do mês', d['hr-fgts-gross']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-fgts-gross', 0), monthly = gross * HR_CALC_LEGAL_2026.fgtsRate;
+        return { lines: [
+          { label: 'Base de cálculo', formula: 'Remuneração informada', value: gross },
+          { label: 'Depósito mensal do FGTS', formula: number(HR_CALC_LEGAL_2026.fgtsRate * 100) + '% sobre a base', value: monthly, total: true },
+          { label: 'FGTS estimado sobre 13º (se pago no mês)', formula: 'Mesma base × 8% — incidência separada', value: monthly },
+          { label: 'FGTS estimado sobre férias (se pagas no mês)', formula: 'Mesma base × 8% — incidência separada', value: monthly }
+        ], heroHtml: hrCalcHero('Depósito mensal de FGTS', monthly) };
+      }
+    },
+    'dsr': {
+      defaults: function () { return { 'hr-dsr-variable': 600, 'hr-dsr-worked': 25, 'hr-dsr-rest': 5 }; },
+      form: function (d) { return hrCalcFieldNum('hr-dsr-variable', 'Total de variáveis no mês (horas extras/comissões)', d['hr-dsr-variable']) + hrCalcFieldNum('hr-dsr-worked', 'Dias úteis no mês', d['hr-dsr-worked'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-dsr-rest', 'Domingos e feriados no mês', d['hr-dsr-rest'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var variable = hrCalcNum(d, 'hr-dsr-variable', 0), worked = Math.max(1, hrCalcNum(d, 'hr-dsr-worked', 1)), rest = hrCalcNum(d, 'hr-dsr-rest', 0);
+        var dsr = variable / worked * rest;
+        return { lines: [
+          { label: 'Total de variáveis no mês', formula: 'Horas extras + comissões informadas', value: variable },
+          { label: 'Dias úteis (divisor)', formula: '#' + worked, value: 0 },
+          { label: 'Dias de repouso (domingos e feriados)', formula: '#' + rest, value: 0 },
+          { label: 'DSR devido', formula: money(variable) + ' ÷ ' + worked + ' × ' + rest, value: dsr, total: true }
+        ], heroHtml: hrCalcHero('DSR sobre variáveis', dsr) };
+      }
+    },
+    'insalubridade': {
+      defaults: function () { return { 'hr-insal-grade': 'minimo', 'hr-insal-base': HR_CALC_LEGAL_2026.salarioMinimo }; },
+      form: function (d) { return hrCalcFieldSelect('hr-insal-grade', 'Grau de insalubridade', d['hr-insal-grade'], [{ value: 'minimo', label: 'Mínimo — 10%' }, { value: 'medio', label: 'Médio — 20%' }, { value: 'maximo', label: 'Máximo — 40%' }]) + hrCalcFieldNum('hr-insal-base', 'Base de cálculo', d['hr-insal-base'], { hint: 'Salário mínimo, salvo piso normativo/convenção mais benéfica.' }); },
+      compute: function (d) {
+        var grade = d['hr-insal-grade'] || 'minimo', rate = HR_CALC_LEGAL_2026.insalubridadeRates[grade], base = hrCalcNum(d, 'hr-insal-base', HR_CALC_LEGAL_2026.salarioMinimo);
+        var value = base * rate;
+        return { lines: [
+          { label: 'Grau de insalubridade', formula: ({ minimo: 'Mínimo', medio: 'Médio', maximo: 'Máximo' })[grade], value: 0 },
+          { label: 'Base de cálculo', formula: 'Salário mínimo, salvo previsão mais benéfica', value: base },
+          { label: 'Percentual aplicado', formula: number(rate * 100) + '%', value: 0 },
+          { label: 'Adicional de insalubridade', formula: money(base) + ' × ' + number(rate * 100) + '%', value: value, total: true }
+        ], heroHtml: hrCalcHero('Adicional de insalubridade', value) };
+      }
+    },
+    'periculosidade': {
+      defaults: function () { return { 'hr-peric-base': 2000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-peric-base', 'Salário-base (sem gratificações)', d['hr-peric-base']); },
+      compute: function (d) {
+        var base = hrCalcNum(d, 'hr-peric-base', 0), value = base * HR_CALC_LEGAL_2026.periculosidadeRate;
+        return { lines: [
+          { label: 'Base de cálculo', formula: 'Salário-base contratual, CLT art. 193 §1º', value: base },
+          { label: 'Percentual', formula: number(HR_CALC_LEGAL_2026.periculosidadeRate * 100) + '%', value: 0 },
+          { label: 'Adicional de periculosidade', formula: money(base) + ' × 30%', value: value, total: true }
+        ], heroHtml: hrCalcHero('Adicional de periculosidade', value) };
+      }
+    },
+    'ferias': {
+      defaults: function () { return { 'hr-ferias-gross': 3000, 'hr-ferias-days': '30', 'hr-ferias-dependents': 0 }; },
+      form: function (d) { return hrCalcFieldNum('hr-ferias-gross', 'Remuneração mensal', d['hr-ferias-gross']) + hrCalcFieldSelect('hr-ferias-days', 'Dias de férias', d['hr-ferias-days'], [{ value: '30', label: '30 dias' }, { value: '20', label: '20 dias' }, { value: '15', label: '15 dias' }]) + hrCalcFieldNum('hr-ferias-dependents', 'Dependentes (IRRF)', d['hr-ferias-dependents'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-ferias-gross', 0), days = hrCalcNum(d, 'hr-ferias-days', 30), dependents = hrCalcNum(d, 'hr-ferias-dependents', 0);
+        var base = gross / 30 * days, umTerco = base / 3, bruto = base + umTerco;
+        var inss = hrInssProgressive2026(bruto), irrf = calculateIrrfEffective({ gross: bruto, dependents: dependents, alimony: 0, otherDeductions: 0, officialSocialSecurity: inss.value, deductionMode: 'auto' });
+        var liquido = Math.max(0, bruto - inss.value - irrf.irrf);
+        return { lines: [
+          { label: 'Valor proporcional aos dias', formula: money(gross) + ' ÷ 30 × ' + days, value: base },
+          { label: '1/3 constitucional', formula: 'Valor das férias ÷ 3', value: umTerco },
+          { label: 'Total bruto de férias', formula: 'Valor + 1/3', value: bruto },
+          { label: 'INSS', formula: 'Tabela progressiva sobre o bruto de férias', value: inss.value },
+          { label: 'IRRF', formula: irrf.method, value: irrf.irrf },
+          { label: 'Férias líquidas', formula: 'Bruto − INSS − IRRF', value: liquido, total: true }
+        ], heroHtml: hrCalcHero('Férias líquidas', liquido) };
+      }
+    },
+    'abono-ferias': {
+      defaults: function () { return { 'hr-abono-gross': 3000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-abono-gross', 'Remuneração mensal', d['hr-abono-gross']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-abono-gross', 0), valor = gross / 30 * 10, terco = valor / 3, total = valor + terco;
+        return { lines: [
+          { label: 'Dias vendidos', formula: 'Máximo de 10 dias — 1/3 de 30', value: 0 },
+          { label: 'Valor do abono', formula: money(gross) + ' ÷ 30 × 10', value: valor },
+          { label: '1/3 constitucional sobre o abono', formula: 'Valor do abono ÷ 3', value: terco },
+          { label: 'Total do abono (isento de INSS e IRRF)', formula: 'Valor + 1/3', value: total, total: true }
+        ], heroHtml: hrCalcHero('Abono pecuniário', total) };
+      }
+    },
+    'decimo-terceiro': {
+      defaults: function () { return { 'hr-13-gross': 3000, 'hr-13-months': 12, 'hr-13-dependents': 0, 'hr-13-other': 0 }; },
+      form: function (d) { return hrCalcFieldNum('hr-13-gross', 'Remuneração mensal', d['hr-13-gross']) + hrCalcFieldNum('hr-13-months', 'Meses trabalhados no ano (avos)', d['hr-13-months'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-13-dependents', 'Dependentes (IRRF)', d['hr-13-dependents'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-13-other', 'Outras deduções', d['hr-13-other']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-13-gross', 0), months = Math.min(12, hrCalcNum(d, 'hr-13-months', 12)), dependents = hrCalcNum(d, 'hr-13-dependents', 0), other = hrCalcNum(d, 'hr-13-other', 0);
+        var total = gross / 12 * months, first = total / 2, inss = hrInssProgressive2026(total), irrf = calculateIrrfEffective({ gross: total, dependents: dependents, alimony: 0, otherDeductions: other, officialSocialSecurity: inss.value, deductionMode: 'auto' });
+        var second = Math.max(0, total - first - inss.value - irrf.irrf);
+        return { lines: [
+          { label: 'Avos trabalhados', formula: months + '/12', value: 0 },
+          { label: '13º bruto total', formula: money(gross) + ' ÷ 12 × ' + months, value: total },
+          { label: '1ª parcela (sem descontos)', formula: 'Metade do 13º bruto', value: first },
+          { label: 'INSS (sobre o total)', formula: 'Tabela progressiva 2026', value: inss.value },
+          { label: 'IRRF (sobre o total)', formula: irrf.method, value: irrf.irrf },
+          { label: '2ª parcela líquida', formula: 'Total − 1ª parcela − INSS − IRRF', value: second, total: true }
+        ], heroHtml: hrCalcHero('2ª parcela líquida', second) };
+      }
+    },
+    'aviso-previo': {
+      defaults: function () { return { 'hr-aviso-gross': 3000, 'hr-aviso-years': 2, 'hr-aviso-type': 'indenizado' }; },
+      form: function (d) { return hrCalcFieldNum('hr-aviso-gross', 'Salário mensal', d['hr-aviso-gross']) + hrCalcFieldNum('hr-aviso-years', 'Anos completos de casa', d['hr-aviso-years'], { step: '1', prefix: '#' }) + hrCalcFieldSelect('hr-aviso-type', 'Modalidade', d['hr-aviso-type'], [{ value: 'indenizado', label: 'Indenizado' }, { value: 'trabalhado', label: 'Trabalhado' }]); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-aviso-gross', 0), years = Math.max(0, hrCalcNum(d, 'hr-aviso-years', 0)), type = d['hr-aviso-type'] || 'indenizado';
+        var extra = Math.min(HR_CALC_LEGAL_2026.avisoPrevioMaxDiasAdicionais, years * HR_CALC_LEGAL_2026.avisoPrevioDiasPorAno), totalDays = HR_CALC_LEGAL_2026.avisoPrevioBaseDias + extra, daily = gross / 30, value = daily * totalDays;
+        return { lines: [
+          { label: 'Anos completos de casa', formula: '#' + years, value: 0 },
+          { label: 'Dias adicionais', formula: years + ' × 3 dias, limitado a 60', value: 0 },
+          { label: 'Total de dias de aviso', formula: '30 + ' + extra, value: 0 },
+          { label: 'Valor diário', formula: money(gross) + ' ÷ 30', value: daily },
+          { label: type === 'trabalhado' ? 'Valor do período trabalhado (sem indenização adicional)' : 'Valor do aviso-prévio indenizado', formula: money(daily) + ' × ' + totalDays + ' dias', value: value, total: true }
+        ], heroHtml: hrCalcHero('Aviso-prévio (' + totalDays + ' dias)', value) };
+      }
+    },
+    'salario-proporcional': {
+      defaults: function () { return { 'hr-prop-gross': 3000, 'hr-prop-worked': 15, 'hr-prop-month-days': 30 }; },
+      form: function (d) { return hrCalcFieldNum('hr-prop-gross', 'Salário mensal', d['hr-prop-gross']) + hrCalcFieldNum('hr-prop-worked', 'Dias efetivamente trabalhados', d['hr-prop-worked'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-prop-month-days', 'Dias considerados no mês', d['hr-prop-month-days'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-prop-gross', 0), worked = hrCalcNum(d, 'hr-prop-worked', 0), monthDays = Math.max(1, hrCalcNum(d, 'hr-prop-month-days', 30));
+        var value = gross / monthDays * worked;
+        return { lines: [
+          { label: 'Salário mensal', formula: 'Valor informado', value: gross },
+          { label: 'Dias considerados no mês', formula: '#' + monthDays, value: 0 },
+          { label: 'Dias trabalhados', formula: '#' + worked, value: 0 },
+          { label: 'Salário proporcional', formula: money(gross) + ' ÷ ' + monthDays + ' × ' + worked, value: value, total: true }
+        ], heroHtml: hrCalcHero('Salário proporcional', value) };
+      }
+    },
+    'custo-funcionario': {
+      defaults: function () { return { 'hr-custo-gross': 3000, 'hr-custo-inss-patronal': 20, 'hr-custo-rat': 2, 'hr-custo-sistema-s': 5.8, 'hr-custo-beneficios': 0 }; },
+      form: function (d) { return hrCalcFieldNum('hr-custo-gross', 'Salário bruto', d['hr-custo-gross']) + hrCalcFieldNum('hr-custo-inss-patronal', 'INSS patronal', d['hr-custo-inss-patronal'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-custo-rat', 'RAT/FAP', d['hr-custo-rat'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-custo-sistema-s', 'Sistema S (terceiros)', d['hr-custo-sistema-s'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-custo-beneficios', 'Benefícios mensais (VT, VR, plano etc.)', d['hr-custo-beneficios']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-custo-gross', 0), inssP = hrCalcNum(d, 'hr-custo-inss-patronal', 20) / 100, rat = hrCalcNum(d, 'hr-custo-rat', 2) / 100, sistemaS = hrCalcNum(d, 'hr-custo-sistema-s', 5.8) / 100, beneficios = hrCalcNum(d, 'hr-custo-beneficios', 0);
+        var fgts = gross * HR_CALC_LEGAL_2026.fgtsRate, provFerias = gross / 12 * (1 + 1 / 3), provDecimo = gross / 12;
+        var encargos = gross * (inssP + rat + sistemaS) + fgts, total = gross + encargos + provFerias + provDecimo + beneficios;
+        return { lines: [
+          { label: 'Salário bruto', formula: 'Valor informado', value: gross },
+          { label: 'FGTS', formula: '8% sobre o salário', value: fgts },
+          { label: 'INSS patronal + RAT/FAP + Sistema S', formula: number((inssP + rat + sistemaS) * 100) + '% sobre o salário', value: gross * (inssP + rat + sistemaS) },
+          { label: 'Provisão de férias + 1/3', formula: 'Salário ÷ 12 × 1,333', value: provFerias },
+          { label: 'Provisão de 13º', formula: 'Salário ÷ 12', value: provDecimo },
+          { label: 'Benefícios mensais', formula: 'Informado pelo usuário', value: beneficios },
+          { label: 'Custo total do funcionário', formula: 'Soma de todos os itens acima', value: total, total: true }
+        ], heroHtml: hrCalcHero('Custo mensal estimado', total) };
+      }
+    },
+    'banco-horas': {
+      defaults: function () { return { 'hr-banco-credit': 10, 'hr-banco-debit': 4, 'hr-banco-hour-value': 20, 'hr-banco-extra': 50 }; },
+      form: function (d) { return hrCalcFieldNum('hr-banco-credit', 'Créditos (horas)', d['hr-banco-credit'], { step: '0.5', prefix: 'h' }) + hrCalcFieldNum('hr-banco-debit', 'Débitos (horas)', d['hr-banco-debit'], { step: '0.5', prefix: 'h' }) + hrCalcFieldNum('hr-banco-hour-value', 'Valor da hora normal', d['hr-banco-hour-value']) + hrCalcFieldNum('hr-banco-extra', 'Adicional se pago em dinheiro', d['hr-banco-extra'], { prefix: '%', step: '1' }); },
+      compute: function (d) {
+        var credit = hrCalcNum(d, 'hr-banco-credit', 0), debit = hrCalcNum(d, 'hr-banco-debit', 0), hourValue = hrCalcNum(d, 'hr-banco-hour-value', 0), extra = hrCalcNum(d, 'hr-banco-extra', 50) / 100;
+        var saldo = credit - debit, valor = saldo > 0 ? saldo * hourValue * (1 + extra) : 0;
+        return { lines: [
+          { label: 'Créditos', formula: credit + ' horas', value: 0 },
+          { label: 'Débitos', formula: debit + ' horas', value: 0 },
+          { label: 'Saldo do banco de horas', formula: credit + ' − ' + debit, value: 0 },
+          { label: 'Valor estimado se pago em dinheiro', formula: 'Saldo × valor da hora × (1 + adicional)', value: valor, total: true }
+        ], heroHtml: hrCalcHero('Saldo', number(saldo) + ' h') };
+      }
+    },
+    'vale-transporte': {
+      defaults: function () { return { 'hr-vt-base': 3000, 'hr-vt-daily': 12, 'hr-vt-days': 22 }; },
+      form: function (d) { return hrCalcFieldNum('hr-vt-base', 'Salário-base', d['hr-vt-base']) + hrCalcFieldNum('hr-vt-daily', 'Custo diário do transporte', d['hr-vt-daily']) + hrCalcFieldNum('hr-vt-days', 'Dias úteis no mês', d['hr-vt-days'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var base = hrCalcNum(d, 'hr-vt-base', 0), daily = hrCalcNum(d, 'hr-vt-daily', 0), days = hrCalcNum(d, 'hr-vt-days', 0);
+        var custoTotal = daily * days, limite = base * HR_CALC_LEGAL_2026.valeTransporteMaxRate, desconto = Math.min(custoTotal, limite), custoEmpresa = Math.max(0, custoTotal - desconto);
+        return { lines: [
+          { label: 'Custo total do transporte no mês', formula: money(daily) + ' × ' + days, value: custoTotal },
+          { label: 'Limite legal de desconto', formula: '6% do salário-base', value: limite },
+          { label: 'Desconto do colaborador', formula: 'Menor valor entre custo total e o limite legal', value: desconto },
+          { label: 'Custo assumido pela empresa', formula: 'Custo total − desconto do colaborador', value: custoEmpresa, total: true }
+        ], heroHtml: hrCalcHero('Custo da empresa', custoEmpresa) };
+      }
+    },
+    'vale-refeicao': {
+      defaults: function () { return { 'hr-vr-daily': 35, 'hr-vr-days': 22, 'hr-vr-share': 20 }; },
+      form: function (d) { return hrCalcFieldNum('hr-vr-daily', 'Valor diário', d['hr-vr-daily']) + hrCalcFieldNum('hr-vr-days', 'Dias úteis no mês', d['hr-vr-days'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-vr-share', 'Participação do colaborador', d['hr-vr-share'], { prefix: '%', step: '1' }); },
+      compute: function (d) {
+        var daily = hrCalcNum(d, 'hr-vr-daily', 0), days = hrCalcNum(d, 'hr-vr-days', 0), share = hrCalcNum(d, 'hr-vr-share', 20) / 100;
+        var total = daily * days, employee = total * share, company = total - employee;
+        return { lines: [
+          { label: 'Valor total do benefício', formula: money(daily) + ' × ' + days, value: total },
+          { label: 'Participação do colaborador', formula: number(share * 100) + '% do total', value: employee },
+          { label: 'Custo da empresa', formula: 'Total − participação do colaborador', value: company, total: true }
+        ], heroHtml: hrCalcHero('Custo da empresa', company) };
+      }
+    },
+    'comissoes': {
+      defaults: function () { return { 'hr-com-sales': 20000, 'hr-com-rate': 3, 'hr-com-worked': 25, 'hr-com-rest': 5 }; },
+      form: function (d) { return hrCalcFieldNum('hr-com-sales', 'Total de vendas no mês', d['hr-com-sales']) + hrCalcFieldNum('hr-com-rate', 'Percentual de comissão', d['hr-com-rate'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-com-worked', 'Dias úteis no mês', d['hr-com-worked'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-com-rest', 'Domingos e feriados no mês', d['hr-com-rest'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var sales = hrCalcNum(d, 'hr-com-sales', 0), rate = hrCalcNum(d, 'hr-com-rate', 0) / 100, worked = Math.max(1, hrCalcNum(d, 'hr-com-worked', 1)), rest = hrCalcNum(d, 'hr-com-rest', 0);
+        var commission = sales * rate, dsr = commission / worked * rest, total = commission + dsr;
+        return { lines: [
+          { label: 'Total de vendas', formula: 'Valor informado', value: sales },
+          { label: 'Comissão devida', formula: money(sales) + ' × ' + number(rate * 100) + '%', value: commission },
+          { label: 'DSR sobre a comissão', formula: money(commission) + ' ÷ ' + worked + ' × ' + rest, value: dsr },
+          { label: 'Total a receber', formula: 'Comissão + DSR', value: total, total: true }
+        ], heroHtml: hrCalcHero('Total a receber', total) };
+      }
+    },
+    'plr': {
+      defaults: function () { return { 'hr-plr-value': 6000 }; },
+      form: function (d) { return hrCalcFieldNum('hr-plr-value', 'Valor da PLR', d['hr-plr-value']); },
+      compute: function (d) {
+        var value = hrCalcNum(d, 'hr-plr-value', 0);
+        var bracket = HR_CALC_LEGAL_2026.plrAnnualBrackets.filter(function (b) { return value <= b.limit; })[0] || HR_CALC_LEGAL_2026.plrAnnualBrackets[HR_CALC_LEGAL_2026.plrAnnualBrackets.length - 1];
+        var irrf = Math.max(0, value * bracket.rate - bracket.deduction), liquido = value - irrf;
+        return { lines: [
+          { label: 'Valor da PLR', formula: 'Valor informado', value: value },
+          { label: 'Faixa aplicada', formula: bracket.label, value: 0 },
+          { label: 'IRRF devido (tabela exclusiva da PLR)', formula: money(value) + ' × ' + number(bracket.rate * 100) + '% − ' + money(bracket.deduction), value: irrf },
+          { label: 'PLR líquida', formula: 'Valor − IRRF (sem INSS/FGTS)', value: liquido, total: true }
+        ], heroHtml: hrCalcHero('PLR líquida', liquido), disclaimer: 'A PLR usa uma tabela anual exclusiva de IRRF (não é a tabela mensal do salário), não tem INSS nem FGTS (Lei nº 10.101/2000) e a tributação é definitiva na fonte. Tabela de referência vigente desde maio/2025 (Lei nº 15.191/2025) — confirme a tabela atualizada na Receita Federal antes de aplicar, e some outros valores de PLR já recebidos no mesmo ano-calendário para apurar a base acumulada corretamente.' };
+      }
+    },
+    'afastamentos': {
+      defaults: function () { return { 'hr-afast-days': 20, 'hr-afast-daily': 100 }; },
+      form: function (d) { return hrCalcFieldNum('hr-afast-days', 'Total de dias afastado', d['hr-afast-days'], { step: '1', prefix: '#' }) + hrCalcFieldNum('hr-afast-daily', 'Valor diário do salário', d['hr-afast-daily']); },
+      compute: function (d) {
+        var totalDays = hrCalcNum(d, 'hr-afast-days', 0), daily = hrCalcNum(d, 'hr-afast-daily', 0);
+        var companyDays = Math.min(totalDays, 15), inssDays = Math.max(0, totalDays - 15), companyValue = companyDays * daily;
+        return { lines: [
+          { label: 'Total de dias afastado', formula: '#' + totalDays, value: 0 },
+          { label: 'Dias por conta da empresa', formula: 'Primeiros 15 dias (auxílio-doença comum/acidente)', value: 0 },
+          { label: 'Dias sob responsabilidade do INSS', formula: 'A partir do 16º dia, mediante perícia', value: 0 },
+          { label: 'Valor pago pela empresa', formula: money(daily) + ' × ' + companyDays + ' dias', value: companyValue, total: true }
+        ], heroHtml: hrCalcHero('Dias empresa / INSS', companyDays + ' / ' + inssDays), disclaimer: 'Este simulador é informativo: a concessão do benefício pelo INSS depende de perícia própria e o FGTS continua sendo depositado durante o afastamento em caso de acidente de trabalho. Não representa decisão do INSS nem substitui o atestado/perícia.' };
+      }
+    },
+    'provisao-ferias': {
+      defaults: function () { return { 'hr-provf-gross': 3000, 'hr-provf-months': 1 }; },
+      form: function (d) { return hrCalcFieldNum('hr-provf-gross', 'Salário mensal', d['hr-provf-gross']) + hrCalcFieldNum('hr-provf-months', 'Meses a provisionar', d['hr-provf-months'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-provf-gross', 0), months = hrCalcNum(d, 'hr-provf-months', 1), monthly = gross / 12 * (1 + 1 / 3), total = monthly * months;
+        return { lines: [
+          { label: 'Base mensal de provisão', formula: 'Salário ÷ 12 × 1,333 (inclui 1/3)', value: monthly },
+          { label: 'Meses considerados', formula: '#' + months, value: 0 },
+          { label: 'Provisão total', formula: money(monthly) + ' × ' + months, value: total, total: true }
+        ], heroHtml: hrCalcHero('Provisão de férias', total) };
+      }
+    },
+    'provisao-decimo': {
+      defaults: function () { return { 'hr-provd-gross': 3000, 'hr-provd-months': 1 }; },
+      form: function (d) { return hrCalcFieldNum('hr-provd-gross', 'Salário mensal', d['hr-provd-gross']) + hrCalcFieldNum('hr-provd-months', 'Meses a provisionar', d['hr-provd-months'], { step: '1', prefix: '#' }); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-provd-gross', 0), months = hrCalcNum(d, 'hr-provd-months', 1), monthly = gross / 12, total = monthly * months;
+        return { lines: [
+          { label: 'Base mensal de provisão', formula: 'Salário ÷ 12', value: monthly },
+          { label: 'Meses considerados', formula: '#' + months, value: 0 },
+          { label: 'Provisão total', formula: money(monthly) + ' × ' + months, value: total, total: true }
+        ], heroHtml: hrCalcHero('Provisão de 13º', total) };
+      }
+    },
+    'encargos': {
+      defaults: function () { return { 'hr-enc-payroll': 50000, 'hr-enc-inss-patronal': 20, 'hr-enc-rat': 2, 'hr-enc-sistema-s': 5.8 }; },
+      form: function (d) { return hrCalcFieldNum('hr-enc-payroll', 'Folha bruta total', d['hr-enc-payroll']) + hrCalcFieldNum('hr-enc-inss-patronal', 'INSS patronal', d['hr-enc-inss-patronal'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-enc-rat', 'RAT/FAP', d['hr-enc-rat'], { prefix: '%', step: '0.1' }) + hrCalcFieldNum('hr-enc-sistema-s', 'Sistema S (terceiros)', d['hr-enc-sistema-s'], { prefix: '%', step: '0.1' }); },
+      compute: function (d) {
+        var payroll = hrCalcNum(d, 'hr-enc-payroll', 0), inssP = hrCalcNum(d, 'hr-enc-inss-patronal', 20) / 100, rat = hrCalcNum(d, 'hr-enc-rat', 2) / 100, sistemaS = hrCalcNum(d, 'hr-enc-sistema-s', 5.8) / 100;
+        var fgts = payroll * HR_CALC_LEGAL_2026.fgtsRate, inssValue = payroll * inssP, ratValue = payroll * rat, sistemaSValue = payroll * sistemaS, total = fgts + inssValue + ratValue + sistemaSValue;
+        return { lines: [
+          { label: 'Folha bruta total', formula: 'Valor informado', value: payroll },
+          { label: 'INSS patronal', formula: number(inssP * 100) + '% sobre a folha', value: inssValue },
+          { label: 'RAT/FAP', formula: number(rat * 100) + '% sobre a folha', value: ratValue },
+          { label: 'Sistema S (terceiros)', formula: number(sistemaS * 100) + '% sobre a folha', value: sistemaSValue },
+          { label: 'FGTS', formula: '8% sobre a folha', value: fgts },
+          { label: 'Total de encargos', formula: 'Soma dos itens acima — ' + number(payroll ? total / payroll * 100 : 0) + '% da folha', value: total, total: true }
+        ], heroHtml: hrCalcHero('Total de encargos', total), disclaimer: 'As alíquotas de INSS patronal, RAT/FAP e Sistema S variam por CNAE, FAP próprio e regime tributário (o Simples Nacional, por exemplo, segue regras próprias no Anexo IV). Confirme os percentuais aplicáveis à empresa antes de usar o resultado.' };
+      }
+    },
+    'clt-comparativo': {
+      defaults: function () { return { 'hr-clt-gross': 3000, 'hr-clt-beneficios': 300, 'hr-clt-pj': 3800 }; },
+      form: function (d) { return hrCalcFieldNum('hr-clt-gross', 'Salário CLT bruto', d['hr-clt-gross']) + hrCalcFieldNum('hr-clt-beneficios', 'Benefícios mensais (CLT)', d['hr-clt-beneficios']) + hrCalcFieldNum('hr-clt-pj', 'Valor mensal contratado (outra modalidade)', d['hr-clt-pj']); },
+      compute: function (d) {
+        var gross = hrCalcNum(d, 'hr-clt-gross', 0), beneficios = hrCalcNum(d, 'hr-clt-beneficios', 0), outra = hrCalcNum(d, 'hr-clt-pj', 0);
+        var fgts = gross * HR_CALC_LEGAL_2026.fgtsRate, encargos = gross * .278, provFerias = gross / 12 * (1 + 1 / 3), provDecimo = gross / 12;
+        var cltTotal = gross + fgts + encargos + provFerias + provDecimo + beneficios, diff = cltTotal - outra;
+        return { lines: [
+          { label: 'Salário CLT bruto', formula: 'Valor informado', value: gross },
+          { label: 'Encargos estimados (INSS patronal + RAT + Sistema S)', formula: '27,8% sobre o salário (referencial)', value: encargos },
+          { label: 'FGTS', formula: '8% sobre o salário', value: fgts },
+          { label: 'Provisões (férias + 1/3 e 13º)', formula: 'Salário ÷ 12 × 1,333 + salário ÷ 12', value: provFerias + provDecimo },
+          { label: 'Benefícios mensais', formula: 'Informado pelo usuário', value: beneficios },
+          { label: 'Custo total CLT', formula: 'Soma dos itens acima', value: cltTotal },
+          { label: 'Custo da outra modalidade contratada', formula: 'Valor mensal informado', value: outra },
+          { label: 'Diferença (CLT − outra modalidade)', formula: 'Custo total CLT − valor contratado', value: diff, total: true }
+        ], heroHtml: hrCalcHero('Diferença de custo', diff), disclaimer: 'Esta é uma SIMULAÇÃO FINANCEIRA SIMPLIFICADA, sem qualquer recomendação jurídica ou de enquadramento. Contratar como PJ ou outra modalidade para substituir uma relação que tenha os elementos do vínculo empregatício (subordinação, pessoalidade, habitualidade e onerosidade) pode configurar pejotização e gerar reconhecimento de vínculo, multas e passivos trabalhistas. Consulte a área jurídica/trabalhista antes de qualquer decisão de contratação.' };
+      }
+    }
+  };
+
+  function hrCalcHero(label, value) {
+    return '<div><small>' + esc(label) + '</small><strong>' + (typeof value === 'number' ? money(value) : esc(value)) + '</strong></div>';
+  }
+  function renderHrCalcGrid() {
+    var cards = HR_CALC_CARDS.map(function (card) {
+      var attrs = card.kind === 'route' ? ' data-route="' + card.route + '"' : ' data-action="hr-calc-open" data-calc="' + card.id + '"';
+      return '<article class="hr-calc-card"' + attrs + ' tabindex="0" role="button"><span class="hr-calc-icon">' + card.icon + '</span><div><b>' + esc(card.title) + '</b><p>' + esc(card.desc) + '</p></div><span class="tag ' + (card.kind === 'route' ? 'tag--info' : 'tag--success') + '">' + (card.kind === 'route' ? 'Página completa' : 'Abrir calculadora') + '</span></article>';
+    }).join('');
+    return [
+      pageHeading('Central de Calculadoras RH & DP', 'Calculadoras trabalhistas e previdenciárias com memória de cálculo completa — parâmetros de referência para a competência ' + HR_CALC_LEGAL_2026.competencia + '.', ''),
+      '<div class="info-banner hr-calc-law-banner"><span>i</span><div><strong>Ferramenta de apoio, não substitui a folha oficial.</strong> Os parâmetros usados (INSS, IRRF, salário mínimo, FGTS e tabela de PLR) seguem referências legais vigentes em ' + HR_CALC_LEGAL_2026.competencia + '. Convenção coletiva, regime especial, decisão judicial ou peculiaridades do caso concreto podem alterar o resultado — confirme com o RH, o DP ou a contabilidade responsável antes de aplicar oficialmente.</div><span class="tag tag--success">' + esc(HR_CALC_LEGAL_2026.fonte) + '</span></div>',
+      '<section class="hr-calc-grid">' + cards + '</section>'
+    ].join('');
+  }
+  function renderHrCalcDetail(id) {
+    var card = HR_CALC_CARDS.find(function (c) { return c.id === id; }), spec = HR_CALC_SPECS[id];
+    if (!card || card.kind !== 'calc' || !spec) { hrCalcUi().calc = null; return renderHrCalcGrid(); }
+    var data = hrCalcData(id);
+    return [
+      pageHeading(card.title, card.desc, '<button class="secondary-button" data-action="hr-calc-back">← Central de Calculadoras</button>'),
+      '<section class="card hr-calc-form-card"><header class="card-header"><div><h2>Dados para o cálculo</h2><small>O resultado é atualizado automaticamente</small></div><span class="live-badge"><i></i> Cálculo instantâneo</span></header><div class="card-body"><div class="form-grid hr-calc-form-grid" id="hr-calc-form">' + spec.form(data) + '</div></div></section>',
+      '<section class="card hr-calc-memory-card"><header class="card-header"><div><h2>Memória de cálculo</h2><small>Regra utilizada e competência de referência</small></div><span class="tag tag--info">Competência ' + HR_CALC_LEGAL_2026.competencia + '</span></header><div class="card-body"><div class="hr-calc-result-hero" id="hr-calc-result-hero"></div><div class="table-wrap"><table><thead><tr><th>Parcela</th><th>Fórmula aplicada</th><th>Valor</th></tr></thead><tbody id="hr-calc-memory-body"></tbody></table></div></div></section>',
+      '<div class="warning-banner hr-calc-warning"><span>!</span><div>' + esc(spec.disclaimer || 'Cálculo de apoio para conferência; confirme com o RH/DP ou a contabilidade responsável antes de aplicar oficialmente na folha.') + '</div></div>'
+    ].join('');
+  }
+  function renderHrCalculatorsCenter() {
+    return hrCalcUi().calc ? renderHrCalcDetail(hrCalcUi().calc) : renderHrCalcGrid();
+  }
+  function updateHrCalc() {
+    var ui = hrCalcUi();
+    if (!ui.calc || !$('#hr-calc-form')) return;
+    var spec = HR_CALC_SPECS[ui.calc];
+    if (!spec) return;
+    var data = hrCalcReadInputs();
+    ui.values[ui.calc] = data;
+    var result = spec.compute(Object.assign({}, hrCalcData(ui.calc), data));
+    var body = $('#hr-calc-memory-body'); if (body) body.innerHTML = hrCalcMemoryRows(result.lines);
+    var hero = $('#hr-calc-result-hero'); if (hero) hero.innerHTML = result.heroHtml || '';
+  }
+
+  function brDate(value) {
+    var text = String(value || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text.split('-').reverse().join('/') : (text || '—');
+  }
+
+  var rhDashboardState = { loadedForClient: null, loading: false, data: null };
+  var colaboradoresState = { loadedForClient: null, loading: false, items: [] };
+  function colaboradoresUi() {
+    if (!state.colaboradoresUi) state.colaboradoresUi = { view: 'list', editingId: null, query: '', statusFilter: '', formSeed: null, formDependentes: [] };
+    return state.colaboradoresUi;
+  }
+  function loadRhDashboard(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && rhDashboardState.loadedForClient === client.id) return Promise.resolve();
+    rhDashboardState.loading = true;
+    return apiRequest('/api/colaboradores/dashboard?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      rhDashboardState.data = payload;
+      rhDashboardState.loadedForClient = client.id;
+      rhDashboardState.loading = false;
+      if (state.route === 'rh-dashboard') route();
+    }).catch(function (error) {
+      rhDashboardState.loading = false;
+      toast('Não foi possível carregar o dashboard', error.message, 'error');
+    });
+  }
+  function renderRhDashboard() {
+    var client = currentClient();
+    if (!client) return pageHeading('Dashboard de RH', 'Selecione um cliente no topo da página para ver os indicadores.', '');
+    var data = rhDashboardState.loadedForClient === client.id ? rhDashboardState.data : null;
+    var kpis = data ? [
+      { label: 'Colaboradores ativos', value: data.headcountAtivos, icon: '♟' },
+      { label: 'Admitidos no mês', value: data.admitidosMes, icon: '↳' },
+      { label: 'Desligados no mês', value: data.desligadosMes, icon: '↴' },
+      { label: 'Afastados', value: data.afastados, icon: '⛑' },
+      { label: 'Aniversariantes no mês', value: data.aniversariantes.length, icon: '★' },
+      { label: 'Experiência vencendo (±15 dias)', value: data.experienciaVencendo.length, icon: '◲' }
+    ] : [];
+    return [
+      pageHeading('Dashboard de RH — ' + esc(client.name), 'Indicadores de headcount, admissões, desligamentos e alertas do mês para o cliente selecionado.', '<button class="secondary-button" data-action="rh-dashboard-refresh">⟲ Atualizar</button>'),
+      !data ? '<div class="info-banner"><span>i</span><div>Carregando indicadores...</div></div>' : '',
+      '<section class="kpi-grid">' + kpis.map(function (item) { return '<article class="kpi-card"><span class="kpi-icon">' + item.icon + '</span><div><b>' + item.value + '</b><small>' + esc(item.label) + '</small></div></article>'; }).join('') + '</section>',
+      !data ? '' : ('<section class="card"><header class="card-header"><div><h2>Aniversariantes do mês</h2></div></header><div class="card-body">' + (data.aniversariantes.length ? '<ul class="rh-simple-list">' + data.aniversariantes.map(function (item) { return '<li><b>' + esc(item.nome) + '</b><span>' + esc(item.cargo || 'Sem cargo') + ' · ' + brDate(item.dataNascimento) + '</span></li>'; }).join('') + '</ul>' : '<p class="subtle">Nenhum aniversariante este mês.</p>') + '</div></section>'),
+      !data ? '' : ('<section class="card"><header class="card-header"><div><h2>Contratos de experiência vencendo</h2><small>Janela de 90 dias a partir da admissão, ±15 dias</small></div></header><div class="card-body">' + (data.experienciaVencendo.length ? '<ul class="rh-simple-list">' + data.experienciaVencendo.map(function (item) { return '<li><b>' + esc(item.nome) + '</b><span>' + esc(item.cargo || 'Sem cargo') + ' · ' + (item.diasRestantes >= 0 ? 'vence em ' + item.diasRestantes + ' dia(s)' : 'venceu há ' + Math.abs(item.diasRestantes) + ' dia(s)') + '</span></li>'; }).join('') + '</ul>' : '<p class="subtle">Nenhum contrato de experiência vencendo nos próximos 15 dias.</p>') + '</div></section>'),
+      !data ? '' : ('<section class="card"><header class="card-header"><div><h2>Colaboradores ativos por departamento</h2></div></header><div class="card-body">' + (data.porDepartamento.length ? data.porDepartamento.map(function (item) { return '<div class="rh-dept-bar"><span>' + esc(item.departamento) + '</span><b>' + item.total + '</b></div>'; }).join('') : '<p class="subtle">Cadastre colaboradores para ver a distribuição por departamento.</p>') + '</div></section>'),
+      !data ? '' : ('<div class="info-banner"><span>i</span><div><strong>Custo total estimado da folha ativa:</strong> ' + money(data.custoTotalFolha) + ' — soma dos salários cadastrados dos colaboradores ativos. Não inclui encargos, benefícios ou provisões (use a Central de Calculadoras RH & DP para esses cálculos).</div></div>')
+    ].join('');
+  }
+  function loadColaboradores(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && colaboradoresState.loadedForClient === client.id) return Promise.resolve();
+    colaboradoresState.loading = true;
+    return apiRequest('/api/colaboradores?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      colaboradoresState.items = payload.items || [];
+      colaboradoresState.loadedForClient = client.id;
+      colaboradoresState.loading = false;
+      if (state.route === 'colaboradores') route();
+    }).catch(function (error) {
+      colaboradoresState.loading = false;
+      toast('Não foi possível carregar os colaboradores', error.message, 'error');
+    });
+  }
+  function colabField(id, label, value, opts) {
+    opts = opts || {};
+    return '<label class="field' + (opts.full ? ' field--full' : '') + '"><span>' + esc(label) + '</span><input id="colab-' + id + '" data-colab-input type="' + (opts.type || 'text') + '"' + (opts.step ? ' step="' + opts.step + '" min="0"' : '') + ' value="' + esc(value == null ? '' : value) + '" placeholder="' + esc(opts.placeholder || '') + '"></label>';
+  }
+  function colabSelect(id, label, value, options, opts) {
+    opts = opts || {};
+    return '<label class="field' + (opts.full ? ' field--full' : '') + '"><span>' + esc(label) + '</span><select id="colab-' + id + '" data-colab-input>' + options.map(function (item) { return '<option value="' + item.value + '"' + (String(item.value) === String(value || '') ? ' selected' : '') + '>' + esc(item.label) + '</option>'; }).join('') + '</select></label>';
+  }
+  function colabDependentesHtml(list) {
+    var parentescoOptions = ['', 'Cônjuge', 'Filho(a)', 'Enteado(a)', 'Outro'];
+    return (list || []).map(function (dep, index) {
+      return '<div class="colab-dependente-row" data-dep-row data-index="' + index + '">' +
+        '<input type="text" placeholder="Nome do dependente" value="' + esc(dep.nome || '') + '" data-dep-field="nome">' +
+        '<input type="text" placeholder="CPF" value="' + esc(dep.cpf || '') + '" data-dep-field="cpf">' +
+        '<input type="date" data-dep-field="dataNascimento" value="' + esc(dep.dataNascimento || '') + '">' +
+        '<select data-dep-field="parentesco">' + parentescoOptions.map(function (item) { return '<option value="' + item + '"' + (dep.parentesco === item ? ' selected' : '') + '>' + (item || 'Parentesco') + '</option>'; }).join('') + '</select>' +
+        '<label class="check"><input type="checkbox" data-dep-field="dependenteIrrf"' + (dep.dependenteIrrf ? ' checked' : '') + '> IRRF</label>' +
+        '<label class="check"><input type="checkbox" data-dep-field="dependenteSalarioFamilia"' + (dep.dependenteSalarioFamilia ? ' checked' : '') + '> Sal. família</label>' +
+        '<button type="button" class="row-button" data-action="colab-dep-remove" data-index="' + index + '" title="Remover dependente">✕</button>' +
+      '</div>';
+    }).join('');
+  }
+  function colabDependentesFromDom() {
+    return $$('.colab-dependente-row').map(function (row) {
+      var field = function (name) { return row.querySelector('[data-dep-field="' + name + '"]'); };
+      return {
+        nome: (field('nome') || {}).value || '', cpf: (field('cpf') || {}).value || '',
+        dataNascimento: (field('dataNascimento') || {}).value || '', parentesco: (field('parentesco') || {}).value || '',
+        dependenteIrrf: !!(field('dependenteIrrf') || {}).checked, dependenteSalarioFamilia: !!(field('dependenteSalarioFamilia') || {}).checked
+      };
+    });
+  }
+  function colabCaptureFormState() {
+    var raw = {};
+    $$('[data-colab-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^colab-/, '')] = el.value; });
+    colaboradoresUi().formSeed = Object.assign({}, colaboradoresUi().formSeed || {}, raw);
+  }
+  function addColabDependente() {
+    colabCaptureFormState();
+    colaboradoresUi().formDependentes = colabDependentesFromDom().concat([{ nome: '', cpf: '', dataNascimento: '', parentesco: '', dependenteIrrf: false, dependenteSalarioFamilia: false }]);
+    route();
+  }
+  function removeColabDependente(index) {
+    colabCaptureFormState();
+    var list = colabDependentesFromDom();
+    list.splice(index, 1);
+    colaboradoresUi().formDependentes = list;
+    route();
+  }
+  function openColaboradorForm(id) {
+    var ui = colaboradoresUi();
+    if (id) {
+      var item = (colaboradoresState.items || []).find(function (row) { return row.id === id; });
+      if (!item) return;
+      ui.editingId = id; ui.formSeed = Object.assign({}, item); ui.formDependentes = (item.dependentes || []).slice();
+    } else {
+      ui.editingId = null; ui.formSeed = { status: 'ativo', nacionalidade: 'Brasileira' }; ui.formDependentes = [];
+    }
+    ui.view = 'form';
+    route();
+  }
+  function closeColaboradorForm() {
+    var ui = colaboradoresUi();
+    ui.view = 'list'; ui.editingId = null; ui.formSeed = null; ui.formDependentes = [];
+    route();
+  }
+  function submitColaboradorForm() {
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página antes de cadastrar um colaborador.', 'error'); return; }
+    colabCaptureFormState();
+    var seed = colaboradoresUi().formSeed || {};
+    if (!String(seed.nomeCompleto || '').trim()) { toast('Nome obrigatório', 'Informe o nome completo do colaborador.', 'error'); return; }
+    var payload = Object.assign({}, seed, {
+      dependentes: colabDependentesFromDom().filter(function (dep) { return String(dep.nome || '').trim(); }),
+      clientId: client.id, clientName: client.name
+    });
+    var editingId = colaboradoresUi().editingId;
+    var request = editingId
+      ? apiRequest('/api/colaboradores/' + editingId, { method: 'PUT', body: JSON.stringify(payload) })
+      : apiRequest('/api/colaboradores', { method: 'POST', body: JSON.stringify(payload) });
+    request.then(function (result) {
+      toast(editingId ? 'Colaborador atualizado' : 'Colaborador cadastrado', result.item.nomeCompleto);
+      audit(editingId ? 'Colaborador atualizado' : 'Colaborador cadastrado', result.item.nomeCompleto + ' · ' + client.name);
+      closeColaboradorForm();
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível salvar', error.message, 'error'); });
+  }
+  function deleteColaborador(id) {
+    var item = (colaboradoresState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir definitivamente o colaborador ' + item.nomeCompleto + '? Esta ação não pode ser desfeita.')) return;
+    apiRequest('/api/colaboradores/' + id, { method: 'DELETE' }).then(function () {
+      toast('Colaborador excluído', item.nomeCompleto);
+      audit('Colaborador excluído', item.nomeCompleto);
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderColaboradorForm() {
+    var ui = colaboradoresUi(), seed = ui.formSeed || {}, client = currentClient();
+    var sexoOptions = [{ value: '', label: 'Selecione' }, { value: 'Feminino', label: 'Feminino' }, { value: 'Masculino', label: 'Masculino' }, { value: 'Outro', label: 'Outro' }];
+    var estadoCivilOptions = [{ value: '', label: 'Selecione' }, { value: 'Solteiro(a)', label: 'Solteiro(a)' }, { value: 'Casado(a)', label: 'Casado(a)' }, { value: 'Divorciado(a)', label: 'Divorciado(a)' }, { value: 'Viúvo(a)', label: 'Viúvo(a)' }, { value: 'União estável', label: 'União estável' }];
+    var statusOptions = [{ value: 'ativo', label: 'Ativo' }, { value: 'afastado', label: 'Afastado' }, { value: 'desligado', label: 'Desligado' }];
+    var tipoContratoOptions = [{ value: '', label: 'Selecione' }, { value: 'indeterminado', label: 'Prazo indeterminado' }, { value: 'determinado', label: 'Prazo determinado' }, { value: 'experiencia', label: 'Experiência' }, { value: 'temporario', label: 'Temporário' }, { value: 'aprendiz', label: 'Aprendiz' }, { value: 'estagio', label: 'Estágio' }, { value: 'intermitente', label: 'Intermitente' }];
+    var regimeOptions = [{ value: '', label: 'Selecione' }, { value: 'presencial', label: 'Presencial' }, { value: 'teletrabalho', label: 'Teletrabalho' }, { value: 'hibrido', label: 'Híbrido' }];
+    return [
+      pageHeading(ui.editingId ? 'Editar Colaborador' : 'Novo Colaborador', client ? ('Cliente: ' + client.name) : '', '<button class="secondary-button" data-action="colab-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados pessoais</h2></div></header><div class="card-body"><div class="form-grid">' +
+        colabField('nomeCompleto', 'Nome completo', seed.nomeCompleto, { full: true }) +
+        colabField('nomeSocial', 'Nome social', seed.nomeSocial) +
+        colabField('cpf', 'CPF', seed.cpf, { placeholder: 'Somente números' }) +
+        colabField('rg', 'RG', seed.rg) +
+        colabField('dataNascimento', 'Data de nascimento', seed.dataNascimento, { type: 'date' }) +
+        colabSelect('sexo', 'Sexo', seed.sexo, sexoOptions) +
+        colabSelect('estadoCivil', 'Estado civil', seed.estadoCivil, estadoCivilOptions) +
+        colabField('nacionalidade', 'Nacionalidade', seed.nacionalidade) +
+        colabField('naturalidade', 'Naturalidade', seed.naturalidade) +
+        colabField('telefone', 'Telefone', seed.telefone) +
+        colabField('email', 'E-mail', seed.email, { type: 'email' }) +
+        colabField('enderecoCep', 'CEP', seed.enderecoCep) +
+        colabField('enderecoLogradouro', 'Logradouro', seed.enderecoLogradouro) +
+        colabField('enderecoNumero', 'Número', seed.enderecoNumero) +
+        colabField('enderecoComplemento', 'Complemento', seed.enderecoComplemento) +
+        colabField('enderecoBairro', 'Bairro', seed.enderecoBairro) +
+        colabField('enderecoCidade', 'Cidade', seed.enderecoCidade) +
+        colabField('enderecoUf', 'UF', seed.enderecoUf) +
+        colabField('bancoNome', 'Banco', seed.bancoNome) +
+        colabField('bancoAgencia', 'Agência', seed.bancoAgencia) +
+        colabField('bancoConta', 'Conta', seed.bancoConta) +
+        colabField('bancoTipoConta', 'Tipo de conta', seed.bancoTipoConta) +
+        colabField('pixChave', 'Chave Pix', seed.pixChave) +
+        colabField('pisPasep', 'PIS/PASEP', seed.pisPasep) +
+        colabField('ctpsNumero', 'CTPS — Número', seed.ctpsNumero) +
+        colabField('ctpsSerie', 'CTPS — Série', seed.ctpsSerie) +
+        colabField('cnhNumero', 'CNH — Número', seed.cnhNumero) +
+        colabField('cnhCategoria', 'CNH — Categoria', seed.cnhCategoria) +
+      '</div></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>Dados profissionais</h2></div></header><div class="card-body"><div class="form-grid">' +
+        colabField('matricula', 'Matrícula', seed.matricula) +
+        colabSelect('status', 'Status', seed.status || 'ativo', statusOptions) +
+        colabField('departamento', 'Departamento', seed.departamento) +
+        colabField('setor', 'Setor', seed.setor) +
+        colabField('cargo', 'Cargo', seed.cargo) +
+        colabField('funcao', 'Função', seed.funcao) +
+        colabField('cbo', 'CBO', seed.cbo) +
+        colabField('centroCusto', 'Centro de custo', seed.centroCusto) +
+        colabField('gestorNome', 'Gestor', seed.gestorNome) +
+        colabField('dataAdmissao', 'Data de admissão', seed.dataAdmissao, { type: 'date' }) +
+        colabSelect('tipoContrato', 'Tipo de contrato', seed.tipoContrato, tipoContratoOptions) +
+        colabSelect('regimeTrabalho', 'Regime de trabalho', seed.regimeTrabalho, regimeOptions) +
+        colabField('jornada', 'Jornada', seed.jornada, { placeholder: 'Ex.: 44h semanais' }) +
+        colabField('escala', 'Escala', seed.escala, { placeholder: 'Ex.: 5x2' }) +
+        colabField('salario', 'Salário', seed.salario, { type: 'number', step: '0.01' }) +
+        colabField('categoriaProfissional', 'Categoria profissional', seed.categoriaProfissional) +
+        colabField('sindicato', 'Sindicato', seed.sindicato) +
+        colabField('convencaoColetiva', 'Convenção coletiva', seed.convencaoColetiva) +
+        colabField('dataBase', 'Data-base', seed.dataBase, { type: 'date' }) +
+        colabField('dataDesligamento', 'Data de desligamento', seed.dataDesligamento, { type: 'date' }) +
+        colabField('motivoDesligamento', 'Motivo do desligamento', seed.motivoDesligamento, { full: true }) +
+        colabField('notas', 'Observações', seed.notas, { full: true }) +
+      '</div></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>Dependentes</h2><small>Cônjuge, filhos e outros dependentes — para IRRF e salário-família</small></div><button class="secondary-button" type="button" data-action="colab-dep-add">+ Adicionar dependente</button></header><div class="card-body"><div class="colab-dependentes-list">' + colabDependentesHtml(ui.formDependentes) + '</div>' + (ui.formDependentes.length ? '' : '<p class="subtle">Nenhum dependente cadastrado.</p>') + '</div></section>',
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="colab-cancel">Cancelar</button><button class="primary-button" data-action="colab-save">💾 Salvar colaborador</button></div>'
+    ].join('');
+  }
+  function renderColaboradoresList() {
+    var client = currentClient(), ui = colaboradoresUi();
+    if (!client) return pageHeading('Cadastro de Colaboradores', 'Selecione um cliente no topo da página para gerenciar os colaboradores.', '');
+    var items = (colaboradoresState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.query) {
+        var q = cestNormalize(ui.query);
+        if (cestNormalize(item.nomeCompleto + ' ' + item.cpf + ' ' + (item.matricula || '')).indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    var statusLabel = { ativo: 'Ativo', afastado: 'Afastado', desligado: 'Desligado' };
+    var statusTag = { ativo: 'tag--success', afastado: 'tag--warning', desligado: 'tag--danger' };
+    var rows = items.map(function (item) {
+      return '<tr><td><b>' + esc(item.nomeCompleto) + '</b><br><small class="subtle">' + esc(item.matricula || '—') + '</small></td>' +
+        '<td>' + esc(item.cargo || '—') + '</td>' +
+        '<td>' + esc(item.departamento || '—') + '</td>' +
+        '<td>' + brDate(item.dataAdmissao) + '</td>' +
+        '<td>' + money(item.salario) + '</td>' +
+        '<td><span class="tag ' + (statusTag[item.status] || '') + '">' + (statusLabel[item.status] || item.status) + '</span></td>' +
+        '<td><button class="row-button" data-action="colab-edit" data-id="' + item.id + '" title="Editar">✎</button><button class="row-button" data-action="colab-delete" data-id="' + item.id + '" title="Excluir">🗑</button></td></tr>';
+    }).join('');
+    return [
+      pageHeading('Cadastro de Colaboradores', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' colaborador(es)', '<button class="primary-button" data-action="colab-new">+ Novo colaborador</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Buscar</span><input id="colab-query" type="text" value="' + esc(ui.query) + '" placeholder="Nome, CPF ou matrícula"></label>' +
+        '<label class="field"><span>Status</span><select id="colab-status-filter"><option value="">Todos</option><option value="ativo"' + (ui.statusFilter === 'ativo' ? ' selected' : '') + '>Ativo</option><option value="afastado"' + (ui.statusFilter === 'afastado' ? ' selected' : '') + '>Afastado</option><option value="desligado"' + (ui.statusFilter === 'desligado' ? ' selected' : '') + '>Desligado</option></select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Cargo</th><th>Departamento</th><th>Admissão</th><th>Salário</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty-state"><h3>Nenhum colaborador encontrado</h3><p>Cadastre o primeiro colaborador deste cliente.</p></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderColaboradores() {
+    return colaboradoresUi().view === 'form' ? renderColaboradorForm() : renderColaboradoresList();
+  }
+
+  function feriasColaboradorOptions(selected) {
+    return '<option value="">Selecione um colaborador</option>' + (colaboradoresState.items || []).filter(function (item) { return item.status !== 'desligado'; }).map(function (item) {
+      return '<option value="' + item.id + '"' + (item.id === selected ? ' selected' : '') + '>' + esc(item.nomeCompleto) + (item.cargo ? ' — ' + esc(item.cargo) : '') + '</option>';
+    }).join('');
+  }
+  function feriasComputeValues(colaborador, diasGozo, diasAbono) {
+    var dependentCount = (colaborador.dependentes || []).filter(function (dep) { return dep.dependenteIrrf; }).length;
+    var result = HR_CALC_SPECS['ferias'].compute({ 'hr-ferias-gross': colaborador.salario, 'hr-ferias-days': diasGozo, 'hr-ferias-dependents': dependentCount });
+    var find = function (label) { var line = result.lines.filter(function (item) { return item.label === label; })[0]; return line ? line.value : 0; };
+    var abonoTotal = 0;
+    if (diasAbono > 0) {
+      var abonoResult = HR_CALC_SPECS['abono-ferias'].compute({ 'hr-abono-gross': colaborador.salario });
+      var abonoLine = abonoResult.lines.filter(function (item) { return item.label.indexOf('Total do abono') === 0; })[0];
+      abonoTotal = abonoLine ? abonoLine.value / 10 * diasAbono : 0;
+    }
+    return {
+      valorBase: Number(colaborador.salario || 0), valorBruto: find('Total bruto de férias'),
+      valorInss: find('INSS'), valorIrrf: find('IRRF'), valorLiquido: find('Férias líquidas'), valorAbono: abonoTotal
+    };
+  }
+  var feriasState = { loadedForClient: null, loading: false, items: [] };
+  function feriasUi() {
+    if (!state.feriasUi) state.feriasUi = { view: 'list', colaboradorFilter: '', statusFilter: '', formSeed: null };
+    return state.feriasUi;
+  }
+  function loadFerias(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && feriasState.loadedForClient === client.id) return Promise.resolve();
+    feriasState.loading = true;
+    return apiRequest('/api/ferias?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      feriasState.items = payload.items || [];
+      feriasState.loadedForClient = client.id;
+      feriasState.loading = false;
+      if (state.route === 'ferias') route();
+    }).catch(function (error) { feriasState.loading = false; toast('Não foi possível carregar as férias', error.message, 'error'); });
+  }
+  function feriasStatusLabel(status) { return ({ programada: 'Programada', aprovada: 'Aprovada', em_gozo: 'Em gozo', concluida: 'Concluída', cancelada: 'Cancelada' })[status] || status; }
+  function feriasStatusTag(status) { return ({ programada: 'tag--info', aprovada: 'tag--success', em_gozo: 'tag--warning', concluida: 'tag--success', cancelada: 'tag--danger' })[status] || ''; }
+  function openFeriasForm() {
+    feriasUi().view = 'form';
+    feriasUi().formSeed = { colaboradorId: '', periodoAquisitivoInicio: '', periodoAquisitivoFim: '', diasGozo: '30', diasAbono: '0', dataInicioGozo: '', observacoes: '' };
+    route();
+  }
+  function closeFeriasForm() { feriasUi().view = 'list'; feriasUi().formSeed = null; route(); }
+  function feriasCaptureFormState() {
+    var raw = {};
+    $$('[data-ferias-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ferias-/, '')] = el.value; });
+    feriasUi().formSeed = Object.assign({}, feriasUi().formSeed || {}, raw);
+  }
+  function renderFeriasForm() {
+    var seed = feriasUi().formSeed || {};
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    var preview = colaborador ? feriasComputeValues(colaborador, Number(seed.diasGozo || 30), Number(seed.diasAbono || 0)) : null;
+    return [
+      pageHeading('Nova Solicitação de Férias', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="ferias-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados da solicitação</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="ferias-colaboradorId" data-ferias-input>' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Período aquisitivo — início</span><input id="ferias-periodoAquisitivoInicio" data-ferias-input type="date" value="' + esc(seed.periodoAquisitivoInicio) + '"></label>' +
+        '<label class="field"><span>Período aquisitivo — fim</span><input id="ferias-periodoAquisitivoFim" data-ferias-input type="date" value="' + esc(seed.periodoAquisitivoFim) + '"></label>' +
+        '<label class="field"><span>Dias de gozo</span><select id="ferias-diasGozo" data-ferias-input>' + [30, 20, 15, 10, 5].map(function (dias) { return '<option value="' + dias + '"' + (String(seed.diasGozo) === String(dias) ? ' selected' : '') + '>' + dias + ' dias</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Dias de abono (venda de até 1/3)</span><input id="ferias-diasAbono" data-ferias-input type="number" min="0" max="10" value="' + esc(seed.diasAbono || 0) + '"></label>' +
+        '<label class="field"><span>Data de início do gozo</span><input id="ferias-dataInicioGozo" data-ferias-input type="date" value="' + esc(seed.dataInicioGozo) + '"></label>' +
+        '<label class="field field--full"><span>Observações</span><input id="ferias-observacoes" data-ferias-input type="text" value="' + esc(seed.observacoes) + '"></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador para ver o cálculo estimado com base no salário cadastrado.</div></div>' : (
+        '<section class="card"><header class="card-header"><div><h2>Cálculo estimado</h2><small>Baseado no salário cadastrado do colaborador</small></div></header><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th>Valor</th></tr></thead><tbody>' +
+        '<tr><td>Salário base</td><td>' + money(preview.valorBase) + '</td></tr>' +
+        '<tr><td>Bruto de férias (' + seed.diasGozo + ' dias + 1/3)</td><td>' + money(preview.valorBruto) + '</td></tr>' +
+        '<tr><td>INSS</td><td>' + money(preview.valorInss) + '</td></tr>' +
+        '<tr><td>IRRF</td><td>' + money(preview.valorIrrf) + '</td></tr>' +
+        '<tr class="hr-calc-total-row"><td><b>Férias líquidas</b></td><td><b>' + money(preview.valorLiquido) + '</b></td></tr>' +
+        (Number(seed.diasAbono || 0) > 0 ? '<tr><td>Abono pecuniário (' + seed.diasAbono + ' dias, isento de INSS/IRRF)</td><td>' + money(preview.valorAbono) + '</td></tr>' : '') +
+        '</tbody></table></div></div></section>'
+      ),
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="ferias-cancel">Cancelar</button><button class="primary-button" data-action="ferias-save">💾 Registrar férias</button></div>'
+    ].join('');
+  }
+  function submitFeriasForm() {
+    feriasCaptureFormState();
+    var seed = feriasUi().formSeed || {};
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página.', 'error'); return; }
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    if (!colaborador) { toast('Selecione um colaborador', '', 'error'); return; }
+    if (!seed.periodoAquisitivoInicio || !seed.periodoAquisitivoFim) { toast('Informe o período aquisitivo', 'Preencha o início e o fim do período aquisitivo.', 'error'); return; }
+    var preview = feriasComputeValues(colaborador, Number(seed.diasGozo || 30), Number(seed.diasAbono || 0));
+    var payload = Object.assign({}, seed, {
+      diasGozo: Number(seed.diasGozo || 30), diasAbono: Number(seed.diasAbono || 0), status: 'programada',
+      valorBase: preview.valorBase, valorBruto: preview.valorBruto, valorInss: preview.valorInss,
+      valorIrrf: preview.valorIrrf, valorLiquido: preview.valorLiquido, valorAbono: preview.valorAbono
+    });
+    apiRequest('/api/ferias', { method: 'POST', body: JSON.stringify(payload) }).then(function (result) {
+      toast('Férias registradas', result.item.colaboradorNome);
+      audit('Férias registradas', result.item.colaboradorNome + ' · ' + client.name);
+      closeFeriasForm();
+      loadFerias(true);
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function setFeriasStatus(id, status) {
+    var item = (feriasState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var payload = {
+      periodoAquisitivoInicio: item.periodoAquisitivoInicio, periodoAquisitivoFim: item.periodoAquisitivoFim,
+      periodoConcessivoFim: item.periodoConcessivoFim, dataInicioGozo: item.dataInicioGozo || (status === 'em_gozo' ? todayISO() : ''),
+      diasGozo: item.diasGozo, diasAbono: item.diasAbono, status: status,
+      valorBase: item.valorBase, valorBruto: item.valorBruto, valorInss: item.valorInss, valorIrrf: item.valorIrrf,
+      valorLiquido: item.valorLiquido, valorAbono: item.valorAbono, observacoes: item.observacoes
+    };
+    apiRequest('/api/ferias/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Status atualizado', feriasStatusLabel(status));
+      audit('Férias — status atualizado', item.colaboradorNome + ' · ' + feriasStatusLabel(status));
+      loadFerias(true);
+    }).catch(function (error) { toast('Não foi possível atualizar', error.message, 'error'); });
+  }
+  function deleteFerias(id) {
+    var item = (feriasState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este registro de férias de ' + item.colaboradorNome + '?')) return;
+    apiRequest('/api/ferias/' + id, { method: 'DELETE' }).then(function () {
+      toast('Registro excluído', item.colaboradorNome);
+      loadFerias(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderFeriasList() {
+    var client = currentClient(), ui = feriasUi();
+    if (!client) return pageHeading('Férias', 'Selecione um cliente no topo da página para gerenciar as férias.', '');
+    var items = (feriasState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      return true;
+    });
+    var rows = items.map(function (item) {
+      var actions = '';
+      if (item.status === 'programada') actions += '<button class="row-button" data-action="ferias-status" data-id="' + item.id + '" data-status="aprovada" title="Aprovar">✓</button>';
+      if (item.status === 'aprovada') actions += '<button class="row-button" data-action="ferias-status" data-id="' + item.id + '" data-status="em_gozo" title="Iniciar gozo">▶</button>';
+      if (item.status === 'em_gozo') actions += '<button class="row-button" data-action="ferias-status" data-id="' + item.id + '" data-status="concluida" title="Concluir">✔</button>';
+      if (item.status !== 'concluida' && item.status !== 'cancelada') actions += '<button class="row-button" data-action="ferias-status" data-id="' + item.id + '" data-status="cancelada" title="Cancelar">✕</button>';
+      actions += '<button class="row-button" data-action="ferias-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + brDate(item.periodoAquisitivoInicio) + ' – ' + brDate(item.periodoAquisitivoFim) + '</td>' +
+        '<td>' + item.diasGozo + ' dias' + (item.diasAbono ? ' + ' + item.diasAbono + ' abono' : '') + '</td>' +
+        '<td>' + brDate(item.periodoConcessivoFim) + '</td>' +
+        '<td>' + money(item.valorLiquido) + '</td>' +
+        '<td><span class="tag ' + feriasStatusTag(item.status) + '">' + feriasStatusLabel(item.status) + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Férias', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="ferias-new">+ Nova solicitação</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Colaborador</span><select id="ferias-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="ferias-status-filter"><option value="">Todos</option>' + ['programada', 'aprovada', 'em_gozo', 'concluida', 'cancelada'].map(function (status) { return '<option value="' + status + '"' + (ui.statusFilter === status ? ' selected' : '') + '>' + feriasStatusLabel(status) + '</option>'; }).join('') + '</select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Período aquisitivo</th><th>Dias</th><th>Limite p/ gozo</th><th>Líquido</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty-state"><h3>Nenhum registro de férias</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderFerias() { return feriasUi().view === 'form' ? renderFeriasForm() : renderFeriasList(); }
+
+  var afastamentosState = { loadedForClient: null, loading: false, items: [] };
+  function afastamentosUi() {
+    if (!state.afastamentosUi) state.afastamentosUi = { view: 'list', colaboradorFilter: '', statusFilter: '', formSeed: null };
+    return state.afastamentosUi;
+  }
+  function loadAfastamentos(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && afastamentosState.loadedForClient === client.id) return Promise.resolve();
+    afastamentosState.loading = true;
+    return apiRequest('/api/afastamentos?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      afastamentosState.items = payload.items || [];
+      afastamentosState.loadedForClient = client.id;
+      afastamentosState.loading = false;
+      if (state.route === 'afastamentos') route();
+    }).catch(function (error) { afastamentosState.loading = false; toast('Não foi possível carregar os afastamentos', error.message, 'error'); });
+  }
+  function afastamentoTipoLabel(tipo) {
+    return ({ doenca: 'Doença', acidente_trabalho: 'Acidente de trabalho', licenca_maternidade: 'Licença-maternidade', licenca_paternidade: 'Licença-paternidade', licenca_nao_remunerada: 'Licença não remunerada', outro: 'Outro' })[tipo] || tipo;
+  }
+  function openAfastamentoForm() {
+    afastamentosUi().view = 'form';
+    afastamentosUi().formSeed = { colaboradorId: '', tipo: 'doenca', dataInicio: '', dataFim: '', documentoReferencia: '', motivo: '' };
+    route();
+  }
+  function closeAfastamentoForm() { afastamentosUi().view = 'list'; afastamentosUi().formSeed = null; route(); }
+  function renderAfastamentoForm() {
+    var seed = afastamentosUi().formSeed || {};
+    var tipos = ['doenca', 'acidente_trabalho', 'licenca_maternidade', 'licenca_paternidade', 'licenca_nao_remunerada', 'outro'];
+    return [
+      pageHeading('Novo Afastamento', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="afastamento-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados do afastamento</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="afast-colaboradorId">' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Tipo</span><select id="afast-tipo">' + tipos.map(function (tipo) { return '<option value="' + tipo + '"' + (seed.tipo === tipo ? ' selected' : '') + '>' + afastamentoTipoLabel(tipo) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Data de início</span><input id="afast-dataInicio" type="date" value="' + esc(seed.dataInicio) + '"></label>' +
+        '<label class="field"><span>Data de fim (deixe em branco se em andamento)</span><input id="afast-dataFim" type="date" value="' + esc(seed.dataFim) + '"></label>' +
+        '<label class="field"><span>Documento de referência</span><input id="afast-documentoReferencia" type="text" value="' + esc(seed.documentoReferencia) + '" placeholder="Ex.: nº do atestado"></label>' +
+        '<label class="field field--full"><span>Motivo / observações</span><input id="afast-motivo" type="text" value="' + esc(seed.motivo) + '"></label>' +
+      '</div></div></section>',
+      '<div class="warning-banner hr-calc-warning"><span>!</span><div>Por segurança e LGPD, este cadastro não armazena CID nem laudo médico — apenas o tipo geral do afastamento e um documento de referência para consulta externa quando necessário.</div></div>',
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="afastamento-cancel">Cancelar</button><button class="primary-button" data-action="afastamento-save">💾 Registrar afastamento</button></div>'
+    ].join('');
+  }
+  function submitAfastamentoForm() {
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', '', 'error'); return; }
+    var colaboradorId = $('#afast-colaboradorId') ? $('#afast-colaboradorId').value : '';
+    if (!colaboradorId) { toast('Selecione um colaborador', '', 'error'); return; }
+    var dataInicio = $('#afast-dataInicio') ? $('#afast-dataInicio').value : '';
+    if (!dataInicio) { toast('Informe a data de início', '', 'error'); return; }
+    var payload = {
+      colaboradorId: colaboradorId, tipo: $('#afast-tipo').value, dataInicio: dataInicio,
+      dataFim: $('#afast-dataFim').value, documentoReferencia: $('#afast-documentoReferencia').value, motivo: $('#afast-motivo').value
+    };
+    apiRequest('/api/afastamentos', { method: 'POST', body: JSON.stringify(payload) }).then(function (result) {
+      toast('Afastamento registrado', result.item.colaboradorNome);
+      audit('Afastamento registrado', result.item.colaboradorNome + ' · ' + afastamentoTipoLabel(result.item.tipo));
+      closeAfastamentoForm();
+      loadAfastamentos(true);
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function encerrarAfastamento(id) {
+    var item = (afastamentosState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var dataFim = window.prompt('Informe a data de encerramento do afastamento (AAAA-MM-DD):', todayISO());
+    if (!dataFim) return;
+    var payload = { colaboradorId: item.colaboradorId, tipo: item.tipo, dataInicio: item.dataInicio, dataFim: dataFim, documentoReferencia: item.documentoReferencia, motivo: item.motivo };
+    apiRequest('/api/afastamentos/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Afastamento encerrado', item.colaboradorNome);
+      audit('Afastamento encerrado', item.colaboradorNome);
+      loadAfastamentos(true);
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível encerrar', error.message, 'error'); });
+  }
+  function deleteAfastamento(id) {
+    var item = (afastamentosState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este registro de afastamento de ' + item.colaboradorNome + '?')) return;
+    apiRequest('/api/afastamentos/' + id, { method: 'DELETE' }).then(function () {
+      toast('Registro excluído', item.colaboradorNome);
+      loadAfastamentos(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderAfastamentosList() {
+    var client = currentClient(), ui = afastamentosUi();
+    if (!client) return pageHeading('Afastamentos', 'Selecione um cliente no topo da página para gerenciar os afastamentos.', '');
+    var items = (afastamentosState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      return true;
+    });
+    var rows = items.map(function (item) {
+      var actions = item.status === 'em_andamento' ? '<button class="row-button" data-action="afastamento-encerrar" data-id="' + item.id + '" title="Encerrar">✔</button>' : '';
+      actions += '<button class="row-button" data-action="afastamento-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + esc(afastamentoTipoLabel(item.tipo)) + '</td>' +
+        '<td>' + brDate(item.dataInicio) + '</td>' +
+        '<td>' + (item.dataFim ? brDate(item.dataFim) : '—') + '</td>' +
+        '<td><span class="tag ' + (item.status === 'em_andamento' ? 'tag--warning' : 'tag--success') + '">' + (item.status === 'em_andamento' ? 'Em andamento' : 'Encerrado') + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Afastamentos', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="afastamento-new">+ Novo afastamento</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Colaborador</span><select id="afastamento-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="afastamento-status-filter"><option value="">Todos</option><option value="em_andamento"' + (ui.statusFilter === 'em_andamento' ? ' selected' : '') + '>Em andamento</option><option value="encerrado"' + (ui.statusFilter === 'encerrado' ? ' selected' : '') + '>Encerrado</option></select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Tipo</th><th>Início</th><th>Fim</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty-state"><h3>Nenhum afastamento registrado</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderAfastamentos() { return afastamentosUi().view === 'form' ? renderAfastamentoForm() : renderAfastamentosList(); }
+
+  var BENEFICIO_CALC_TIPOS = ['vale_transporte', 'vale_refeicao', 'vale_alimentacao'];
+  function beneficioTipoLabel(tipo) {
+    return ({
+      vale_transporte: 'Vale-Transporte', vale_refeicao: 'Vale-Refeição', vale_alimentacao: 'Vale-Alimentação',
+      plano_saude: 'Plano de Saúde', plano_odontologico: 'Plano Odontológico', seguro_vida: 'Seguro de Vida',
+      auxilio_creche: 'Auxílio-Creche', auxilio_educacao: 'Auxílio-Educação', outro: 'Outro'
+    })[tipo] || tipo;
+  }
+  function beneficioComputeValues(tipo, colaborador, extra) {
+    var find = function (lines, label) { var line = lines.filter(function (item) { return item.label === label; })[0]; return line ? line.value : 0; };
+    if (tipo === 'vale_transporte') {
+      var vt = HR_CALC_SPECS['vale-transporte'].compute({ 'hr-vt-base': colaborador.salario, 'hr-vt-daily': extra.custoDiario, 'hr-vt-days': extra.diasUteis });
+      return { valorBeneficio: find(vt.lines, 'Custo total do transporte no mês'), valorDescontoColaborador: find(vt.lines, 'Desconto do colaborador') };
+    }
+    if (tipo === 'vale_refeicao' || tipo === 'vale_alimentacao') {
+      var vr = HR_CALC_SPECS['vale-refeicao'].compute({ 'hr-vr-daily': extra.valorDiario, 'hr-vr-days': extra.diasUteis, 'hr-vr-share': extra.percentualDesconto });
+      return { valorBeneficio: find(vr.lines, 'Valor total do benefício'), valorDescontoColaborador: find(vr.lines, 'Participação do colaborador') };
+    }
+    return null;
+  }
+  var beneficiosState = { loadedForClient: null, loading: false, items: [] };
+  function beneficiosUi() {
+    if (!state.beneficiosUi) state.beneficiosUi = { view: 'list', colaboradorFilter: '', statusFilter: '', formSeed: null };
+    return state.beneficiosUi;
+  }
+  function loadBeneficios(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && beneficiosState.loadedForClient === client.id) return Promise.resolve();
+    beneficiosState.loading = true;
+    return apiRequest('/api/beneficios?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      beneficiosState.items = payload.items || [];
+      beneficiosState.loadedForClient = client.id;
+      beneficiosState.loading = false;
+      if (state.route === 'beneficios') route();
+    }).catch(function (error) { beneficiosState.loading = false; toast('Não foi possível carregar os benefícios', error.message, 'error'); });
+  }
+  function openBeneficioForm() {
+    beneficiosUi().view = 'form';
+    beneficiosUi().formSeed = { colaboradorId: '', tipo: 'vale_transporte', custoDiario: 12, diasUteis: 22, valorDiario: 35, percentualDesconto: 20, valorBeneficio: 0, valorDescontoColaborador: 0, dataInicio: todayISO(), dataFim: '', status: 'ativo', descricao: '', observacoes: '' };
+    route();
+  }
+  function closeBeneficioForm() { beneficiosUi().view = 'list'; beneficiosUi().formSeed = null; route(); }
+  function beneficioCaptureFormState() {
+    var raw = {};
+    $$('[data-beneficio-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ben-/, '')] = el.value; });
+    beneficiosUi().formSeed = Object.assign({}, beneficiosUi().formSeed || {}, raw);
+  }
+  function renderBeneficioForm() {
+    var seed = beneficiosUi().formSeed || {};
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    var tipoOptions = ['vale_transporte', 'vale_refeicao', 'vale_alimentacao', 'plano_saude', 'plano_odontologico', 'seguro_vida', 'auxilio_creche', 'auxilio_educacao', 'outro'];
+    var isCalcTipo = BENEFICIO_CALC_TIPOS.indexOf(seed.tipo) >= 0;
+    var computed = isCalcTipo && colaborador ? beneficioComputeValues(seed.tipo, colaborador, seed) : null;
+    var valorBeneficio = computed ? computed.valorBeneficio : Number(seed.valorBeneficio || 0);
+    var valorDesconto = computed ? computed.valorDescontoColaborador : Number(seed.valorDescontoColaborador || 0);
+    var custoEmpresa = Math.max(0, valorBeneficio - valorDesconto);
+    return [
+      pageHeading('Novo Benefício', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="beneficio-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados do benefício</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="ben-colaboradorId" data-beneficio-input>' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Tipo de benefício</span><select id="ben-tipo" data-beneficio-input>' + tipoOptions.map(function (tipo) { return '<option value="' + tipo + '"' + (seed.tipo === tipo ? ' selected' : '') + '>' + beneficioTipoLabel(tipo) + '</option>'; }).join('') + '</select></label>' +
+        (seed.tipo === 'outro' ? '<label class="field"><span>Descrição</span><input id="ben-descricao" data-beneficio-input type="text" value="' + esc(seed.descricao || '') + '" placeholder="Ex.: Auxílio-combustível"></label>' : '') +
+        '<label class="field"><span>Data de início</span><input id="ben-dataInicio" data-beneficio-input type="date" value="' + esc(seed.dataInicio) + '"></label>' +
+        '<label class="field"><span>Data de fim (opcional)</span><input id="ben-dataFim" data-beneficio-input type="date" value="' + esc(seed.dataFim || '') + '"></label>' +
+        '<label class="field"><span>Status</span><select id="ben-status" data-beneficio-input><option value="ativo"' + (seed.status !== 'inativo' ? ' selected' : '') + '>Ativo</option><option value="inativo"' + (seed.status === 'inativo' ? ' selected' : '') + '>Inativo</option></select></label>' +
+        '<label class="field field--full"><span>Observações</span><input id="ben-observacoes" data-beneficio-input type="text" value="' + esc(seed.observacoes || '') + '"></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador para ver o cálculo do benefício.</div></div>' : (
+        seed.tipo === 'vale_transporte' ?
+          '<section class="card"><header class="card-header"><div><h2>Cálculo do Vale-Transporte</h2><small>Desconto legal de até 6% do salário-base</small></div></header><div class="card-body"><div class="form-grid">' +
+            '<label class="field"><span>Custo diário do transporte</span><input id="ben-custoDiario" data-beneficio-input type="number" min="0" step="0.01" value="' + esc(seed.custoDiario || 0) + '"></label>' +
+            '<label class="field"><span>Dias úteis no mês</span><input id="ben-diasUteis" data-beneficio-input type="number" min="0" step="1" value="' + esc(seed.diasUteis || 22) + '"></label>' +
+          '</div><div class="table-wrap"><table><tbody>' +
+            '<tr><td>Custo total do transporte</td><td id="ben-preview-beneficio">' + money(valorBeneficio) + '</td></tr>' +
+            '<tr><td>Desconto do colaborador (máx. 6% do salário)</td><td id="ben-preview-desconto">' + money(valorDesconto) + '</td></tr>' +
+            '<tr class="hr-calc-total-row"><td><b>Custo da empresa</b></td><td><b id="ben-preview-custo">' + money(custoEmpresa) + '</b></td></tr>' +
+          '</tbody></table></div></div></section>'
+        : (seed.tipo === 'vale_refeicao' || seed.tipo === 'vale_alimentacao') ?
+          '<section class="card"><header class="card-header"><div><h2>Cálculo do ' + beneficioTipoLabel(seed.tipo) + '</h2></div></header><div class="card-body"><div class="form-grid">' +
+            '<label class="field"><span>Valor diário</span><input id="ben-valorDiario" data-beneficio-input type="number" min="0" step="0.01" value="' + esc(seed.valorDiario || 0) + '"></label>' +
+            '<label class="field"><span>Dias úteis no mês</span><input id="ben-diasUteis" data-beneficio-input type="number" min="0" step="1" value="' + esc(seed.diasUteis || 22) + '"></label>' +
+            '<label class="field"><span>Participação do colaborador (%)</span><input id="ben-percentualDesconto" data-beneficio-input type="number" min="0" max="100" step="1" value="' + esc(seed.percentualDesconto || 0) + '"></label>' +
+          '</div><div class="table-wrap"><table><tbody>' +
+            '<tr><td>Valor total do benefício</td><td id="ben-preview-beneficio">' + money(valorBeneficio) + '</td></tr>' +
+            '<tr><td>Participação do colaborador</td><td id="ben-preview-desconto">' + money(valorDesconto) + '</td></tr>' +
+            '<tr class="hr-calc-total-row"><td><b>Custo da empresa</b></td><td><b id="ben-preview-custo">' + money(custoEmpresa) + '</b></td></tr>' +
+          '</tbody></table></div></div></section>'
+        :
+          '<section class="card"><header class="card-header"><div><h2>Valores do benefício</h2></div></header><div class="card-body"><div class="form-grid">' +
+            '<label class="field"><span>Valor total do benefício</span><input id="ben-valorBeneficio" data-beneficio-input type="number" min="0" step="0.01" value="' + esc(seed.valorBeneficio || 0) + '"></label>' +
+            '<label class="field"><span>Desconto do colaborador</span><input id="ben-valorDescontoColaborador" data-beneficio-input type="number" min="0" step="0.01" value="' + esc(seed.valorDescontoColaborador || 0) + '"></label>' +
+          '</div><div class="table-wrap"><table><tbody><tr class="hr-calc-total-row"><td><b>Custo da empresa</b></td><td><b id="ben-preview-custo">' + money(custoEmpresa) + '</b></td></tr></tbody></table></div></div></section>'
+      ),
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="beneficio-cancel">Cancelar</button><button class="primary-button" data-action="beneficio-save">💾 Registrar benefício</button></div>'
+    ].join('');
+  }
+  function updateBeneficioForm() {
+    if (!$('#ben-tipo')) return;
+    var tipo = $('#ben-tipo').value;
+    var colaboradorId = $('#ben-colaboradorId') ? $('#ben-colaboradorId').value : '';
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === colaboradorId; });
+    if (!colaborador) return;
+    var extra = {
+      custoDiario: $('#ben-custoDiario') ? parseLocaleNumber($('#ben-custoDiario').value) : 0,
+      diasUteis: $('#ben-diasUteis') ? parseLocaleNumber($('#ben-diasUteis').value) : 22,
+      valorDiario: $('#ben-valorDiario') ? parseLocaleNumber($('#ben-valorDiario').value) : 0,
+      percentualDesconto: $('#ben-percentualDesconto') ? parseLocaleNumber($('#ben-percentualDesconto').value) : 0
+    };
+    var computed = BENEFICIO_CALC_TIPOS.indexOf(tipo) >= 0 ? beneficioComputeValues(tipo, colaborador, extra) : null;
+    var valorBeneficio = computed ? computed.valorBeneficio : ($('#ben-valorBeneficio') ? parseLocaleNumber($('#ben-valorBeneficio').value) : 0);
+    var valorDesconto = computed ? computed.valorDescontoColaborador : ($('#ben-valorDescontoColaborador') ? parseLocaleNumber($('#ben-valorDescontoColaborador').value) : 0);
+    var custoEmpresa = Math.max(0, valorBeneficio - valorDesconto);
+    if ($('#ben-preview-beneficio')) $('#ben-preview-beneficio').textContent = money(valorBeneficio);
+    if ($('#ben-preview-desconto')) $('#ben-preview-desconto').textContent = money(valorDesconto);
+    if ($('#ben-preview-custo')) $('#ben-preview-custo').textContent = money(custoEmpresa);
+  }
+  function beneficioReadForm() {
+    var raw = {};
+    $$('[data-beneficio-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ben-/, '')] = el.value; });
+    return raw;
+  }
+  function submitBeneficioForm() {
+    var seed = Object.assign({}, beneficiosUi().formSeed || {}, beneficioReadForm());
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página.', 'error'); return; }
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    if (!colaborador) { toast('Selecione um colaborador', '', 'error'); return; }
+    if (!seed.dataInicio) { toast('Informe a data de início', '', 'error'); return; }
+    var computed = BENEFICIO_CALC_TIPOS.indexOf(seed.tipo) >= 0 ? beneficioComputeValues(seed.tipo, colaborador, seed) : null;
+    var payload = Object.assign({}, seed, {
+      valorBeneficio: computed ? computed.valorBeneficio : Number(seed.valorBeneficio || 0),
+      valorDescontoColaborador: computed ? computed.valorDescontoColaborador : Number(seed.valorDescontoColaborador || 0)
+    });
+    apiRequest('/api/beneficios', { method: 'POST', body: JSON.stringify(payload) }).then(function (result) {
+      toast('Benefício registrado', result.item.colaboradorNome);
+      audit('Benefício registrado', result.item.colaboradorNome + ' · ' + beneficioTipoLabel(result.item.tipo));
+      closeBeneficioForm();
+      loadBeneficios(true);
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function toggleBeneficioStatus(id) {
+    var item = (beneficiosState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var payload = {
+      tipo: item.tipo, descricao: item.descricao, valorBeneficio: item.valorBeneficio, valorDescontoColaborador: item.valorDescontoColaborador,
+      status: item.status === 'ativo' ? 'inativo' : 'ativo', dataInicio: item.dataInicio, dataFim: item.dataFim, observacoes: item.observacoes
+    };
+    apiRequest('/api/beneficios/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Status atualizado', payload.status === 'ativo' ? 'Ativo' : 'Inativo');
+      audit('Benefício — status atualizado', item.colaboradorNome + ' · ' + payload.status);
+      loadBeneficios(true);
+    }).catch(function (error) { toast('Não foi possível atualizar', error.message, 'error'); });
+  }
+  function deleteBeneficio(id) {
+    var item = (beneficiosState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este benefício de ' + item.colaboradorNome + '?')) return;
+    apiRequest('/api/beneficios/' + id, { method: 'DELETE' }).then(function () {
+      toast('Benefício excluído', item.colaboradorNome);
+      loadBeneficios(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderBeneficiosList() {
+    var client = currentClient(), ui = beneficiosUi();
+    if (!client) return pageHeading('Benefícios', 'Selecione um cliente no topo da página para gerenciar os benefícios.', '');
+    var items = (beneficiosState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      return true;
+    });
+    var custoTotalEmpresa = items.filter(function (item) { return item.status === 'ativo'; }).reduce(function (sum, item) { return sum + item.valorCustoEmpresa; }, 0);
+    var rows = items.map(function (item) {
+      var actions = '<button class="row-button" data-action="beneficio-toggle" data-id="' + item.id + '" title="' + (item.status === 'ativo' ? 'Inativar' : 'Reativar') + '">' + (item.status === 'ativo' ? '⏸' : '▶') + '</button>';
+      actions += '<button class="row-button" data-action="beneficio-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + esc(beneficioTipoLabel(item.tipo)) + (item.descricao ? '<br><small class="subtle">' + esc(item.descricao) + '</small>' : '') + '</td>' +
+        '<td>' + money(item.valorBeneficio) + '</td>' +
+        '<td>' + money(item.valorDescontoColaborador) + '</td>' +
+        '<td>' + money(item.valorCustoEmpresa) + '</td>' +
+        '<td><span class="tag ' + (item.status === 'ativo' ? 'tag--success' : 'tag--danger') + '">' + (item.status === 'ativo' ? 'Ativo' : 'Inativo') + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Benefícios', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="beneficio-new">+ Novo benefício</button>'),
+      '<div class="info-banner"><span>i</span><div><strong>Custo total em benefícios ativos:</strong> ' + money(custoTotalEmpresa) + ' por mês — soma do custo assumido pela empresa nos benefícios ativos.</div></div>',
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Colaborador</span><select id="beneficio-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="beneficio-status-filter"><option value="">Todos</option><option value="ativo"' + (ui.statusFilter === 'ativo' ? ' selected' : '') + '>Ativo</option><option value="inativo"' + (ui.statusFilter === 'inativo' ? ' selected' : '') + '>Inativo</option></select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Tipo</th><th>Valor do benefício</th><th>Desconto colaborador</th><th>Custo empresa</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty-state"><h3>Nenhum benefício cadastrado</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderBeneficios() { return beneficiosUi().view === 'form' ? renderBeneficioForm() : renderBeneficiosList(); }
+
+  var PONTO_SEM_HORARIO_TIPOS = ['falta', 'falta_justificada', 'folga', 'atestado'];
+  function pontoTipoDiaLabel(tipo) {
+    return ({ normal: 'Normal', feriado_trabalhado: 'Feriado trabalhado', falta: 'Falta', falta_justificada: 'Falta justificada', folga: 'Folga', atestado: 'Atestado' })[tipo] || tipo;
+  }
+  var pontoState = { loadedForClient: null, loading: false, items: [] };
+  function pontoUi() {
+    if (!state.pontoUi) state.pontoUi = { view: 'list', colaboradorFilter: '', statusFilter: '', competencia: todayISO().slice(0, 7), formSeed: null };
+    return state.pontoUi;
+  }
+  function loadPonto(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && pontoState.loadedForClient === client.id) return Promise.resolve();
+    pontoState.loading = true;
+    return apiRequest('/api/ponto?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      pontoState.items = payload.items || [];
+      pontoState.loadedForClient = client.id;
+      pontoState.loading = false;
+      if (state.route === 'ponto-eletronico') route();
+    }).catch(function (error) { pontoState.loading = false; toast('Não foi possível carregar o ponto', error.message, 'error'); });
+  }
+  function openPontoForm() {
+    pontoUi().view = 'form';
+    pontoUi().formSeed = { colaboradorId: '', data: todayISO(), tipoDia: 'normal', entrada1: '08:00', saida1: '12:00', entrada2: '13:00', saida2: '17:12', horasEsperadas: 8, trabalhoNoturno: false, observacoes: '' };
+    route();
+  }
+  function closePontoForm() { pontoUi().view = 'list'; pontoUi().formSeed = null; route(); }
+  function pontoCaptureFormState() {
+    var raw = {};
+    $$('[data-ponto-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ponto-/, '')] = el.type === 'checkbox' ? el.checked : el.value; });
+    pontoUi().formSeed = Object.assign({}, pontoUi().formSeed || {}, raw);
+  }
+  function pontoReadForm() {
+    var raw = {};
+    $$('[data-ponto-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ponto-/, '')] = el.type === 'checkbox' ? el.checked : el.value; });
+    return raw;
+  }
+  function renderPontoForm() {
+    var seed = pontoUi().formSeed || {};
+    var showHorarios = PONTO_SEM_HORARIO_TIPOS.indexOf(seed.tipoDia) < 0;
+    var tipoOptions = ['normal', 'feriado_trabalhado', 'falta', 'falta_justificada', 'folga', 'atestado'];
+    return [
+      pageHeading('Novo Registro de Ponto', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="ponto-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados do registro</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="ponto-colaboradorId" data-ponto-input>' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Data</span><input id="ponto-data" data-ponto-input type="date" value="' + esc(seed.data) + '"></label>' +
+        '<label class="field"><span>Tipo de dia</span><select id="ponto-tipoDia" data-ponto-input>' + tipoOptions.map(function (tipo) { return '<option value="' + tipo + '"' + (seed.tipoDia === tipo ? ' selected' : '') + '>' + pontoTipoDiaLabel(tipo) + '</option>'; }).join('') + '</select></label>' +
+        (showHorarios ?
+          '<label class="field"><span>Entrada 1</span><input id="ponto-entrada1" data-ponto-input type="time" value="' + esc(seed.entrada1 || '') + '"></label>' +
+          '<label class="field"><span>Saída 1 (intervalo)</span><input id="ponto-saida1" data-ponto-input type="time" value="' + esc(seed.saida1 || '') + '"></label>' +
+          '<label class="field"><span>Entrada 2</span><input id="ponto-entrada2" data-ponto-input type="time" value="' + esc(seed.entrada2 || '') + '"></label>' +
+          '<label class="field"><span>Saída 2 (final)</span><input id="ponto-saida2" data-ponto-input type="time" value="' + esc(seed.saida2 || '') + '"></label>' +
+          '<label class="field"><span>Horas esperadas na jornada</span><input id="ponto-horasEsperadas" data-ponto-input type="number" min="0" max="24" step="0.5" value="' + esc(seed.horasEsperadas || 8) + '"></label>' +
+          '<label class="field"><span>&nbsp;</span><label class="check" style="margin-top:8px"><input id="ponto-trabalhoNoturno" data-ponto-input type="checkbox"' + (seed.trabalhoNoturno ? ' checked' : '') + '> Inclui trabalho noturno (22h–5h)</label></label>'
+        : '<div class="info-banner" style="grid-column:1/-1"><span>i</span><div>Este tipo de dia não registra horários. O saldo é calculado automaticamente: falta gera débito integral da jornada esperada; os demais tipos não geram débito nem crédito.</div></div>') +
+        '<label class="field field--full"><span>Observações</span><input id="ponto-observacoes" data-ponto-input type="text" value="' + esc(seed.observacoes || '') + '"></label>' +
+      '</div></div></section>',
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="ponto-cancel">Cancelar</button><button class="primary-button" data-action="ponto-save">💾 Registrar ponto</button></div>'
+    ].join('');
+  }
+  function submitPontoForm() {
+    var seed = Object.assign({}, pontoUi().formSeed || {}, pontoReadForm());
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página.', 'error'); return; }
+    if (!seed.colaboradorId) { toast('Selecione um colaborador', '', 'error'); return; }
+    if (!seed.data) { toast('Informe a data', '', 'error'); return; }
+    apiRequest('/api/ponto', { method: 'POST', body: JSON.stringify(seed) }).then(function (result) {
+      toast('Ponto registrado', result.item.colaboradorNome + ' · ' + brDate(result.item.data));
+      audit('Ponto registrado', result.item.colaboradorNome + ' · ' + result.item.data);
+      closePontoForm();
+      loadPonto(true);
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function approvePonto(id) {
+    var item = (pontoState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var payload = {
+      data: item.data, tipoDia: item.tipoDia, entrada1: item.entrada1, saida1: item.saida1, entrada2: item.entrada2, saida2: item.saida2,
+      horasEsperadas: item.horasEsperadas, trabalhoNoturno: item.trabalhoNoturno, observacoes: item.observacoes, status: 'aprovado'
+    };
+    apiRequest('/api/ponto/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Ponto aprovado', item.colaboradorNome);
+      audit('Ponto aprovado', item.colaboradorNome + ' · ' + item.data);
+      loadPonto(true);
+    }).catch(function (error) { toast('Não foi possível aprovar', error.message, 'error'); });
+  }
+  function deletePonto(id) {
+    var item = (pontoState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este registro de ponto de ' + item.colaboradorNome + ' (' + brDate(item.data) + ')?')) return;
+    apiRequest('/api/ponto/' + id, { method: 'DELETE' }).then(function () {
+      toast('Registro excluído', item.colaboradorNome);
+      loadPonto(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function pontoStatusTag(status) { return status === 'aprovado' ? 'tag--success' : 'tag--warning'; }
+  function renderPontoList() {
+    var client = currentClient(), ui = pontoUi();
+    if (!client) return pageHeading('Ponto Eletrônico', 'Selecione um cliente no topo da página para gerenciar o ponto.', '');
+    var items = (pontoState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      if (ui.competencia && item.data.indexOf(ui.competencia) !== 0) return false;
+      return true;
+    });
+    var rows = items.map(function (item) {
+      var actions = item.status === 'pendente' ? '<button class="row-button" data-action="ponto-approve" data-id="' + item.id + '" title="Aprovar">✓</button>' : '';
+      actions += '<button class="row-button" data-action="ponto-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      var saldoClass = item.saldoDia > 0 ? 'tag--success' : item.saldoDia < 0 ? 'tag--danger' : 'tag--info';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + brDate(item.data) + '</td>' +
+        '<td>' + esc(pontoTipoDiaLabel(item.tipoDia)) + (item.trabalhoNoturno ? ' <small class="subtle">(noturno)</small>' : '') + '</td>' +
+        '<td>' + (item.entrada1 ? (item.entrada1 + '–' + item.saida1 + ' / ' + item.entrada2 + '–' + item.saida2) : '—') + '</td>' +
+        '<td>' + number(item.horasTrabalhadas) + 'h</td>' +
+        '<td><span class="tag ' + saldoClass + '">' + (item.saldoDia > 0 ? '+' : '') + number(item.saldoDia) + 'h</span></td>' +
+        '<td><span class="tag ' + pontoStatusTag(item.status) + '">' + (item.status === 'aprovado' ? 'Aprovado' : 'Pendente') + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Ponto Eletrônico', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="ponto-new">+ Novo registro</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">' +
+        '<label class="field"><span>Competência</span><input id="ponto-competencia-filter" type="month" value="' + esc(ui.competencia) + '"></label>' +
+        '<label class="field"><span>Colaborador</span><select id="ponto-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="ponto-status-filter"><option value="">Todos</option><option value="pendente"' + (ui.statusFilter === 'pendente' ? ' selected' : '') + '>Pendente</option><option value="aprovado"' + (ui.statusFilter === 'aprovado' ? ' selected' : '') + '>Aprovado</option></select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Data</th><th>Tipo</th><th>Horários</th><th>Trabalhadas</th><th>Saldo do dia</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty-state"><h3>Nenhum registro de ponto</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderPonto() { return pontoUi().view === 'form' ? renderPontoForm() : renderPontoList(); }
+
+  var bancoHorasState = { loadedForClient: null, loading: false, saldos: [], ajustes: [] };
+  function bancoHorasUi() {
+    if (!state.bancoHorasUi) state.bancoHorasUi = { formOpen: false, formSeed: null };
+    return state.bancoHorasUi;
+  }
+  function loadBancoHoras(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && bancoHorasState.loadedForClient === client.id) return Promise.resolve();
+    bancoHorasState.loading = true;
+    return Promise.all([
+      apiRequest('/api/banco-horas/saldo?clientId=' + encodeURIComponent(client.id)),
+      apiRequest('/api/banco-horas/ajustes?clientId=' + encodeURIComponent(client.id))
+    ]).then(function (results) {
+      bancoHorasState.saldos = results[0].items || [];
+      bancoHorasState.ajustes = results[1].items || [];
+      bancoHorasState.loadedForClient = client.id;
+      bancoHorasState.loading = false;
+      if (state.route === 'banco-horas') route();
+    }).catch(function (error) { bancoHorasState.loading = false; toast('Não foi possível carregar o banco de horas', error.message, 'error'); });
+  }
+  function openAjusteForm() {
+    bancoHorasUi().formOpen = true;
+    bancoHorasUi().formSeed = { colaboradorId: '', tipo: 'credito', data: todayISO(), horas: 1, motivo: '' };
+    route();
+  }
+  function closeAjusteForm() { bancoHorasUi().formOpen = false; bancoHorasUi().formSeed = null; route(); }
+  function submitAjusteForm() {
+    var raw = {};
+    $$('[data-ajuste-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ajuste-/, '')] = el.value; });
+    var seed = Object.assign({}, bancoHorasUi().formSeed || {}, raw);
+    if (!seed.colaboradorId) { toast('Selecione um colaborador', '', 'error'); return; }
+    apiRequest('/api/banco-horas/ajustes', { method: 'POST', body: JSON.stringify(seed) }).then(function (result) {
+      toast('Ajuste lançado', result.item.colaboradorNome);
+      audit('Banco de horas — ajuste lançado', result.item.colaboradorNome + ' · ' + result.item.tipo + ' ' + result.item.horas + 'h');
+      closeAjusteForm();
+      loadBancoHoras(true);
+    }).catch(function (error) { toast('Não foi possível lançar', error.message, 'error'); });
+  }
+  function deleteAjuste(id) {
+    var item = (bancoHorasState.ajustes || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este ajuste de ' + item.colaboradorNome + '?')) return;
+    apiRequest('/api/banco-horas/ajustes/' + id, { method: 'DELETE' }).then(function () {
+      toast('Ajuste excluído', item.colaboradorNome);
+      loadBancoHoras(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderBancoHoras() {
+    var client = currentClient();
+    if (!client) return pageHeading('Banco de Horas', 'Selecione um cliente no topo da página para ver os saldos.', '');
+    var ui = bancoHorasUi();
+    if (ui.formOpen) {
+      var seed = ui.formSeed || {};
+      return [
+        pageHeading('Novo Ajuste de Banco de Horas', 'Cliente: ' + esc(client.name), '<button class="secondary-button" data-action="ajuste-cancel">← Voltar</button>'),
+        '<section class="card"><header class="card-header"><div><h2>Dados do ajuste</h2><small>Use para compensações, acordos de banco de horas e correções manuais</small></div></header><div class="card-body"><div class="form-grid">' +
+          '<label class="field field--full"><span>Colaborador</span><select id="ajuste-colaboradorId" data-ajuste-input>' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+          '<label class="field"><span>Tipo</span><select id="ajuste-tipo" data-ajuste-input><option value="credito"' + (seed.tipo !== 'debito' ? ' selected' : '') + '>Crédito</option><option value="debito"' + (seed.tipo === 'debito' ? ' selected' : '') + '>Débito</option></select></label>' +
+          '<label class="field"><span>Data</span><input id="ajuste-data" data-ajuste-input type="date" value="' + esc(seed.data) + '"></label>' +
+          '<label class="field"><span>Horas</span><input id="ajuste-horas" data-ajuste-input type="number" min="0.5" step="0.5" value="' + esc(seed.horas || 1) + '"></label>' +
+          '<label class="field field--full"><span>Motivo</span><input id="ajuste-motivo" data-ajuste-input type="text" value="' + esc(seed.motivo || '') + '" placeholder="Ex.: Compensação de folga, acordo de banco de horas"></label>' +
+        '</div></div></section>',
+        '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="ajuste-cancel">Cancelar</button><button class="primary-button" data-action="ajuste-save">💾 Lançar ajuste</button></div>'
+      ].join('');
+    }
+    var rows = (bancoHorasState.saldos || []).map(function (item) {
+      var colaborador = (colaboradoresState.items || []).find(function (row) { return row.id === item.colaboradorId; });
+      var valorHora = colaborador && colaborador.salario ? colaborador.salario / 220 : 0;
+      var valorEstimado = item.saldoTotal > 0 ? item.saldoTotal * valorHora * 1.5 : 0;
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + number(item.saldoPontoHoras) + 'h</td>' +
+        '<td>' + number(item.creditos) + 'h</td>' +
+        '<td>' + number(item.debitos) + 'h</td>' +
+        '<td><span class="tag ' + (item.saldoTotal > 0 ? 'tag--success' : item.saldoTotal < 0 ? 'tag--danger' : 'tag--info') + '">' + (item.saldoTotal > 0 ? '+' : '') + number(item.saldoTotal) + 'h</span></td>' +
+        '<td>' + money(valorEstimado) + '</td></tr>';
+    }).join('');
+    var ajusteRows = (bancoHorasState.ajustes || []).map(function (item) {
+      return '<tr><td>' + esc(item.colaboradorNome) + '</td><td>' + brDate(item.data) + '</td><td>' + (item.tipo === 'credito' ? 'Crédito' : 'Débito') + '</td><td>' + number(item.horas) + 'h</td><td>' + esc(item.motivo || '—') + '</td><td><button class="row-button" data-action="ajuste-delete" data-id="' + item.id + '" title="Excluir">🗑</button></td></tr>';
+    }).join('');
+    return [
+      pageHeading('Banco de Horas', 'Cliente: ' + esc(client.name), '<button class="primary-button" data-action="ajuste-new">+ Novo ajuste</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Saldo por colaborador</h2><small>Saldo do ponto aprovado + créditos manuais − débitos manuais</small></div></header><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Saldo do ponto</th><th>Créditos manuais</th><th>Débitos manuais</th><th>Saldo total</th><th>Valor estimado (c/ 50%)</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty-state"><h3>Nenhum colaborador ativo</h3></div></td></tr>') + '</tbody></table></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>Histórico de ajustes manuais</h2></div></header><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Data</th><th>Tipo</th><th>Horas</th><th>Motivo</th><th></th></tr></thead><tbody>' + (ajusteRows || '<tr><td colspan="6"><div class="empty-state"><h3>Nenhum ajuste lançado</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+
+  function rescisaoColaboradorOptions(selected) {
+    return '<option value="">Selecione um colaborador</option>' + (colaboradoresState.items || []).filter(function (item) { return item.status !== 'desligado'; }).map(function (item) {
+      return '<option value="' + item.id + '"' + (item.id === selected ? ' selected' : '') + '>' + esc(item.nomeCompleto) + (item.cargo ? ' — ' + esc(item.cargo) : '') + '</option>';
+    }).join('');
+  }
+  function rescisaoBuildCalcData(colaborador, form) {
+    var dependentCount = (colaborador.dependentes || []).filter(function (dep) { return dep.dependenteIrrf; }).length;
+    return Object.assign({}, terminationDefaults(), {
+      startDate: colaborador.dataAdmissao || terminationDefaults().startDate,
+      communicationDate: form.dataDesligamento, terminationDate: form.dataDesligamento,
+      reason: form.motivo, noticeType: form.avisoPrevioTipo,
+      salary: Number(colaborador.salario || 0), dependents: dependentCount,
+      variableAverage: 0, overtimeAverage: 0, nightAverage: 0, hazardRate: 0, unhealthyRate: 0,
+      balanceDays: 0, vacationPeriodsTaken: Number(form.feriasGozadas || 0),
+      bonus: 0, commission: 0, otherEarnings: 0, advances: 0, absences: 0, alimony: 0, otherDeductions: 0,
+      fgtsBalance: Number(form.fgtsSaldo || 0), fgtsRate: 8, birthdayWithdrawal: false,
+      calculateInss: true, calculateIrrf: true, cppEnabled: true, cppRate: 20, ratRate: 2, thirdPartyRate: 5.8
+    });
+  }
+  function rescisaoLinesHtml(lines) {
+    return (lines || []).map(function (line) {
+      return '<tr><td><span class="tag ' + (line.group === 'Proventos' ? 'tag--success' : 'tag--danger') + '">' + esc(line.group) + '</span></td><td>' + esc(line.name) + '</td><td>' + money(line.value) + '</td></tr>';
+    }).join('') || '<tr><td colspan="3"><div class="empty-state"><h3>Nenhuma verba aplicável</h3></div></td></tr>';
+  }
+  var rescisoesState = { loadedForClient: null, loading: false, items: [] };
+  function rescisoesUi() {
+    if (!state.rescisoesUi) state.rescisoesUi = { view: 'list', colaboradorFilter: '', statusFilter: '', formSeed: null };
+    return state.rescisoesUi;
+  }
+  function loadRescisoes(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && rescisoesState.loadedForClient === client.id) return Promise.resolve();
+    rescisoesState.loading = true;
+    return apiRequest('/api/rescisoes?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      rescisoesState.items = payload.items || [];
+      rescisoesState.loadedForClient = client.id;
+      rescisoesState.loading = false;
+      if (state.route === 'rescisoes') route();
+    }).catch(function (error) { rescisoesState.loading = false; toast('Não foi possível carregar as rescisões', error.message, 'error'); });
+  }
+  function rescisaoMotivoLabel(motivo) { return terminationReasonLabel(motivo); }
+  function rescisaoStatusLabel(status) { return ({ calculada: 'Calculada', aprovada: 'Aprovada', paga: 'Paga', arquivada: 'Arquivada' })[status] || status; }
+  function rescisaoStatusTag(status) { return ({ calculada: 'tag--info', aprovada: 'tag--warning', paga: 'tag--success', arquivada: 'tag' })[status] || ''; }
+  function openRescisaoForm() {
+    rescisoesUi().view = 'form';
+    rescisoesUi().formSeed = { colaboradorId: '', motivo: 'sem-justa-causa', dataDesligamento: todayISO(), avisoPrevioTipo: 'indenizado', feriasGozadas: 0, fgtsSaldo: 0, observacoes: '' };
+    route();
+  }
+  function closeRescisaoForm() { rescisoesUi().view = 'list'; rescisoesUi().formSeed = null; route(); }
+  function rescisaoCaptureFormState() {
+    var raw = {};
+    $$('[data-rescisao-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^rescisao-/, '')] = el.value; });
+    rescisoesUi().formSeed = Object.assign({}, rescisoesUi().formSeed || {}, raw);
+  }
+  function rescisaoReadForm() {
+    var raw = {};
+    $$('[data-rescisao-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^rescisao-/, '')] = el.value; });
+    return raw;
+  }
+  function updateRescisaoForm() {
+    if (!$('#rescisao-colaboradorId')) return;
+    var colaboradorId = $('#rescisao-colaboradorId').value;
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === colaboradorId; });
+    if (!colaborador || !$('#rescisao-lines-body')) return;
+    var form = rescisaoReadForm();
+    var result = calculateTermination(rescisaoBuildCalcData(colaborador, form));
+    $('#rescisao-lines-body').innerHTML = rescisaoLinesHtml(result.lines);
+    var setText = function (id, value) { var el = $('#' + id); if (el) el.textContent = value; };
+    setText('rescisao-preview-liquido', money(result.net));
+    setText('rescisao-preview-fgts-deposito', money(result.fgtsDeposit));
+    setText('rescisao-preview-fgts-multa', money(result.fgtsPenalty));
+    setText('rescisao-preview-fgts-disponivel', money(result.fgtsAvailable));
+  }
+  function renderRescisaoForm() {
+    var seed = rescisoesUi().formSeed || {};
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    var motivoOptions = ['sem-justa-causa', 'pedido-demissao', 'justa-causa', 'acordo', 'rescisao-indireta', 'termino-prazo', 'antecipada-empregador', 'antecipada-empregado'];
+    var avisoOptions = [{ value: 'indenizado', label: 'Indenizado' }, { value: 'trabalhado', label: 'Trabalhado' }, { value: 'dispensado', label: 'Dispensado' }, { value: 'nao-cumprido', label: 'Não cumprido pelo empregado' }];
+    var preview = colaborador ? calculateTermination(rescisaoBuildCalcData(colaborador, seed)) : null;
+    return [
+      pageHeading('Nova Rescisão', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="rescisao-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados da rescisão</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="rescisao-colaboradorId" data-rescisao-input>' + rescisaoColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Motivo do desligamento</span><select id="rescisao-motivo" data-rescisao-input>' + motivoOptions.map(function (motivo) { return '<option value="' + motivo + '"' + (seed.motivo === motivo ? ' selected' : '') + '>' + esc(terminationReasonLabel(motivo)) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Data de desligamento</span><input id="rescisao-dataDesligamento" data-rescisao-input type="date" value="' + esc(seed.dataDesligamento) + '"></label>' +
+        '<label class="field"><span>Tipo de aviso-prévio</span><select id="rescisao-avisoPrevioTipo" data-rescisao-input>' + avisoOptions.map(function (item) { return '<option value="' + item.value + '"' + (seed.avisoPrevioTipo === item.value ? ' selected' : '') + '>' + item.label + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Períodos de férias já gozados neste ciclo</span><input id="rescisao-feriasGozadas" data-rescisao-input type="number" min="0" step="1" value="' + esc(seed.feriasGozadas || 0) + '"></label>' +
+        '<label class="field"><span>Saldo atual do FGTS na conta</span><input id="rescisao-fgtsSaldo" data-rescisao-input type="number" min="0" step="0.01" value="' + esc(seed.fgtsSaldo || 0) + '"></label>' +
+        '<label class="field field--full"><span>Observações</span><input id="rescisao-observacoes" data-rescisao-input type="text" value="' + esc(seed.observacoes || '') + '"></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador para calcular a rescisão. Salário e data de admissão são usados automaticamente do cadastro.</div></div>' : (
+        '<section class="card"><header class="card-header"><div><h2>Demonstrativo de rescisão</h2><small>Cálculo estimado — confira convenção coletiva, médias e estabilidades antes de fechar</small></div></header><div class="card-body">' +
+          '<div class="hr-calc-result-hero"><div><small>Total líquido</small><strong id="rescisao-preview-liquido">' + money(preview.net) + '</strong></div><div><small>FGTS a depositar</small><strong id="rescisao-preview-fgts-deposito">' + money(preview.fgtsDeposit) + '</strong></div><div><small>Multa rescisória</small><strong id="rescisao-preview-fgts-multa">' + money(preview.fgtsPenalty) + '</strong></div><div><small>FGTS disponível para saque</small><strong id="rescisao-preview-fgts-disponivel">' + money(preview.fgtsAvailable) + '</strong></div></div>' +
+          '<div class="table-wrap"><table><thead><tr><th>Grupo</th><th>Descrição</th><th>Valor</th></tr></thead><tbody id="rescisao-lines-body">' + rescisaoLinesHtml(preview.lines) + '</tbody></table></div>' +
+          (preview.warnings.length ? '<div class="warning-banner hr-calc-warning"><span>!</span><div>' + preview.warnings.map(function (item) { return esc(item); }).join('<br>') + '</div></div>' : '') +
+        '</div></section>'
+      ),
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="rescisao-cancel">Cancelar</button><button class="primary-button" data-action="rescisao-save">💾 Registrar e desligar colaborador</button></div>'
+    ].join('');
+  }
+  function submitRescisaoForm() {
+    var seed = Object.assign({}, rescisoesUi().formSeed || {}, rescisaoReadForm());
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página.', 'error'); return; }
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    if (!colaborador) { toast('Selecione um colaborador', '', 'error'); return; }
+    if (!seed.dataDesligamento) { toast('Informe a data de desligamento', '', 'error'); return; }
+    if (!window.confirm('Confirma o desligamento de ' + colaborador.nomeCompleto + '? O status do colaborador será alterado para Desligado.')) return;
+    var data = rescisaoBuildCalcData(colaborador, seed);
+    var result = calculateTermination(data);
+    var payload = {
+      colaboradorId: colaborador.id, motivo: seed.motivo, dataDesligamento: seed.dataDesligamento, avisoPrevioTipo: seed.avisoPrevioTipo,
+      valorBruto: result.gross, valorDescontos: result.deductions, valorLiquido: result.net,
+      fgtsDeposito: result.fgtsDeposit, fgtsMulta: result.fgtsPenalty,
+      dadosCalculo: data,
+      resultadoCalculo: { gross: result.gross, deductions: result.deductions, net: result.net, inss: result.inss, irrf: result.irrf, fgtsDeposit: result.fgtsDeposit, fgtsPenalty: result.fgtsPenalty, fgtsAvailable: result.fgtsAvailable, lines: result.lines, warnings: result.warnings },
+      observacoes: seed.observacoes, status: 'calculada'
+    };
+    apiRequest('/api/rescisoes', { method: 'POST', body: JSON.stringify(payload) }).then(function (created) {
+      toast('Rescisão registrada', created.item.colaboradorNome + ' · líquido ' + money(created.item.valorLiquido));
+      audit('Rescisão registrada', created.item.colaboradorNome + ' · ' + rescisaoMotivoLabel(created.item.motivo));
+      closeRescisaoForm();
+      loadRescisoes(true);
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function setRescisaoStatus(id, status) {
+    var item = (rescisoesState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    apiRequest('/api/rescisoes/' + id, { method: 'PUT', body: JSON.stringify({ status: status, observacoes: item.observacoes }) }).then(function () {
+      toast('Status atualizado', rescisaoStatusLabel(status));
+      audit('Rescisão — status atualizado', item.colaboradorNome + ' · ' + rescisaoStatusLabel(status));
+      loadRescisoes(true);
+    }).catch(function (error) { toast('Não foi possível atualizar', error.message, 'error'); });
+  }
+  function deleteRescisao(id) {
+    var item = (rescisoesState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir esta rescisão de ' + item.colaboradorNome + '? O colaborador voltará para o status Ativo.')) return;
+    apiRequest('/api/rescisoes/' + id, { method: 'DELETE' }).then(function () {
+      toast('Rescisão excluída', item.colaboradorNome);
+      loadRescisoes(true);
+      loadColaboradores(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function viewRescisaoDemonstrativo(id) {
+    var item = (rescisoesState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var result = item.resultadoCalculo || {};
+    openModal(
+      'Demonstrativo de Rescisão — ' + item.colaboradorNome,
+      '<div class="table-wrap"><table><thead><tr><th>Grupo</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>' + rescisaoLinesHtml(result.lines) + '</tbody></table></div>' +
+      '<dl class="cest-detail" style="margin-top:12px"><div><dt>Total bruto</dt><dd>' + money(item.valorBruto) + '</dd></div><div><dt>Total de descontos</dt><dd>' + money(item.valorDescontos) + '</dd></div><div><dt>Líquido a receber</dt><dd><b>' + money(item.valorLiquido) + '</b></dd></div><div><dt>FGTS a depositar</dt><dd>' + money(item.fgtsDeposito) + '</dd></div><div><dt>Multa rescisória do FGTS</dt><dd>' + money(item.fgtsMulta) + '</dd></div></dl>',
+      '<button class="secondary-button" data-action="close-modal">Fechar</button>'
+    );
+  }
+  function renderRescisoesList() {
+    var client = currentClient(), ui = rescisoesUi();
+    if (!client) return pageHeading('Rescisão', 'Selecione um cliente no topo da página para gerenciar as rescisões.', '');
+    var items = (rescisoesState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      return true;
+    });
+    var rows = items.map(function (item) {
+      var actions = '';
+      if (item.status === 'calculada') actions += '<button class="row-button" data-action="rescisao-status" data-id="' + item.id + '" data-status="aprovada" title="Aprovar">✓</button>';
+      if (item.status === 'aprovada') actions += '<button class="row-button" data-action="rescisao-status" data-id="' + item.id + '" data-status="paga" title="Marcar como paga">💰</button>';
+      if (item.status === 'paga') actions += '<button class="row-button" data-action="rescisao-status" data-id="' + item.id + '" data-status="arquivada" title="Arquivar">🗄</button>';
+      actions += '<button class="row-button" data-action="rescisao-view" data-id="' + item.id + '" title="Ver demonstrativo">⌕</button>';
+      actions += '<button class="row-button" data-action="rescisao-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + esc(rescisaoMotivoLabel(item.motivo)) + '</td>' +
+        '<td>' + brDate(item.dataDesligamento) + '</td>' +
+        '<td>' + money(item.valorLiquido) + '</td>' +
+        '<td><span class="tag ' + rescisaoStatusTag(item.status) + '">' + rescisaoStatusLabel(item.status) + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Rescisão', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="rescisao-new">+ Nova rescisão</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Colaborador</span><select id="rescisao-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="rescisao-status-filter"><option value="">Todos</option>' + ['calculada', 'aprovada', 'paga', 'arquivada'].map(function (status) { return '<option value="' + status + '"' + (ui.statusFilter === status ? ' selected' : '') + '>' + rescisaoStatusLabel(status) + '</option>'; }).join('') + '</select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Motivo</th><th>Desligamento</th><th>Líquido</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty-state"><h3>Nenhuma rescisão registrada</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderRescisoes() { return rescisoesUi().view === 'form' ? renderRescisaoForm() : renderRescisoesList(); }
+
+  function holeriteUi() {
+    if (!state.holeriteUi) state.holeriteUi = { colaboradorId: '', competencia: todayISO().slice(0, 7) };
+    return state.holeriteUi;
+  }
+  function holeriteColaboradorOptions(selected) {
+    return '<option value="">Selecione um colaborador</option>' + (colaboradoresState.items || []).map(function (item) {
+      return '<option value="' + item.id + '"' + (item.id === selected ? ' selected' : '') + '>' + esc(item.nomeCompleto) + (item.cargo ? ' — ' + esc(item.cargo) : '') + '</option>';
+    }).join('');
+  }
+  function holeriteCompute(colaborador, competencia) {
+    var pontoDoMes = (pontoState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id && item.data.indexOf(competencia) === 0 && item.status === 'aprovado'; });
+    var horaValor = colaborador.salario ? colaborador.salario / 220 : 0;
+    var horasExtras = 0, horasFalta = 0;
+    pontoDoMes.forEach(function (item) {
+      if (item.saldoDia > 0) horasExtras += item.saldoDia;
+      else if (item.tipoDia === 'falta') horasFalta += Math.abs(item.saldoDia);
+    });
+    var valorHorasExtras = horasExtras * horaValor * 1.5;
+    var valorFaltas = horasFalta * horaValor;
+    var beneficiosDoColaborador = (beneficiosState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id && item.status === 'ativo'; });
+    var proventos = [{ descricao: 'Salário base', valor: Number(colaborador.salario || 0) }];
+    if (valorHorasExtras > 0) proventos.push({ descricao: 'Horas extras (' + number(horasExtras) + 'h a 50%)', valor: valorHorasExtras });
+    var descontos = [];
+    if (valorFaltas > 0) descontos.push({ descricao: 'Faltas (' + number(horasFalta) + 'h)', valor: valorFaltas });
+    beneficiosDoColaborador.forEach(function (item) {
+      if (item.valorDescontoColaborador > 0) descontos.push({ descricao: beneficioTipoLabel(item.tipo) + (item.descricao ? ' — ' + item.descricao : ''), valor: item.valorDescontoColaborador });
+    });
+    var totalProventos = proventos.reduce(function (sum, item) { return sum + item.valor; }, 0);
+    var baseInss = totalProventos;
+    var inss = hrInssProgressive2026(baseInss).value;
+    var dependentCount = (colaborador.dependentes || []).filter(function (dep) { return dep.dependenteIrrf; }).length;
+    var irrfResult = calculateIrrfEffective({ gross: baseInss, dependents: dependentCount, alimony: 0, otherDeductions: 0, officialSocialSecurity: inss, deductionMode: 'auto' });
+    var totalDescontosBeneficios = descontos.reduce(function (sum, item) { return sum + item.valor; }, 0);
+    var totalDescontos = inss + irrfResult.irrf + totalDescontosBeneficios;
+    var beneficiosCustoEmpresa = beneficiosDoColaborador.reduce(function (sum, item) { return sum + item.valorCustoEmpresa; }, 0);
+    return {
+      proventos: proventos, descontos: descontos, totalProventos: totalProventos, inss: inss, irrf: irrfResult.irrf,
+      totalDescontos: totalDescontos, liquido: totalProventos - totalDescontos, fgts: baseInss * HR_CALC_LEGAL_2026.fgtsRate,
+      baseInss: baseInss, horasExtras: horasExtras, horasFalta: horasFalta, beneficiosCustoEmpresa: beneficiosCustoEmpresa
+    };
+  }
+  function renderHolerite() {
+    var client = currentClient();
+    if (!client) return pageHeading('Holerite', 'Selecione um cliente no topo da página para gerar o holerite.', '');
+    var ui = holeriteUi();
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === ui.colaboradorId; });
+    var resultado = colaborador ? holeriteCompute(colaborador, ui.competencia) : null;
+    var competenciaLabel = ui.competencia ? ui.competencia.split('-').reverse().join('/') : '';
+    return [
+      pageHeading('Holerite', 'Cliente: ' + esc(client.name), colaborador ? '<button class="secondary-button" data-action="print-page">▣ PDF / imprimir</button>' : ''),
+      '<section class="card"><div class="card-body"><div class="form-grid" style="grid-template-columns:2fr 1fr">' +
+        '<label class="field"><span>Colaborador</span><select id="holerite-colaboradorId">' + holeriteColaboradorOptions(ui.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Competência</span><input id="holerite-competencia" type="month" value="' + esc(ui.competencia) + '"></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador e a competência para gerar o holerite.</div></div>' : (
+        '<section class="card holerite-sheet"><div class="card-body">' +
+          '<div class="holerite-header"><div><b>' + esc(client.name) + '</b><small>Recibo de pagamento — competência ' + esc(competenciaLabel) + '</small></div><div><b>' + esc(colaborador.nomeCompleto) + '</b><small>' + esc(colaborador.cargo || '') + (colaborador.matricula ? ' · matrícula ' + esc(colaborador.matricula) : '') + '</small></div></div>' +
+          '<div class="table-wrap"><table><thead><tr><th>Proventos</th><th>Valor</th></tr></thead><tbody>' + resultado.proventos.map(function (item) { return '<tr><td>' + esc(item.descricao) + '</td><td>' + money(item.valor) + '</td></tr>'; }).join('') + '<tr class="hr-calc-total-row"><td><b>Total de proventos</b></td><td><b>' + money(resultado.totalProventos) + '</b></td></tr></tbody></table></div>' +
+          '<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Descontos</th><th>Valor</th></tr></thead><tbody>' + resultado.descontos.map(function (item) { return '<tr><td>' + esc(item.descricao) + '</td><td>' + money(item.valor) + '</td></tr>'; }).join('') + '<tr><td>INSS (base ' + money(resultado.baseInss) + ')</td><td>' + money(resultado.inss) + '</td></tr><tr><td>IRRF</td><td>' + money(resultado.irrf) + '</td></tr><tr class="hr-calc-total-row"><td><b>Total de descontos</b></td><td><b>' + money(resultado.totalDescontos) + '</b></td></tr></tbody></table></div>' +
+          '<div class="hr-calc-result-hero" style="margin-top:14px"><div><small>Líquido a receber</small><strong>' + money(resultado.liquido) + '</strong></div><div><small>FGTS do mês (informativo)</small><strong>' + money(resultado.fgts) + '</strong></div><div><small>Custo empresa em benefícios</small><strong>' + money(resultado.beneficiosCustoEmpresa) + '</strong></div></div>' +
+          '<div class="info-banner" style="margin-top:14px"><span>i</span><div>Holerite gerado a partir dos dados cadastrados (salário, benefícios ativos e ponto aprovado do mês). Não substitui o fechamento oficial da folha nem o processamento no sistema de folha de pagamento contratado.</div></div>' +
+        '</div></section>'
+      )
+    ].join('');
+  }
+
+  function docsUi() {
+    if (!state.docsUi) state.docsUi = { colaboradorId: '', tipo: '' };
+    return state.docsUi;
+  }
+  function docsRelatedFor(colaborador) {
+    var vt = (beneficiosState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id && item.tipo === 'vale_transporte' && item.status === 'ativo'; })[0] || null;
+    var ferias = (feriasState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id && ['programada', 'aprovada', 'em_gozo'].indexOf(item.status) >= 0; })
+      .sort(function (a, b) { return (b.dataInicioGozo || b.periodoAquisitivoFim || '').localeCompare(a.dataInicioGozo || a.periodoAquisitivoFim || ''); })[0] || null;
+    var rescisao = (rescisoesState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id; })
+      .sort(function (a, b) { return (b.dataDesligamento || '').localeCompare(a.dataDesligamento || ''); })[0] || null;
+    return { vt: vt, ferias: ferias, rescisao: rescisao };
+  }
+  function docsAvailableTypes(related) {
+    var types = [
+      { tipo: 'ficha-registro', label: 'Ficha de Registro do Empregado' },
+      { tipo: 'contrato-trabalho', label: 'Contrato de Trabalho' }
+    ];
+    if (related.vt) types.push({ tipo: 'declaracao-vt', label: 'Declaração de Vale-Transporte' });
+    if (related.ferias) types.push({ tipo: 'aviso-ferias', label: 'Aviso de Férias' });
+    if (related.rescisao) types.push({ tipo: 'termo-rescisao', label: 'Termo de Rescisão do Contrato de Trabalho' });
+    return types;
+  }
+  function docField(value) { return value ? esc(value) : '—'; }
+  function docEmployerLine(client) { return esc(client.name) + (client.document ? ' — CNPJ/CPF ' + esc(client.document) : ''); }
+  function docSheetHeader(client, colaborador) {
+    return '<div class="holerite-header"><div><b>' + esc(client.name) + '</b><small>' + (client.document ? 'CNPJ/CPF ' + esc(client.document) : '') + '</small></div><div><b>' + esc(colaborador.nomeCompleto) + '</b><small>' + esc(colaborador.cargo || '') + (colaborador.matricula ? ' · matrícula ' + esc(colaborador.matricula) : '') + '</small></div></div>';
+  }
+  function docFichaRegistro(client, colaborador) {
+    var endereco = [colaborador.enderecoLogradouro, colaborador.enderecoNumero, colaborador.enderecoComplemento, colaborador.enderecoBairro].filter(Boolean).join(', ');
+    var enderecoCidadeUf = [colaborador.enderecoCidade, colaborador.enderecoUf].filter(Boolean).join('/');
+    var rows = function (pairs) { return '<div class="table-wrap"><table><tbody>' + pairs.map(function (pair) { return '<tr><td style="width:38%"><b>' + esc(pair[0]) + '</b></td><td>' + pair[1] + '</td></tr>'; }).join('') + '</tbody></table></div>'; };
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Ficha de Registro do Empregado</h3>' +
+      rows([
+        ['Nome completo', docField(colaborador.nomeCompleto)], ['Nome social', docField(colaborador.nomeSocial)],
+        ['CPF', docField(colaborador.cpf)], ['RG', docField(colaborador.rg)],
+        ['Data de nascimento', colaborador.dataNascimento ? dateBR(colaborador.dataNascimento) : '—'],
+        ['Sexo', docField(colaborador.sexo)], ['Estado civil', docField(colaborador.estadoCivil)],
+        ['Nacionalidade', docField(colaborador.nacionalidade)], ['Naturalidade', docField(colaborador.naturalidade)],
+        ['Endereço', docField(endereco)], ['Cidade/UF', docField(enderecoCidadeUf)], ['CEP', docField(colaborador.enderecoCep)],
+        ['Telefone', docField(colaborador.telefone)], ['E-mail', docField(colaborador.email)],
+        ['PIS/PASEP', docField(colaborador.pisPasep)], ['CTPS', (colaborador.ctpsNumero || colaborador.ctpsSerie) ? (docField(colaborador.ctpsNumero) + ' série ' + docField(colaborador.ctpsSerie)) : '—']
+      ]) +
+      '<h3 class="doc-sheet-title" style="margin-top:18px">Dados contratuais</h3>' +
+      rows([
+        ['Cargo/Função', [colaborador.cargo, colaborador.funcao].filter(Boolean).join(' / ') || '—'], ['CBO', docField(colaborador.cbo)],
+        ['Departamento/Setor', [colaborador.departamento, colaborador.setor].filter(Boolean).join(' / ') || '—'],
+        ['Data de admissão', colaborador.dataAdmissao ? dateBR(colaborador.dataAdmissao) : '—'],
+        ['Tipo de contrato', docField(colaborador.tipoContrato)], ['Regime de trabalho', docField(colaborador.regimeTrabalho)],
+        ['Jornada', docField(colaborador.jornada)], ['Salário', money(colaborador.salario || 0)],
+        ['Categoria profissional', docField(colaborador.categoriaProfissional)], ['Sindicato', docField(colaborador.sindicato)],
+        ['Banco para pagamento', [colaborador.bancoNome, colaborador.bancoAgencia, colaborador.bancoConta].filter(Boolean).join(' / ') || '—']
+      ]) +
+      (colaborador.dependentes && colaborador.dependentes.length ? '<h3 class="doc-sheet-title" style="margin-top:18px">Dependentes</h3><div class="table-wrap"><table><thead><tr><th>Nome</th><th>Parentesco</th><th>Nascimento</th></tr></thead><tbody>' +
+        colaborador.dependentes.map(function (dep) { return '<tr><td>' + esc(dep.nome) + '</td><td>' + docField(dep.parentesco) + '</td><td>' + (dep.dataNascimento ? dateBR(dep.dataNascimento) : '—') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '') +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  function docContratoTrabalho(client, colaborador) {
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Contrato Individual de Trabalho</h3>' +
+      '<p>Pelo presente instrumento particular, de um lado <b>' + docEmployerLine(client) + '</b>, doravante denominado(a) <b>EMPREGADOR(A)</b>, e de outro lado <b>' + esc(colaborador.nomeCompleto) + '</b>, portador(a) do CPF nº ' + docField(colaborador.cpf) + (colaborador.ctpsNumero ? (' e CTPS nº ' + docField(colaborador.ctpsNumero) + ' série ' + docField(colaborador.ctpsSerie)) : '') + ', doravante denominado(a) <b>EMPREGADO(A)</b>, têm entre si justo e contratado o presente Contrato Individual de Trabalho, mediante as cláusulas e condições seguintes:</p>' +
+      '<p><b>Cláusula 1ª — Função.</b> O(A) EMPREGADO(A) exercerá a função de <b>' + docField(colaborador.cargo) + '</b>' + (colaborador.cbo ? (' (CBO ' + esc(colaborador.cbo) + ')') : '') + ', no setor/departamento <b>' + docField([colaborador.setor, colaborador.departamento].filter(Boolean).join(' — ') || null) + '</b>, podendo ser transferido(a) de função conforme a necessidade do serviço e a legislação vigente.</p>' +
+      '<p><b>Cláusula 2ª — Admissão e prazo.</b> O presente contrato tem início em <b>' + (colaborador.dataAdmissao ? dateBR(colaborador.dataAdmissao) : '—') + '</b>, na modalidade <b>' + docField(colaborador.tipoContrato) + '</b>.</p>' +
+      '<p><b>Cláusula 3ª — Jornada de trabalho.</b> A jornada de trabalho será de <b>' + docField(colaborador.jornada) + '</b>, no regime <b>' + docField(colaborador.regimeTrabalho) + '</b>' + (colaborador.escala ? (', escala ' + esc(colaborador.escala)) : '') + ', observados os intervalos legais para repouso e alimentação.</p>' +
+      '<p><b>Cláusula 4ª — Remuneração.</b> O(A) EMPREGADO(A) perceberá salário mensal de <b>' + money(colaborador.salario || 0) + '</b>, a ser pago até o 5º dia útil do mês subsequente ao trabalhado, mediante depósito em conta bancária indicada pelo(a) EMPREGADO(A).</p>' +
+      '<p><b>Cláusula 5ª — Categoria e convenção coletiva.</b> As partes observarão a Convenção ou Acordo Coletivo de Trabalho da categoria <b>' + docField(colaborador.categoriaProfissional) + '</b>' + (colaborador.sindicato ? (', representada pelo sindicato ' + esc(colaborador.sindicato)) : '') + '.</p>' +
+      '<p><b>Cláusula 6ª — Disposições gerais.</b> Aplicam-se a este contrato as demais disposições da Consolidação das Leis do Trabalho (CLT) e da legislação previdenciária vigente, no que não contrariar o disposto neste instrumento.</p>' +
+      '<p>E, por estarem assim justos e contratados, firmam o presente instrumento em duas vias de igual teor.</p>' +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  function docDeclaracaoVt(client, colaborador, vt) {
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Declaração de Opção — Vale-Transporte</h3>' +
+      '<p>Eu, <b>' + esc(colaborador.nomeCompleto) + '</b>, CPF nº ' + docField(colaborador.cpf) + ', admitido(a) por <b>' + docEmployerLine(client) + '</b> para exercer a função de <b>' + docField(colaborador.cargo) + '</b>, declaro para os devidos fins que <b>OPTO</b> pelo recebimento do benefício de Vale-Transporte, nos termos da Lei nº 7.418/1985, para custeio das despesas de deslocamento residência–trabalho e vice-versa.</p>' +
+      '<p>Declaro estar ciente de que o empregador está autorizado a descontar de minha remuneração mensal o valor correspondente a até 6% do meu salário-base, ou o custo efetivo do benefício, o que for menor, conforme detalhado abaixo:</p>' +
+      '<div class="table-wrap"><table><tbody>' +
+        '<tr><td>Custo total do vale-transporte no mês</td><td>' + money(vt.valorBeneficio) + '</td></tr>' +
+        '<tr><td>Desconto autorizado do empregado (até 6% do salário)</td><td>' + money(vt.valorDescontoColaborador) + '</td></tr>' +
+        '<tr class="hr-calc-total-row"><td><b>Custo assumido pelo empregador</b></td><td><b>' + money(vt.valorCustoEmpresa) + '</b></td></tr>' +
+      '</tbody></table></div>' +
+      '<p>Comprometo-me a informar imediatamente ao setor de Recursos Humanos qualquer alteração no meu itinerário ou meio de transporte que impacte o valor do benefício ora declarado.</p>' +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  function docAvisoFerias(client, colaborador, ferias) {
+    var inicio = ferias.dataInicioGozo || '';
+    var fimGozo = '';
+    if (inicio) { var d = new Date(inicio + 'T00:00:00'); d.setDate(d.getDate() + Number(ferias.diasGozo || 30) - 1); fimGozo = d.toISOString().slice(0, 10); }
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Aviso de Férias</h3>' +
+      '<p>Comunicamos a <b>' + esc(colaborador.nomeCompleto) + '</b>, ocupante do cargo de <b>' + docField(colaborador.cargo) + '</b>, que suas férias, referentes ao período aquisitivo de <b>' + dateBR(ferias.periodoAquisitivoInicio) + '</b> a <b>' + dateBR(ferias.periodoAquisitivoFim) + '</b>, foram concedidas conforme abaixo, em observância ao art. 135 da CLT (comunicação com antecedência mínima de 30 dias).</p>' +
+      '<div class="table-wrap"><table><tbody>' +
+        '<tr><td>Início do gozo</td><td>' + (inicio ? dateBR(inicio) : 'A definir') + '</td></tr>' +
+        '<tr><td>Dias de gozo</td><td>' + esc(ferias.diasGozo) + ' dias</td></tr>' +
+        (fimGozo ? '<tr><td>Retorno ao trabalho</td><td>' + dateBR((function () { var d2 = new Date(fimGozo + 'T00:00:00'); d2.setDate(d2.getDate() + 1); return d2.toISOString().slice(0, 10); })()) + '</td></tr>' : '') +
+        (ferias.diasAbono ? '<tr><td>Dias de abono pecuniário (venda de férias)</td><td>' + esc(ferias.diasAbono) + ' dias</td></tr>' : '') +
+        '<tr class="hr-calc-total-row"><td><b>Valor líquido de férias a receber</b></td><td><b>' + money(ferias.valorLiquido) + '</b></td></tr>' +
+      '</tbody></table></div>' +
+      '<p>O pagamento das férias e, quando aplicável, do abono pecuniário será realizado até 2 (dois) dias antes do início do respectivo período de descanso, conforme art. 145 da CLT.</p>' +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Ciente do empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  function docTermoRescisao(client, colaborador, rescisao) {
+    var result = rescisao.resultadoCalculo || {};
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Termo de Rescisão do Contrato de Trabalho</h3>' +
+      '<p>Empregador: <b>' + docEmployerLine(client) + '</b><br>Empregado(a): <b>' + esc(colaborador.nomeCompleto) + '</b>, CPF nº ' + docField(colaborador.cpf) + '<br>Admissão: <b>' + (colaborador.dataAdmissao ? dateBR(colaborador.dataAdmissao) : '—') + '</b> · Desligamento: <b>' + dateBR(rescisao.dataDesligamento) + '</b><br>Motivo: <b>' + esc(terminationReasonLabel ? terminationReasonLabel(rescisao.motivo) : rescisao.motivo) + '</b> · Aviso prévio: <b>' + esc(rescisao.avisoPrevioTipo) + '</b></p>' +
+      '<div class="table-wrap"><table><thead><tr><th>Grupo</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>' + rescisaoLinesHtml(result.lines) + '</tbody></table></div>' +
+      '<div class="table-wrap" style="margin-top:10px"><table><tbody>' +
+        '<tr><td>Total bruto</td><td>' + money(rescisao.valorBruto) + '</td></tr>' +
+        '<tr><td>Total de descontos</td><td>' + money(rescisao.valorDescontos) + '</td></tr>' +
+        '<tr class="hr-calc-total-row"><td><b>Líquido a receber</b></td><td><b>' + money(rescisao.valorLiquido) + '</b></td></tr>' +
+        '<tr><td>FGTS a depositar</td><td>' + money(rescisao.fgtsDeposito) + '</td></tr>' +
+        '<tr><td>Multa rescisória do FGTS (40%/20%)</td><td>' + money(rescisao.fgtsMulta) + '</td></tr>' +
+      '</tbody></table></div>' +
+      '<p>Declaro, para os devidos fins, ter recebido a importância líquida acima discriminada, dando plena e geral quitação ao contrato de trabalho ora extinto, exclusivamente quanto aos valores aqui especificados.</p>' +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  var DOC_RENDERERS = {
+    'ficha-registro': function (client, colaborador) { return docFichaRegistro(client, colaborador); },
+    'contrato-trabalho': function (client, colaborador) { return docContratoTrabalho(client, colaborador); },
+    'declaracao-vt': function (client, colaborador, related) { return related.vt ? docDeclaracaoVt(client, colaborador, related.vt) : ''; },
+    'aviso-ferias': function (client, colaborador, related) { return related.ferias ? docAvisoFerias(client, colaborador, related.ferias) : ''; },
+    'termo-rescisao': function (client, colaborador, related) { return related.rescisao ? docTermoRescisao(client, colaborador, related.rescisao) : ''; }
+  };
+  function renderDocumentosRh() {
+    var client = currentClient();
+    if (!client) return pageHeading('Documentos', 'Selecione um cliente no topo da página para gerar documentos.', '');
+    var ui = docsUi();
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === ui.colaboradorId; });
+    var related = colaborador ? docsRelatedFor(colaborador) : null;
+    var types = colaborador ? docsAvailableTypes(related) : [];
+    if (colaborador && ui.tipo && types.every(function (item) { return item.tipo !== ui.tipo; })) ui.tipo = '';
+    var body = colaborador && ui.tipo && DOC_RENDERERS[ui.tipo] ? DOC_RENDERERS[ui.tipo](client, colaborador, related) : '';
+    return [
+      pageHeading('Documentos', 'Cliente: ' + esc(client.name), body ? '<button class="secondary-button" data-action="print-page">▣ PDF / imprimir</button>' : ''),
+      '<section class="card"><div class="card-body"><div class="form-grid" style="grid-template-columns:2fr 1fr">' +
+        '<label class="field"><span>Colaborador</span><select id="doc-colaboradorId">' + holeriteColaboradorOptions(ui.colaboradorId) + '</select></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador para ver os documentos disponíveis.</div></div>' : (
+        '<section class="card"><div class="card-body"><div class="doc-type-list">' + types.map(function (item) {
+          return '<button class="secondary-button' + (ui.tipo === item.tipo ? ' is-active' : '') + '" data-action="doc-select" data-tipo="' + item.tipo + '">' + esc(item.label) + '</button>';
+        }).join('') + '</div></div></section>'
+      ),
+      body ? '<section class="card doc-sheet"><div class="card-body">' + body + '</div></section>' : ''
+    ].join('');
   }
 
   var ALIMONY_INSS_2026 = [
@@ -9057,6 +10919,7 @@
     if ($('#icms-state-result')) updateTaxBenefitsPanel();
     if ($('#iss-service-query')) { filterIssRates(); updateIssEstimate(); }
     if ($('#cest-results-body')) renderCestResults(false);
+    if ($('#hr-calc-form')) updateHrCalc();
     if ($('#rental-simulator')) updateRentalSimulator();
     if ($('#trc-summary')) updateTaxRegimeCompare(false);
     if ($('#portfolio-query')) filterPortfolioDashboard();
@@ -9205,6 +11068,47 @@
     else if (action === 'cest-page') { state.cestPage = Number(actionEl.getAttribute('data-page') || 1); renderCestResults(false); var cestResults = $('.cest-results-card'); if (cestResults) cestResults.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
     else if (action === 'cest-detail') openCestDetail(actionEl.getAttribute('data-cest'));
     else if (action === 'cest-copy') copyCestCode(actionEl.getAttribute('data-cest'));
+    else if (action === 'hr-calc-open') openHrCalc(actionEl.getAttribute('data-calc'));
+    else if (action === 'hr-calc-back') closeHrCalc();
+    else if (action === 'rh-dashboard-refresh') loadRhDashboard(true);
+    else if (action === 'colab-new') openColaboradorForm();
+    else if (action === 'colab-edit') openColaboradorForm(actionEl.getAttribute('data-id'));
+    else if (action === 'colab-cancel') closeColaboradorForm();
+    else if (action === 'colab-save') submitColaboradorForm();
+    else if (action === 'colab-delete') deleteColaborador(actionEl.getAttribute('data-id'));
+    else if (action === 'colab-dep-add') addColabDependente();
+    else if (action === 'colab-dep-remove') removeColabDependente(Number(actionEl.getAttribute('data-index')));
+    else if (action === 'ferias-new') openFeriasForm();
+    else if (action === 'ferias-cancel') closeFeriasForm();
+    else if (action === 'ferias-save') submitFeriasForm();
+    else if (action === 'ferias-status') setFeriasStatus(actionEl.getAttribute('data-id'), actionEl.getAttribute('data-status'));
+    else if (action === 'ferias-delete') deleteFerias(actionEl.getAttribute('data-id'));
+    else if (action === 'afastamento-new') openAfastamentoForm();
+    else if (action === 'afastamento-cancel') closeAfastamentoForm();
+    else if (action === 'afastamento-save') submitAfastamentoForm();
+    else if (action === 'afastamento-encerrar') encerrarAfastamento(actionEl.getAttribute('data-id'));
+    else if (action === 'afastamento-delete') deleteAfastamento(actionEl.getAttribute('data-id'));
+    else if (action === 'beneficio-new') openBeneficioForm();
+    else if (action === 'beneficio-cancel') closeBeneficioForm();
+    else if (action === 'beneficio-save') submitBeneficioForm();
+    else if (action === 'beneficio-toggle') toggleBeneficioStatus(actionEl.getAttribute('data-id'));
+    else if (action === 'beneficio-delete') deleteBeneficio(actionEl.getAttribute('data-id'));
+    else if (action === 'ponto-new') openPontoForm();
+    else if (action === 'ponto-cancel') closePontoForm();
+    else if (action === 'ponto-save') submitPontoForm();
+    else if (action === 'ponto-approve') approvePonto(actionEl.getAttribute('data-id'));
+    else if (action === 'ponto-delete') deletePonto(actionEl.getAttribute('data-id'));
+    else if (action === 'doc-select') { docsUi().tipo = actionEl.getAttribute('data-tipo'); route(); }
+    else if (action === 'ajuste-new') openAjusteForm();
+    else if (action === 'ajuste-cancel') closeAjusteForm();
+    else if (action === 'ajuste-save') submitAjusteForm();
+    else if (action === 'ajuste-delete') deleteAjuste(actionEl.getAttribute('data-id'));
+    else if (action === 'rescisao-new') openRescisaoForm();
+    else if (action === 'rescisao-cancel') closeRescisaoForm();
+    else if (action === 'rescisao-save') submitRescisaoForm();
+    else if (action === 'rescisao-status') setRescisaoStatus(actionEl.getAttribute('data-id'), actionEl.getAttribute('data-status'));
+    else if (action === 'rescisao-view') viewRescisaoDemonstrativo(actionEl.getAttribute('data-id'));
+    else if (action === 'rescisao-delete') deleteRescisao(actionEl.getAttribute('data-id'));
     else if (action === 'cest-export-json') exportCestResults('json');
     else if (action === 'cest-export-csv') exportCestResults('csv');
     else if (action === 'cest-print') window.print();
@@ -9525,6 +11429,26 @@
     } else if (['cest-filter-ncm', 'cest-filter-code', 'cest-filter-keyword'].indexOf(event.target.id) >= 0) {
       window.clearTimeout(state.cestFilterTimer);
       state.cestFilterTimer = window.setTimeout(function () { renderCestResults(true); }, 90);
+    } else if (event.target.matches('[data-hr-calc-input]')) {
+      updateHrCalc();
+    } else if (event.target.id === 'colab-query') {
+      colaboradoresUi().query = event.target.value;
+      window.clearTimeout(state.colabQueryTimer);
+      state.colabQueryTimer = window.setTimeout(function () { route(); }, 200);
+    } else if (event.target.matches('[data-ferias-input]')) {
+      feriasCaptureFormState();
+      window.clearTimeout(state.feriasFormTimer);
+      state.feriasFormTimer = window.setTimeout(function () { route(); }, 200);
+    } else if (event.target.id === 'ben-colaboradorId' || event.target.id === 'ben-tipo') {
+      beneficioCaptureFormState();
+      route();
+    } else if (event.target.matches('[data-beneficio-input]')) {
+      updateBeneficioForm();
+    } else if (event.target.id === 'rescisao-colaboradorId') {
+      rescisaoCaptureFormState();
+      route();
+    } else if (event.target.matches('[data-rescisao-input]')) {
+      updateRescisaoForm();
     } else if (event.target.matches('[data-rental-input]')) {
       updateRentalSimulator();
     } else if (event.target.matches('[data-trc-input]')) {
@@ -9600,8 +11524,30 @@
     else if (event.target.id === 'contracts-favorites-filter') { contractsUi().favoritesOnly = event.target.checked; contractsUi().page = 1; refreshContractsResults(false); }
     else if (['portfolio-responsible', 'portfolio-regime', 'portfolio-stage', 'portfolio-status'].indexOf(event.target.id) >= 0) filterPortfolioDashboard();
     else if (event.target.id === 'portfolio-progress-stage') { var selectedPortfolioStage = portfolioStage(event.target.value); if ($('#portfolio-progress-value')) $('#portfolio-progress-value').value = selectedPortfolioStage.progress; }
+    else if (event.target.id === 'colab-status-filter') { colaboradoresUi().statusFilter = event.target.value; route(); }
+    else if (event.target.matches('[data-ferias-input]')) { feriasCaptureFormState(); route(); }
+    else if (event.target.id === 'ferias-colaborador-filter') { feriasUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'ferias-status-filter') { feriasUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'afastamento-colaborador-filter') { afastamentosUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'afastamento-status-filter') { afastamentosUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'ben-colaboradorId' || event.target.id === 'ben-tipo') { beneficioCaptureFormState(); route(); }
+    else if (event.target.matches('[data-beneficio-input]')) { updateBeneficioForm(); }
+    else if (event.target.id === 'beneficio-colaborador-filter') { beneficiosUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'beneficio-status-filter') { beneficiosUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'rescisao-colaboradorId') { rescisaoCaptureFormState(); route(); }
+    else if (event.target.matches('[data-rescisao-input]')) { updateRescisaoForm(); }
+    else if (event.target.id === 'rescisao-colaborador-filter') { rescisoesUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'rescisao-status-filter') { rescisoesUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'holerite-colaboradorId') { holeriteUi().colaboradorId = event.target.value; route(); }
+    else if (event.target.id === 'holerite-competencia') { holeriteUi().competencia = event.target.value; route(); }
+    else if (event.target.id === 'doc-colaboradorId') { docsUi().colaboradorId = event.target.value; docsUi().tipo = ''; route(); }
+    else if (event.target.id === 'ponto-tipoDia') { pontoCaptureFormState(); route(); }
+    else if (event.target.id === 'ponto-competencia-filter') { pontoUi().competencia = event.target.value; route(); }
+    else if (event.target.id === 'ponto-colaborador-filter') { pontoUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'ponto-status-filter') { pontoUi().statusFilter = event.target.value; route(); }
     else if (event.target.matches('[data-kanban-move]')) moveKanbanCard(event.target.getAttribute('data-id'), event.target.value);
-    else if (['cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
+    else if (['cest-filter-uf', 'cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
+    else if (event.target.matches('[data-hr-calc-input]')) updateHrCalc();
     else if (event.target.id === 'rental-year') {
       var rates = rentalYearRates(event.target.value);
       if (rates) { if ($('#rental-ibs-rate')) $('#rental-ibs-rate').value = rates.ibs; if ($('#rental-cbs-rate')) $('#rental-cbs-rate').value = rates.cbs; }
