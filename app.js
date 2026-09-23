@@ -278,6 +278,7 @@
     { route: 'beneficios', label: 'Benefícios', icon: '◈', desc: 'Vale-transporte, vale-refeição/alimentação, planos e outros benefícios por colaborador' },
     { route: 'ponto-eletronico', label: 'Ponto Eletrônico', icon: '◷', desc: 'Registro diário de entrada, saída, intervalo, faltas e trabalho noturno por colaborador' },
     { route: 'banco-horas', label: 'Banco de Horas', icon: '▧', desc: 'Saldo de horas por colaborador, ajustes manuais e valor estimado' },
+    { route: 'rescisoes', label: 'Rescisão', icon: '⇥', desc: 'Cálculo completo de rescisão por colaborador, com desligamento automático e demonstrativo' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -5324,6 +5325,7 @@
     else if (state.route === 'beneficios') main.innerHTML = renderBeneficios();
     else if (state.route === 'ponto-eletronico') main.innerHTML = renderPonto();
     else if (state.route === 'banco-horas') main.innerHTML = renderBancoHoras();
+    else if (state.route === 'rescisoes') main.innerHTML = renderRescisoes();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -5356,6 +5358,7 @@
     if (state.route === 'beneficios') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios(); }
     if (state.route === 'ponto-eletronico') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (pontoState.loadedForClient !== (currentClient() && currentClient().id)) loadPonto(); }
     if (state.route === 'banco-horas') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (bancoHorasState.loadedForClient !== (currentClient() && currentClient().id)) loadBancoHoras(); }
+    if (state.route === 'rescisoes') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (rescisoesState.loadedForClient !== (currentClient() && currentClient().id)) loadRescisoes(); }
     if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
     if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
     if (state.route === 'configuracoes') loadStripeSettings();
@@ -8591,6 +8594,198 @@
     ].join('');
   }
 
+  function rescisaoColaboradorOptions(selected) {
+    return '<option value="">Selecione um colaborador</option>' + (colaboradoresState.items || []).filter(function (item) { return item.status !== 'desligado'; }).map(function (item) {
+      return '<option value="' + item.id + '"' + (item.id === selected ? ' selected' : '') + '>' + esc(item.nomeCompleto) + (item.cargo ? ' — ' + esc(item.cargo) : '') + '</option>';
+    }).join('');
+  }
+  function rescisaoBuildCalcData(colaborador, form) {
+    var dependentCount = (colaborador.dependentes || []).filter(function (dep) { return dep.dependenteIrrf; }).length;
+    return Object.assign({}, terminationDefaults(), {
+      startDate: colaborador.dataAdmissao || terminationDefaults().startDate,
+      communicationDate: form.dataDesligamento, terminationDate: form.dataDesligamento,
+      reason: form.motivo, noticeType: form.avisoPrevioTipo,
+      salary: Number(colaborador.salario || 0), dependents: dependentCount,
+      variableAverage: 0, overtimeAverage: 0, nightAverage: 0, hazardRate: 0, unhealthyRate: 0,
+      balanceDays: 0, vacationPeriodsTaken: Number(form.feriasGozadas || 0),
+      bonus: 0, commission: 0, otherEarnings: 0, advances: 0, absences: 0, alimony: 0, otherDeductions: 0,
+      fgtsBalance: Number(form.fgtsSaldo || 0), fgtsRate: 8, birthdayWithdrawal: false,
+      calculateInss: true, calculateIrrf: true, cppEnabled: true, cppRate: 20, ratRate: 2, thirdPartyRate: 5.8
+    });
+  }
+  function rescisaoLinesHtml(lines) {
+    return (lines || []).map(function (line) {
+      return '<tr><td><span class="tag ' + (line.group === 'Proventos' ? 'tag--success' : 'tag--danger') + '">' + esc(line.group) + '</span></td><td>' + esc(line.name) + '</td><td>' + money(line.value) + '</td></tr>';
+    }).join('') || '<tr><td colspan="3"><div class="empty-state"><h3>Nenhuma verba aplicável</h3></div></td></tr>';
+  }
+  var rescisoesState = { loadedForClient: null, loading: false, items: [] };
+  function rescisoesUi() {
+    if (!state.rescisoesUi) state.rescisoesUi = { view: 'list', colaboradorFilter: '', statusFilter: '', formSeed: null };
+    return state.rescisoesUi;
+  }
+  function loadRescisoes(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && rescisoesState.loadedForClient === client.id) return Promise.resolve();
+    rescisoesState.loading = true;
+    return apiRequest('/api/rescisoes?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      rescisoesState.items = payload.items || [];
+      rescisoesState.loadedForClient = client.id;
+      rescisoesState.loading = false;
+      if (state.route === 'rescisoes') route();
+    }).catch(function (error) { rescisoesState.loading = false; toast('Não foi possível carregar as rescisões', error.message, 'error'); });
+  }
+  function rescisaoMotivoLabel(motivo) { return terminationReasonLabel(motivo); }
+  function rescisaoStatusLabel(status) { return ({ calculada: 'Calculada', aprovada: 'Aprovada', paga: 'Paga', arquivada: 'Arquivada' })[status] || status; }
+  function rescisaoStatusTag(status) { return ({ calculada: 'tag--info', aprovada: 'tag--warning', paga: 'tag--success', arquivada: 'tag' })[status] || ''; }
+  function openRescisaoForm() {
+    rescisoesUi().view = 'form';
+    rescisoesUi().formSeed = { colaboradorId: '', motivo: 'sem-justa-causa', dataDesligamento: todayISO(), avisoPrevioTipo: 'indenizado', feriasGozadas: 0, fgtsSaldo: 0, observacoes: '' };
+    route();
+  }
+  function closeRescisaoForm() { rescisoesUi().view = 'list'; rescisoesUi().formSeed = null; route(); }
+  function rescisaoCaptureFormState() {
+    var raw = {};
+    $$('[data-rescisao-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^rescisao-/, '')] = el.value; });
+    rescisoesUi().formSeed = Object.assign({}, rescisoesUi().formSeed || {}, raw);
+  }
+  function rescisaoReadForm() {
+    var raw = {};
+    $$('[data-rescisao-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^rescisao-/, '')] = el.value; });
+    return raw;
+  }
+  function updateRescisaoForm() {
+    if (!$('#rescisao-colaboradorId')) return;
+    var colaboradorId = $('#rescisao-colaboradorId').value;
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === colaboradorId; });
+    if (!colaborador || !$('#rescisao-lines-body')) return;
+    var form = rescisaoReadForm();
+    var result = calculateTermination(rescisaoBuildCalcData(colaborador, form));
+    $('#rescisao-lines-body').innerHTML = rescisaoLinesHtml(result.lines);
+    var setText = function (id, value) { var el = $('#' + id); if (el) el.textContent = value; };
+    setText('rescisao-preview-liquido', money(result.net));
+    setText('rescisao-preview-fgts-deposito', money(result.fgtsDeposit));
+    setText('rescisao-preview-fgts-multa', money(result.fgtsPenalty));
+    setText('rescisao-preview-fgts-disponivel', money(result.fgtsAvailable));
+  }
+  function renderRescisaoForm() {
+    var seed = rescisoesUi().formSeed || {};
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    var motivoOptions = ['sem-justa-causa', 'pedido-demissao', 'justa-causa', 'acordo', 'rescisao-indireta', 'termino-prazo', 'antecipada-empregador', 'antecipada-empregado'];
+    var avisoOptions = [{ value: 'indenizado', label: 'Indenizado' }, { value: 'trabalhado', label: 'Trabalhado' }, { value: 'dispensado', label: 'Dispensado' }, { value: 'nao-cumprido', label: 'Não cumprido pelo empregado' }];
+    var preview = colaborador ? calculateTermination(rescisaoBuildCalcData(colaborador, seed)) : null;
+    return [
+      pageHeading('Nova Rescisão', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="rescisao-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados da rescisão</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="rescisao-colaboradorId" data-rescisao-input>' + rescisaoColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Motivo do desligamento</span><select id="rescisao-motivo" data-rescisao-input>' + motivoOptions.map(function (motivo) { return '<option value="' + motivo + '"' + (seed.motivo === motivo ? ' selected' : '') + '>' + esc(terminationReasonLabel(motivo)) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Data de desligamento</span><input id="rescisao-dataDesligamento" data-rescisao-input type="date" value="' + esc(seed.dataDesligamento) + '"></label>' +
+        '<label class="field"><span>Tipo de aviso-prévio</span><select id="rescisao-avisoPrevioTipo" data-rescisao-input>' + avisoOptions.map(function (item) { return '<option value="' + item.value + '"' + (seed.avisoPrevioTipo === item.value ? ' selected' : '') + '>' + item.label + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Períodos de férias já gozados neste ciclo</span><input id="rescisao-feriasGozadas" data-rescisao-input type="number" min="0" step="1" value="' + esc(seed.feriasGozadas || 0) + '"></label>' +
+        '<label class="field"><span>Saldo atual do FGTS na conta</span><input id="rescisao-fgtsSaldo" data-rescisao-input type="number" min="0" step="0.01" value="' + esc(seed.fgtsSaldo || 0) + '"></label>' +
+        '<label class="field field--full"><span>Observações</span><input id="rescisao-observacoes" data-rescisao-input type="text" value="' + esc(seed.observacoes || '') + '"></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador para calcular a rescisão. Salário e data de admissão são usados automaticamente do cadastro.</div></div>' : (
+        '<section class="card"><header class="card-header"><div><h2>Demonstrativo de rescisão</h2><small>Cálculo estimado — confira convenção coletiva, médias e estabilidades antes de fechar</small></div></header><div class="card-body">' +
+          '<div class="hr-calc-result-hero"><div><small>Total líquido</small><strong id="rescisao-preview-liquido">' + money(preview.net) + '</strong></div><div><small>FGTS a depositar</small><strong id="rescisao-preview-fgts-deposito">' + money(preview.fgtsDeposit) + '</strong></div><div><small>Multa rescisória</small><strong id="rescisao-preview-fgts-multa">' + money(preview.fgtsPenalty) + '</strong></div><div><small>FGTS disponível para saque</small><strong id="rescisao-preview-fgts-disponivel">' + money(preview.fgtsAvailable) + '</strong></div></div>' +
+          '<div class="table-wrap"><table><thead><tr><th>Grupo</th><th>Descrição</th><th>Valor</th></tr></thead><tbody id="rescisao-lines-body">' + rescisaoLinesHtml(preview.lines) + '</tbody></table></div>' +
+          (preview.warnings.length ? '<div class="warning-banner hr-calc-warning"><span>!</span><div>' + preview.warnings.map(function (item) { return esc(item); }).join('<br>') + '</div></div>' : '') +
+        '</div></section>'
+      ),
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="rescisao-cancel">Cancelar</button><button class="primary-button" data-action="rescisao-save">💾 Registrar e desligar colaborador</button></div>'
+    ].join('');
+  }
+  function submitRescisaoForm() {
+    var seed = Object.assign({}, rescisoesUi().formSeed || {}, rescisaoReadForm());
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página.', 'error'); return; }
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === seed.colaboradorId; });
+    if (!colaborador) { toast('Selecione um colaborador', '', 'error'); return; }
+    if (!seed.dataDesligamento) { toast('Informe a data de desligamento', '', 'error'); return; }
+    if (!window.confirm('Confirma o desligamento de ' + colaborador.nomeCompleto + '? O status do colaborador será alterado para Desligado.')) return;
+    var data = rescisaoBuildCalcData(colaborador, seed);
+    var result = calculateTermination(data);
+    var payload = {
+      colaboradorId: colaborador.id, motivo: seed.motivo, dataDesligamento: seed.dataDesligamento, avisoPrevioTipo: seed.avisoPrevioTipo,
+      valorBruto: result.gross, valorDescontos: result.deductions, valorLiquido: result.net,
+      fgtsDeposito: result.fgtsDeposit, fgtsMulta: result.fgtsPenalty,
+      dadosCalculo: data,
+      resultadoCalculo: { gross: result.gross, deductions: result.deductions, net: result.net, inss: result.inss, irrf: result.irrf, fgtsDeposit: result.fgtsDeposit, fgtsPenalty: result.fgtsPenalty, fgtsAvailable: result.fgtsAvailable, lines: result.lines, warnings: result.warnings },
+      observacoes: seed.observacoes, status: 'calculada'
+    };
+    apiRequest('/api/rescisoes', { method: 'POST', body: JSON.stringify(payload) }).then(function (created) {
+      toast('Rescisão registrada', created.item.colaboradorNome + ' · líquido ' + money(created.item.valorLiquido));
+      audit('Rescisão registrada', created.item.colaboradorNome + ' · ' + rescisaoMotivoLabel(created.item.motivo));
+      closeRescisaoForm();
+      loadRescisoes(true);
+      loadColaboradores(true);
+      rhDashboardState.loadedForClient = null;
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function setRescisaoStatus(id, status) {
+    var item = (rescisoesState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    apiRequest('/api/rescisoes/' + id, { method: 'PUT', body: JSON.stringify({ status: status, observacoes: item.observacoes }) }).then(function () {
+      toast('Status atualizado', rescisaoStatusLabel(status));
+      audit('Rescisão — status atualizado', item.colaboradorNome + ' · ' + rescisaoStatusLabel(status));
+      loadRescisoes(true);
+    }).catch(function (error) { toast('Não foi possível atualizar', error.message, 'error'); });
+  }
+  function deleteRescisao(id) {
+    var item = (rescisoesState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir esta rescisão de ' + item.colaboradorNome + '? O colaborador voltará para o status Ativo.')) return;
+    apiRequest('/api/rescisoes/' + id, { method: 'DELETE' }).then(function () {
+      toast('Rescisão excluída', item.colaboradorNome);
+      loadRescisoes(true);
+      loadColaboradores(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function viewRescisaoDemonstrativo(id) {
+    var item = (rescisoesState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var result = item.resultadoCalculo || {};
+    openModal(
+      'Demonstrativo de Rescisão — ' + item.colaboradorNome,
+      '<div class="table-wrap"><table><thead><tr><th>Grupo</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>' + rescisaoLinesHtml(result.lines) + '</tbody></table></div>' +
+      '<dl class="cest-detail" style="margin-top:12px"><div><dt>Total bruto</dt><dd>' + money(item.valorBruto) + '</dd></div><div><dt>Total de descontos</dt><dd>' + money(item.valorDescontos) + '</dd></div><div><dt>Líquido a receber</dt><dd><b>' + money(item.valorLiquido) + '</b></dd></div><div><dt>FGTS a depositar</dt><dd>' + money(item.fgtsDeposito) + '</dd></div><div><dt>Multa rescisória do FGTS</dt><dd>' + money(item.fgtsMulta) + '</dd></div></dl>',
+      '<button class="secondary-button" data-action="close-modal">Fechar</button>'
+    );
+  }
+  function renderRescisoesList() {
+    var client = currentClient(), ui = rescisoesUi();
+    if (!client) return pageHeading('Rescisão', 'Selecione um cliente no topo da página para gerenciar as rescisões.', '');
+    var items = (rescisoesState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      return true;
+    });
+    var rows = items.map(function (item) {
+      var actions = '';
+      if (item.status === 'calculada') actions += '<button class="row-button" data-action="rescisao-status" data-id="' + item.id + '" data-status="aprovada" title="Aprovar">✓</button>';
+      if (item.status === 'aprovada') actions += '<button class="row-button" data-action="rescisao-status" data-id="' + item.id + '" data-status="paga" title="Marcar como paga">💰</button>';
+      if (item.status === 'paga') actions += '<button class="row-button" data-action="rescisao-status" data-id="' + item.id + '" data-status="arquivada" title="Arquivar">🗄</button>';
+      actions += '<button class="row-button" data-action="rescisao-view" data-id="' + item.id + '" title="Ver demonstrativo">⌕</button>';
+      actions += '<button class="row-button" data-action="rescisao-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + esc(rescisaoMotivoLabel(item.motivo)) + '</td>' +
+        '<td>' + brDate(item.dataDesligamento) + '</td>' +
+        '<td>' + money(item.valorLiquido) + '</td>' +
+        '<td><span class="tag ' + rescisaoStatusTag(item.status) + '">' + rescisaoStatusLabel(item.status) + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Rescisão', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="rescisao-new">+ Nova rescisão</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid colab-filters-grid">' +
+        '<label class="field"><span>Colaborador</span><select id="rescisao-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="rescisao-status-filter"><option value="">Todos</option>' + ['calculada', 'aprovada', 'paga', 'arquivada'].map(function (status) { return '<option value="' + status + '"' + (ui.statusFilter === status ? ' selected' : '') + '>' + rescisaoStatusLabel(status) + '</option>'; }).join('') + '</select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Motivo</th><th>Desligamento</th><th>Líquido</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty-state"><h3>Nenhuma rescisão registrada</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderRescisoes() { return rescisoesUi().view === 'form' ? renderRescisaoForm() : renderRescisoesList(); }
+
   var ALIMONY_INSS_2026 = [
     { limit: 1621.00, rate: .075 },
     { limit: 2902.84, rate: .09 },
@@ -10680,6 +10875,12 @@
     else if (action === 'ajuste-cancel') closeAjusteForm();
     else if (action === 'ajuste-save') submitAjusteForm();
     else if (action === 'ajuste-delete') deleteAjuste(actionEl.getAttribute('data-id'));
+    else if (action === 'rescisao-new') openRescisaoForm();
+    else if (action === 'rescisao-cancel') closeRescisaoForm();
+    else if (action === 'rescisao-save') submitRescisaoForm();
+    else if (action === 'rescisao-status') setRescisaoStatus(actionEl.getAttribute('data-id'), actionEl.getAttribute('data-status'));
+    else if (action === 'rescisao-view') viewRescisaoDemonstrativo(actionEl.getAttribute('data-id'));
+    else if (action === 'rescisao-delete') deleteRescisao(actionEl.getAttribute('data-id'));
     else if (action === 'cest-export-json') exportCestResults('json');
     else if (action === 'cest-export-csv') exportCestResults('csv');
     else if (action === 'cest-print') window.print();
@@ -11015,6 +11216,11 @@
       route();
     } else if (event.target.matches('[data-beneficio-input]')) {
       updateBeneficioForm();
+    } else if (event.target.id === 'rescisao-colaboradorId') {
+      rescisaoCaptureFormState();
+      route();
+    } else if (event.target.matches('[data-rescisao-input]')) {
+      updateRescisaoForm();
     } else if (event.target.matches('[data-rental-input]')) {
       updateRentalSimulator();
     } else if (event.target.matches('[data-trc-input]')) {
@@ -11100,6 +11306,10 @@
     else if (event.target.matches('[data-beneficio-input]')) { updateBeneficioForm(); }
     else if (event.target.id === 'beneficio-colaborador-filter') { beneficiosUi().colaboradorFilter = event.target.value; route(); }
     else if (event.target.id === 'beneficio-status-filter') { beneficiosUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'rescisao-colaboradorId') { rescisaoCaptureFormState(); route(); }
+    else if (event.target.matches('[data-rescisao-input]')) { updateRescisaoForm(); }
+    else if (event.target.id === 'rescisao-colaborador-filter') { rescisoesUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'rescisao-status-filter') { rescisoesUi().statusFilter = event.target.value; route(); }
     else if (event.target.id === 'ponto-tipoDia') { pontoCaptureFormState(); route(); }
     else if (event.target.id === 'ponto-competencia-filter') { pontoUi().competencia = event.target.value; route(); }
     else if (event.target.id === 'ponto-colaborador-filter') { pontoUi().colaboradorFilter = event.target.value; route(); }

@@ -187,6 +187,7 @@ ERP_MODULES = {
     "tab_beneficios": "Benefícios",
     "tab_ponto_eletronico": "Ponto Eletrônico",
     "tab_banco_horas": "Banco de Horas",
+    "tab_rescisoes": "Rescisão",
     "tab_folha": "Folha de Pagamento",
     "tab_horas_extras_noturno": "Horas Extras e Trabalho Noturno",
     "tab_verbas_rescisorias": "Verbas Rescisórias",
@@ -216,7 +217,7 @@ FISCAL_TAB_MODULES = {
     "tab_comparativo_regimes",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab_acompanhamento_contabil"}
-RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos", "tab_beneficios", "tab_ponto_eletronico", "tab_banco_horas"}
+RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos", "tab_beneficios", "tab_ponto_eletronico", "tab_banco_horas", "tab_rescisoes"}
 TRABALHISTA_TAB_MODULES = {
     "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
     "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",
@@ -651,6 +652,50 @@ def banco_horas_ajuste_fields_from_payload(payload: dict) -> dict:
     return {
         "tipo": tipo, "data": data, "horas": horas,
         "motivo": str(payload.get("motivo", "")).strip()[:500] or None,
+    }
+
+
+RESCISAO_MOTIVO_VALUES = {
+    "sem-justa-causa", "pedido-demissao", "justa-causa", "acordo",
+    "rescisao-indireta", "termino-prazo", "antecipada-empregador", "antecipada-empregado",
+}
+RESCISAO_AVISO_VALUES = {"trabalhado", "indenizado", "dispensado", "nao-cumprido"}
+RESCISAO_STATUS_VALUES = {"calculada", "aprovada", "paga", "arquivada"}
+
+
+def rescisao_fields_from_payload(payload: dict) -> dict:
+    motivo = str(payload.get("motivo", "")).strip()
+    if motivo not in RESCISAO_MOTIVO_VALUES:
+        raise ValueError("Motivo de rescisão inválido.")
+    data_desligamento = str(payload.get("dataDesligamento", "")).strip()
+    if not DATE_ISO_RE.match(data_desligamento):
+        raise ValueError("Informe a data de desligamento.")
+    aviso_tipo = str(payload.get("avisoPrevioTipo", "indenizado")).strip()
+    if aviso_tipo not in RESCISAO_AVISO_VALUES:
+        raise ValueError("Tipo de aviso-prévio inválido.")
+    status = str(payload.get("status", "calculada")).strip()
+    if status not in RESCISAO_STATUS_VALUES:
+        raise ValueError("Status de rescisão inválido.")
+
+    def money_field(key: str) -> float:
+        try:
+            value = round(float(payload.get(key, 0) or 0), 2)
+        except (TypeError, ValueError):
+            raise ValueError("Valor monetário inválido.")
+        if value < 0:
+            raise ValueError("Valor monetário inválido.")
+        return value
+
+    dados_calculo = payload.get("dadosCalculo", {})
+    resultado_calculo = payload.get("resultadoCalculo", {})
+    if not isinstance(dados_calculo, dict) or not isinstance(resultado_calculo, dict):
+        raise ValueError("Dados de cálculo inválidos.")
+    return {
+        "motivo": motivo, "data_desligamento": data_desligamento, "aviso_previo_tipo": aviso_tipo, "status": status,
+        "valor_bruto": money_field("valorBruto"), "valor_descontos": money_field("valorDescontos"), "valor_liquido": money_field("valorLiquido"),
+        "fgts_deposito": money_field("fgtsDeposito"), "fgts_multa": money_field("fgtsMulta"),
+        "dados_calculo": json.dumps(dados_calculo, ensure_ascii=False), "resultado_calculo": json.dumps(resultado_calculo, ensure_ascii=False),
+        "observacoes": str(payload.get("observacoes", "")).strip()[:2000] or None,
     }
 
 
@@ -4221,6 +4266,26 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "createdBy": row["created_by"] or "", "createdAt": row["created_at"],
         }
 
+    def rescisao_row(self, row: sqlite3.Row) -> dict:
+        def parse_json(value):
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    return {}
+            return value or {}
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "motivo": row["motivo"], "dataDesligamento": row["data_desligamento"], "avisoPrevioTipo": row["aviso_previo_tipo"],
+            "status": row["status"], "valorBruto": float(row["valor_bruto"] or 0), "valorDescontos": float(row["valor_descontos"] or 0),
+            "valorLiquido": float(row["valor_liquido"] or 0), "fgtsDeposito": float(row["fgts_deposito"] or 0), "fgtsMulta": float(row["fgts_multa"] or 0),
+            "dadosCalculo": parse_json(row["dados_calculo"]), "resultadoCalculo": parse_json(row["resultado_calculo"]),
+            "observacoes": row["observacoes"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
     def support_ticket_summary(self, row: sqlite3.Row) -> dict:
         ai_triage_raw = row["ai_triage"]
         if isinstance(ai_triage_raw, str):
@@ -6917,6 +6982,34 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     })
             self.send_json({"items": saldos})
             return
+        if path == "/api/rescisoes":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_rescisoes"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["r.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("r.colaborador_id = ?"); values.append(colaborador_id)
+            if status_filter in RESCISAO_STATUS_VALUES:
+                conditions.append("r.status = ?"); values.append(status_filter)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT r.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM rescisoes r JOIN colaboradores c ON c.id = r.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY r.data_desligamento DESC
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.rescisao_row(row) for row in rows]})
+            return
         if path == "/api/support/categories":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_central_suporte"):
@@ -8278,6 +8371,45 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
 
+        if path == "/api/rescisoes":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_rescisoes"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = rescisao_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO rescisoes({', '.join(columns)}) VALUES ({placeholders})", values)
+                    database.execute(
+                        "UPDATE colaboradores SET status = 'desligado', data_desligamento = ?, motivo_desligamento = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                        (fields["data_desligamento"], fields["motivo"], user["email"], now, colaborador_id),
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT r.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM rescisoes r JOIN colaboradores c ON c.id = r.colaborador_id WHERE r.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "rescisao_registrada", f"{saved['colaborador_nome']} · {fields['motivo']}")
+                self.send_json({"ok": True, "item": self.rescisao_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
         if path == "/api/acompanhamento-contabil":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_acompanhamento_contabil"):
@@ -8660,6 +8792,26 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             self.audit(administrator["email"], "banco_horas_ajuste_excluido", banco_horas_ajuste_delete_match.group(1))
             self.send_json({"ok": True})
             return
+        rescisao_delete_match = re.fullmatch(r"/api/rescisoes/([a-f0-9]{32})", path)
+        if rescisao_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT * FROM rescisoes WHERE id = ? AND company_id = ?", (rescisao_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Rescisão não encontrada."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM rescisoes WHERE id = ?", (rescisao_delete_match.group(1),))
+                colaborador = database.execute("SELECT status FROM colaboradores WHERE id = ?", (target["colaborador_id"],)).fetchone()
+                if colaborador is not None and colaborador["status"] == "desligado":
+                    database.execute(
+                        "UPDATE colaboradores SET status = 'ativo', data_desligamento = NULL, motivo_desligamento = NULL, updated_by = ?, updated_at = ? WHERE id = ?",
+                        (administrator["email"], local_now(), target["colaborador_id"]),
+                    )
+            self.audit(administrator["email"], "rescisao_excluida", rescisao_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
         managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
         if managed_user_match:
             administrator = self.require_admin()
@@ -8902,6 +9054,38 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     ).fetchone()
                 self.audit(user["email"], "ponto_atualizado", f"{saved['colaborador_nome']} · {fields['data']} · {status}")
                 self.send_json({"ok": True, "item": self.ponto_registro_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        rescisao_put_match = re.fullmatch(r"/api/rescisoes/([a-f0-9]{32})", path)
+        if rescisao_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_rescisoes"):
+                return
+            try:
+                payload = self.read_json()
+                status = str(payload.get("status", "")).strip()
+                if status not in RESCISAO_STATUS_VALUES:
+                    raise ValueError("Status de rescisão inválido.")
+                observacoes = str(payload.get("observacoes", "")).strip()[:2000] or None
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM rescisoes WHERE id = ? AND company_id = ?", (rescisao_put_match.group(1), user["company_id"])).fetchone()
+                    if existing is None:
+                        raise ValueError("Rescisão não encontrada.")
+                    database.execute(
+                        "UPDATE rescisoes SET status = ?, observacoes = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                        (status, observacoes, user["email"], local_now(), rescisao_put_match.group(1)),
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT r.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM rescisoes r JOIN colaboradores c ON c.id = r.colaborador_id WHERE r.id = ?
+                        """,
+                        (rescisao_put_match.group(1),),
+                    ).fetchone()
+                self.audit(user["email"], "rescisao_atualizada", f"{saved['colaborador_nome']} · {status}")
+                self.send_json({"ok": True, "item": self.rescisao_row(saved)})
             except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
