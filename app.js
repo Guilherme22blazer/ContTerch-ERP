@@ -276,6 +276,8 @@
     { route: 'ferias', label: 'Férias', icon: '☀', desc: 'Período aquisitivo, programação, abono e cálculo de férias por colaborador' },
     { route: 'afastamentos', label: 'Afastamentos', icon: '⛑', desc: 'Registro de afastamentos por doença, acidente, licenças e outras hipóteses' },
     { route: 'beneficios', label: 'Benefícios', icon: '◈', desc: 'Vale-transporte, vale-refeição/alimentação, planos e outros benefícios por colaborador' },
+    { route: 'ponto-eletronico', label: 'Ponto Eletrônico', icon: '◷', desc: 'Registro diário de entrada, saída, intervalo, faltas e trabalho noturno por colaborador' },
+    { route: 'banco-horas', label: 'Banco de Horas', icon: '▧', desc: 'Saldo de horas por colaborador, ajustes manuais e valor estimado' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -5320,6 +5322,8 @@
     else if (state.route === 'ferias') main.innerHTML = renderFerias();
     else if (state.route === 'afastamentos') main.innerHTML = renderAfastamentos();
     else if (state.route === 'beneficios') main.innerHTML = renderBeneficios();
+    else if (state.route === 'ponto-eletronico') main.innerHTML = renderPonto();
+    else if (state.route === 'banco-horas') main.innerHTML = renderBancoHoras();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -5350,6 +5354,8 @@
     if (state.route === 'ferias') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (feriasState.loadedForClient !== (currentClient() && currentClient().id)) loadFerias(); }
     if (state.route === 'afastamentos') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (afastamentosState.loadedForClient !== (currentClient() && currentClient().id)) loadAfastamentos(); }
     if (state.route === 'beneficios') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios(); }
+    if (state.route === 'ponto-eletronico') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (pontoState.loadedForClient !== (currentClient() && currentClient().id)) loadPonto(); }
+    if (state.route === 'banco-horas') { if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores(); if (bancoHorasState.loadedForClient !== (currentClient() && currentClient().id)) loadBancoHoras(); }
     if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
     if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
     if (state.route === 'configuracoes') loadStripeSettings();
@@ -8366,6 +8372,225 @@
   }
   function renderBeneficios() { return beneficiosUi().view === 'form' ? renderBeneficioForm() : renderBeneficiosList(); }
 
+  var PONTO_SEM_HORARIO_TIPOS = ['falta', 'falta_justificada', 'folga', 'atestado'];
+  function pontoTipoDiaLabel(tipo) {
+    return ({ normal: 'Normal', feriado_trabalhado: 'Feriado trabalhado', falta: 'Falta', falta_justificada: 'Falta justificada', folga: 'Folga', atestado: 'Atestado' })[tipo] || tipo;
+  }
+  var pontoState = { loadedForClient: null, loading: false, items: [] };
+  function pontoUi() {
+    if (!state.pontoUi) state.pontoUi = { view: 'list', colaboradorFilter: '', statusFilter: '', competencia: todayISO().slice(0, 7), formSeed: null };
+    return state.pontoUi;
+  }
+  function loadPonto(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && pontoState.loadedForClient === client.id) return Promise.resolve();
+    pontoState.loading = true;
+    return apiRequest('/api/ponto?clientId=' + encodeURIComponent(client.id)).then(function (payload) {
+      pontoState.items = payload.items || [];
+      pontoState.loadedForClient = client.id;
+      pontoState.loading = false;
+      if (state.route === 'ponto-eletronico') route();
+    }).catch(function (error) { pontoState.loading = false; toast('Não foi possível carregar o ponto', error.message, 'error'); });
+  }
+  function openPontoForm() {
+    pontoUi().view = 'form';
+    pontoUi().formSeed = { colaboradorId: '', data: todayISO(), tipoDia: 'normal', entrada1: '08:00', saida1: '12:00', entrada2: '13:00', saida2: '17:12', horasEsperadas: 8, trabalhoNoturno: false, observacoes: '' };
+    route();
+  }
+  function closePontoForm() { pontoUi().view = 'list'; pontoUi().formSeed = null; route(); }
+  function pontoCaptureFormState() {
+    var raw = {};
+    $$('[data-ponto-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ponto-/, '')] = el.type === 'checkbox' ? el.checked : el.value; });
+    pontoUi().formSeed = Object.assign({}, pontoUi().formSeed || {}, raw);
+  }
+  function pontoReadForm() {
+    var raw = {};
+    $$('[data-ponto-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ponto-/, '')] = el.type === 'checkbox' ? el.checked : el.value; });
+    return raw;
+  }
+  function renderPontoForm() {
+    var seed = pontoUi().formSeed || {};
+    var showHorarios = PONTO_SEM_HORARIO_TIPOS.indexOf(seed.tipoDia) < 0;
+    var tipoOptions = ['normal', 'feriado_trabalhado', 'falta', 'falta_justificada', 'folga', 'atestado'];
+    return [
+      pageHeading('Novo Registro de Ponto', currentClient() ? ('Cliente: ' + currentClient().name) : '', '<button class="secondary-button" data-action="ponto-cancel">← Voltar para a lista</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Dados do registro</h2></div></header><div class="card-body"><div class="form-grid">' +
+        '<label class="field field--full"><span>Colaborador</span><select id="ponto-colaboradorId" data-ponto-input>' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+        '<label class="field"><span>Data</span><input id="ponto-data" data-ponto-input type="date" value="' + esc(seed.data) + '"></label>' +
+        '<label class="field"><span>Tipo de dia</span><select id="ponto-tipoDia" data-ponto-input>' + tipoOptions.map(function (tipo) { return '<option value="' + tipo + '"' + (seed.tipoDia === tipo ? ' selected' : '') + '>' + pontoTipoDiaLabel(tipo) + '</option>'; }).join('') + '</select></label>' +
+        (showHorarios ?
+          '<label class="field"><span>Entrada 1</span><input id="ponto-entrada1" data-ponto-input type="time" value="' + esc(seed.entrada1 || '') + '"></label>' +
+          '<label class="field"><span>Saída 1 (intervalo)</span><input id="ponto-saida1" data-ponto-input type="time" value="' + esc(seed.saida1 || '') + '"></label>' +
+          '<label class="field"><span>Entrada 2</span><input id="ponto-entrada2" data-ponto-input type="time" value="' + esc(seed.entrada2 || '') + '"></label>' +
+          '<label class="field"><span>Saída 2 (final)</span><input id="ponto-saida2" data-ponto-input type="time" value="' + esc(seed.saida2 || '') + '"></label>' +
+          '<label class="field"><span>Horas esperadas na jornada</span><input id="ponto-horasEsperadas" data-ponto-input type="number" min="0" max="24" step="0.5" value="' + esc(seed.horasEsperadas || 8) + '"></label>' +
+          '<label class="field"><span>&nbsp;</span><label class="check" style="margin-top:8px"><input id="ponto-trabalhoNoturno" data-ponto-input type="checkbox"' + (seed.trabalhoNoturno ? ' checked' : '') + '> Inclui trabalho noturno (22h–5h)</label></label>'
+        : '<div class="info-banner" style="grid-column:1/-1"><span>i</span><div>Este tipo de dia não registra horários. O saldo é calculado automaticamente: falta gera débito integral da jornada esperada; os demais tipos não geram débito nem crédito.</div></div>') +
+        '<label class="field field--full"><span>Observações</span><input id="ponto-observacoes" data-ponto-input type="text" value="' + esc(seed.observacoes || '') + '"></label>' +
+      '</div></div></section>',
+      '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="ponto-cancel">Cancelar</button><button class="primary-button" data-action="ponto-save">💾 Registrar ponto</button></div>'
+    ].join('');
+  }
+  function submitPontoForm() {
+    var seed = Object.assign({}, pontoUi().formSeed || {}, pontoReadForm());
+    var client = currentClient();
+    if (!client) { toast('Selecione um cliente', 'Escolha um cliente no topo da página.', 'error'); return; }
+    if (!seed.colaboradorId) { toast('Selecione um colaborador', '', 'error'); return; }
+    if (!seed.data) { toast('Informe a data', '', 'error'); return; }
+    apiRequest('/api/ponto', { method: 'POST', body: JSON.stringify(seed) }).then(function (result) {
+      toast('Ponto registrado', result.item.colaboradorNome + ' · ' + brDate(result.item.data));
+      audit('Ponto registrado', result.item.colaboradorNome + ' · ' + result.item.data);
+      closePontoForm();
+      loadPonto(true);
+    }).catch(function (error) { toast('Não foi possível registrar', error.message, 'error'); });
+  }
+  function approvePonto(id) {
+    var item = (pontoState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    var payload = {
+      data: item.data, tipoDia: item.tipoDia, entrada1: item.entrada1, saida1: item.saida1, entrada2: item.entrada2, saida2: item.saida2,
+      horasEsperadas: item.horasEsperadas, trabalhoNoturno: item.trabalhoNoturno, observacoes: item.observacoes, status: 'aprovado'
+    };
+    apiRequest('/api/ponto/' + id, { method: 'PUT', body: JSON.stringify(payload) }).then(function () {
+      toast('Ponto aprovado', item.colaboradorNome);
+      audit('Ponto aprovado', item.colaboradorNome + ' · ' + item.data);
+      loadPonto(true);
+    }).catch(function (error) { toast('Não foi possível aprovar', error.message, 'error'); });
+  }
+  function deletePonto(id) {
+    var item = (pontoState.items || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este registro de ponto de ' + item.colaboradorNome + ' (' + brDate(item.data) + ')?')) return;
+    apiRequest('/api/ponto/' + id, { method: 'DELETE' }).then(function () {
+      toast('Registro excluído', item.colaboradorNome);
+      loadPonto(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function pontoStatusTag(status) { return status === 'aprovado' ? 'tag--success' : 'tag--warning'; }
+  function renderPontoList() {
+    var client = currentClient(), ui = pontoUi();
+    if (!client) return pageHeading('Ponto Eletrônico', 'Selecione um cliente no topo da página para gerenciar o ponto.', '');
+    var items = (pontoState.items || []).filter(function (item) {
+      if (ui.statusFilter && item.status !== ui.statusFilter) return false;
+      if (ui.colaboradorFilter && item.colaboradorId !== ui.colaboradorFilter) return false;
+      if (ui.competencia && item.data.indexOf(ui.competencia) !== 0) return false;
+      return true;
+    });
+    var rows = items.map(function (item) {
+      var actions = item.status === 'pendente' ? '<button class="row-button" data-action="ponto-approve" data-id="' + item.id + '" title="Aprovar">✓</button>' : '';
+      actions += '<button class="row-button" data-action="ponto-delete" data-id="' + item.id + '" title="Excluir">🗑</button>';
+      var saldoClass = item.saldoDia > 0 ? 'tag--success' : item.saldoDia < 0 ? 'tag--danger' : 'tag--info';
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + brDate(item.data) + '</td>' +
+        '<td>' + esc(pontoTipoDiaLabel(item.tipoDia)) + (item.trabalhoNoturno ? ' <small class="subtle">(noturno)</small>' : '') + '</td>' +
+        '<td>' + (item.entrada1 ? (item.entrada1 + '–' + item.saida1 + ' / ' + item.entrada2 + '–' + item.saida2) : '—') + '</td>' +
+        '<td>' + number(item.horasTrabalhadas) + 'h</td>' +
+        '<td><span class="tag ' + saldoClass + '">' + (item.saldoDia > 0 ? '+' : '') + number(item.saldoDia) + 'h</span></td>' +
+        '<td><span class="tag ' + pontoStatusTag(item.status) + '">' + (item.status === 'aprovado' ? 'Aprovado' : 'Pendente') + '</span></td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return [
+      pageHeading('Ponto Eletrônico', 'Cliente: ' + esc(client.name) + ' · ' + items.length + ' registro(s)', '<button class="primary-button" data-action="ponto-new">+ Novo registro</button>'),
+      '<section class="card"><div class="card-body"><div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">' +
+        '<label class="field"><span>Competência</span><input id="ponto-competencia-filter" type="month" value="' + esc(ui.competencia) + '"></label>' +
+        '<label class="field"><span>Colaborador</span><select id="ponto-colaborador-filter"><option value="">Todos</option>' + (colaboradoresState.items || []).map(function (item) { return '<option value="' + item.id + '"' + (ui.colaboradorFilter === item.id ? ' selected' : '') + '>' + esc(item.nomeCompleto) + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field"><span>Status</span><select id="ponto-status-filter"><option value="">Todos</option><option value="pendente"' + (ui.statusFilter === 'pendente' ? ' selected' : '') + '>Pendente</option><option value="aprovado"' + (ui.statusFilter === 'aprovado' ? ' selected' : '') + '>Aprovado</option></select></label>' +
+      '</div></div></section>',
+      '<section class="card"><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Data</th><th>Tipo</th><th>Horários</th><th>Trabalhadas</th><th>Saldo do dia</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty-state"><h3>Nenhum registro de ponto</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+  function renderPonto() { return pontoUi().view === 'form' ? renderPontoForm() : renderPontoList(); }
+
+  var bancoHorasState = { loadedForClient: null, loading: false, saldos: [], ajustes: [] };
+  function bancoHorasUi() {
+    if (!state.bancoHorasUi) state.bancoHorasUi = { formOpen: false, formSeed: null };
+    return state.bancoHorasUi;
+  }
+  function loadBancoHoras(force) {
+    if (!apiEnabled() || !apiToken) return Promise.resolve();
+    var client = currentClient();
+    if (!client) return Promise.resolve();
+    if (!force && bancoHorasState.loadedForClient === client.id) return Promise.resolve();
+    bancoHorasState.loading = true;
+    return Promise.all([
+      apiRequest('/api/banco-horas/saldo?clientId=' + encodeURIComponent(client.id)),
+      apiRequest('/api/banco-horas/ajustes?clientId=' + encodeURIComponent(client.id))
+    ]).then(function (results) {
+      bancoHorasState.saldos = results[0].items || [];
+      bancoHorasState.ajustes = results[1].items || [];
+      bancoHorasState.loadedForClient = client.id;
+      bancoHorasState.loading = false;
+      if (state.route === 'banco-horas') route();
+    }).catch(function (error) { bancoHorasState.loading = false; toast('Não foi possível carregar o banco de horas', error.message, 'error'); });
+  }
+  function openAjusteForm() {
+    bancoHorasUi().formOpen = true;
+    bancoHorasUi().formSeed = { colaboradorId: '', tipo: 'credito', data: todayISO(), horas: 1, motivo: '' };
+    route();
+  }
+  function closeAjusteForm() { bancoHorasUi().formOpen = false; bancoHorasUi().formSeed = null; route(); }
+  function submitAjusteForm() {
+    var raw = {};
+    $$('[data-ajuste-input]').forEach(function (el) { if (el.id) raw[el.id.replace(/^ajuste-/, '')] = el.value; });
+    var seed = Object.assign({}, bancoHorasUi().formSeed || {}, raw);
+    if (!seed.colaboradorId) { toast('Selecione um colaborador', '', 'error'); return; }
+    apiRequest('/api/banco-horas/ajustes', { method: 'POST', body: JSON.stringify(seed) }).then(function (result) {
+      toast('Ajuste lançado', result.item.colaboradorNome);
+      audit('Banco de horas — ajuste lançado', result.item.colaboradorNome + ' · ' + result.item.tipo + ' ' + result.item.horas + 'h');
+      closeAjusteForm();
+      loadBancoHoras(true);
+    }).catch(function (error) { toast('Não foi possível lançar', error.message, 'error'); });
+  }
+  function deleteAjuste(id) {
+    var item = (bancoHorasState.ajustes || []).find(function (row) { return row.id === id; });
+    if (!item) return;
+    if (!window.confirm('Excluir este ajuste de ' + item.colaboradorNome + '?')) return;
+    apiRequest('/api/banco-horas/ajustes/' + id, { method: 'DELETE' }).then(function () {
+      toast('Ajuste excluído', item.colaboradorNome);
+      loadBancoHoras(true);
+    }).catch(function (error) { toast('Não foi possível excluir', error.message, 'error'); });
+  }
+  function renderBancoHoras() {
+    var client = currentClient();
+    if (!client) return pageHeading('Banco de Horas', 'Selecione um cliente no topo da página para ver os saldos.', '');
+    var ui = bancoHorasUi();
+    if (ui.formOpen) {
+      var seed = ui.formSeed || {};
+      return [
+        pageHeading('Novo Ajuste de Banco de Horas', 'Cliente: ' + esc(client.name), '<button class="secondary-button" data-action="ajuste-cancel">← Voltar</button>'),
+        '<section class="card"><header class="card-header"><div><h2>Dados do ajuste</h2><small>Use para compensações, acordos de banco de horas e correções manuais</small></div></header><div class="card-body"><div class="form-grid">' +
+          '<label class="field field--full"><span>Colaborador</span><select id="ajuste-colaboradorId" data-ajuste-input>' + feriasColaboradorOptions(seed.colaboradorId) + '</select></label>' +
+          '<label class="field"><span>Tipo</span><select id="ajuste-tipo" data-ajuste-input><option value="credito"' + (seed.tipo !== 'debito' ? ' selected' : '') + '>Crédito</option><option value="debito"' + (seed.tipo === 'debito' ? ' selected' : '') + '>Débito</option></select></label>' +
+          '<label class="field"><span>Data</span><input id="ajuste-data" data-ajuste-input type="date" value="' + esc(seed.data) + '"></label>' +
+          '<label class="field"><span>Horas</span><input id="ajuste-horas" data-ajuste-input type="number" min="0.5" step="0.5" value="' + esc(seed.horas || 1) + '"></label>' +
+          '<label class="field field--full"><span>Motivo</span><input id="ajuste-motivo" data-ajuste-input type="text" value="' + esc(seed.motivo || '') + '" placeholder="Ex.: Compensação de folga, acordo de banco de horas"></label>' +
+        '</div></div></section>',
+        '<div class="page-actions colab-form-actions"><button class="secondary-button" data-action="ajuste-cancel">Cancelar</button><button class="primary-button" data-action="ajuste-save">💾 Lançar ajuste</button></div>'
+      ].join('');
+    }
+    var rows = (bancoHorasState.saldos || []).map(function (item) {
+      var colaborador = (colaboradoresState.items || []).find(function (row) { return row.id === item.colaboradorId; });
+      var valorHora = colaborador && colaborador.salario ? colaborador.salario / 220 : 0;
+      var valorEstimado = item.saldoTotal > 0 ? item.saldoTotal * valorHora * 1.5 : 0;
+      return '<tr><td><b>' + esc(item.colaboradorNome) + '</b><br><small class="subtle">' + esc(item.colaboradorCargo || '—') + '</small></td>' +
+        '<td>' + number(item.saldoPontoHoras) + 'h</td>' +
+        '<td>' + number(item.creditos) + 'h</td>' +
+        '<td>' + number(item.debitos) + 'h</td>' +
+        '<td><span class="tag ' + (item.saldoTotal > 0 ? 'tag--success' : item.saldoTotal < 0 ? 'tag--danger' : 'tag--info') + '">' + (item.saldoTotal > 0 ? '+' : '') + number(item.saldoTotal) + 'h</span></td>' +
+        '<td>' + money(valorEstimado) + '</td></tr>';
+    }).join('');
+    var ajusteRows = (bancoHorasState.ajustes || []).map(function (item) {
+      return '<tr><td>' + esc(item.colaboradorNome) + '</td><td>' + brDate(item.data) + '</td><td>' + (item.tipo === 'credito' ? 'Crédito' : 'Débito') + '</td><td>' + number(item.horas) + 'h</td><td>' + esc(item.motivo || '—') + '</td><td><button class="row-button" data-action="ajuste-delete" data-id="' + item.id + '" title="Excluir">🗑</button></td></tr>';
+    }).join('');
+    return [
+      pageHeading('Banco de Horas', 'Cliente: ' + esc(client.name), '<button class="primary-button" data-action="ajuste-new">+ Novo ajuste</button>'),
+      '<section class="card"><header class="card-header"><div><h2>Saldo por colaborador</h2><small>Saldo do ponto aprovado + créditos manuais − débitos manuais</small></div></header><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Saldo do ponto</th><th>Créditos manuais</th><th>Débitos manuais</th><th>Saldo total</th><th>Valor estimado (c/ 50%)</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty-state"><h3>Nenhum colaborador ativo</h3></div></td></tr>') + '</tbody></table></div></section>',
+      '<section class="card"><header class="card-header"><div><h2>Histórico de ajustes manuais</h2></div></header><div class="table-wrap"><table><thead><tr><th>Colaborador</th><th>Data</th><th>Tipo</th><th>Horas</th><th>Motivo</th><th></th></tr></thead><tbody>' + (ajusteRows || '<tr><td colspan="6"><div class="empty-state"><h3>Nenhum ajuste lançado</h3></div></td></tr>') + '</tbody></table></div></section>'
+    ].join('');
+  }
+
   var ALIMONY_INSS_2026 = [
     { limit: 1621.00, rate: .075 },
     { limit: 2902.84, rate: .09 },
@@ -10446,6 +10671,15 @@
     else if (action === 'beneficio-save') submitBeneficioForm();
     else if (action === 'beneficio-toggle') toggleBeneficioStatus(actionEl.getAttribute('data-id'));
     else if (action === 'beneficio-delete') deleteBeneficio(actionEl.getAttribute('data-id'));
+    else if (action === 'ponto-new') openPontoForm();
+    else if (action === 'ponto-cancel') closePontoForm();
+    else if (action === 'ponto-save') submitPontoForm();
+    else if (action === 'ponto-approve') approvePonto(actionEl.getAttribute('data-id'));
+    else if (action === 'ponto-delete') deletePonto(actionEl.getAttribute('data-id'));
+    else if (action === 'ajuste-new') openAjusteForm();
+    else if (action === 'ajuste-cancel') closeAjusteForm();
+    else if (action === 'ajuste-save') submitAjusteForm();
+    else if (action === 'ajuste-delete') deleteAjuste(actionEl.getAttribute('data-id'));
     else if (action === 'cest-export-json') exportCestResults('json');
     else if (action === 'cest-export-csv') exportCestResults('csv');
     else if (action === 'cest-print') window.print();
@@ -10866,6 +11100,10 @@
     else if (event.target.matches('[data-beneficio-input]')) { updateBeneficioForm(); }
     else if (event.target.id === 'beneficio-colaborador-filter') { beneficiosUi().colaboradorFilter = event.target.value; route(); }
     else if (event.target.id === 'beneficio-status-filter') { beneficiosUi().statusFilter = event.target.value; route(); }
+    else if (event.target.id === 'ponto-tipoDia') { pontoCaptureFormState(); route(); }
+    else if (event.target.id === 'ponto-competencia-filter') { pontoUi().competencia = event.target.value; route(); }
+    else if (event.target.id === 'ponto-colaborador-filter') { pontoUi().colaboradorFilter = event.target.value; route(); }
+    else if (event.target.id === 'ponto-status-filter') { pontoUi().statusFilter = event.target.value; route(); }
     else if (event.target.matches('[data-kanban-move]')) moveKanbanCard(event.target.getAttribute('data-id'), event.target.value);
     else if (['cest-filter-uf', 'cest-filter-segment', 'cest-filter-no-ncm', 'cest-filter-door'].indexOf(event.target.id) >= 0) renderCestResults(true);
     else if (event.target.matches('[data-hr-calc-input]')) updateHrCalc();

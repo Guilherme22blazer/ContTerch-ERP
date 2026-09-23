@@ -185,6 +185,8 @@ ERP_MODULES = {
     "tab_ferias": "Férias",
     "tab_afastamentos": "Afastamentos",
     "tab_beneficios": "Benefícios",
+    "tab_ponto_eletronico": "Ponto Eletrônico",
+    "tab_banco_horas": "Banco de Horas",
     "tab_folha": "Folha de Pagamento",
     "tab_horas_extras_noturno": "Horas Extras e Trabalho Noturno",
     "tab_verbas_rescisorias": "Verbas Rescisórias",
@@ -214,7 +216,7 @@ FISCAL_TAB_MODULES = {
     "tab_comparativo_regimes",
 }
 CONTABIL_TAB_MODULES = {"tab_analise_balanco", "tab_lancamentos_contabeis", "tab_acompanhamento_contabil"}
-RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos", "tab_beneficios"}
+RH_TAB_MODULES = {"tab_rh_dashboard", "tab_colaboradores", "tab_ferias", "tab_afastamentos", "tab_beneficios", "tab_ponto_eletronico", "tab_banco_horas"}
 TRABALHISTA_TAB_MODULES = {
     "tab_folha", "tab_horas_extras_noturno", "tab_verbas_rescisorias", "tab_seguro_desemprego",
     "tab_gps_atraso", "tab_pro_labore", "tab_irrf_aliquota_efetiva", "tab_pensao_alimenticia",
@@ -572,6 +574,83 @@ def beneficio_fields_from_payload(payload: dict) -> dict:
         "valor_custo_empresa": round(valor_beneficio - valor_desconto, 2),
         "status": status, "data_inicio": data_inicio, "data_fim": data_fim or None,
         "observacoes": str(payload.get("observacoes", "")).strip()[:2000] or None,
+    }
+
+
+TIME_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+PONTO_TIPO_DIA_VALUES = {"normal", "feriado_trabalhado", "falta", "falta_justificada", "folga", "atestado"}
+PONTO_SEM_PONTO_TIPOS = {"falta", "falta_justificada", "folga", "atestado"}
+
+
+def parse_hhmm_to_minutes(value: str) -> int:
+    match = TIME_HHMM_RE.match(value)
+    if not match:
+        raise ValueError("Horário inválido — use o formato HH:MM.")
+    return int(match.group(1)) * 60 + int(match.group(2))
+
+
+def ponto_registro_fields_from_payload(payload: dict) -> dict:
+    data = str(payload.get("data", "")).strip()
+    if not DATE_ISO_RE.match(data):
+        raise ValueError("Informe a data do registro.")
+    tipo_dia = str(payload.get("tipoDia", "normal")).strip()
+    if tipo_dia not in PONTO_TIPO_DIA_VALUES:
+        raise ValueError("Tipo de dia inválido.")
+    try:
+        horas_esperadas = round(float(payload.get("horasEsperadas", 8) or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Horas esperadas inválidas.")
+    if horas_esperadas < 0 or horas_esperadas > 24:
+        raise ValueError("Horas esperadas inválidas.")
+    trabalho_noturno = bool(payload.get("trabalhoNoturno"))
+    entrada1 = str(payload.get("entrada1", "")).strip()
+    saida1 = str(payload.get("saida1", "")).strip()
+    entrada2 = str(payload.get("entrada2", "")).strip()
+    saida2 = str(payload.get("saida2", "")).strip()
+
+    if tipo_dia in PONTO_SEM_PONTO_TIPOS:
+        horas_trabalhadas = 0.0
+        saldo_dia = 0.0 if tipo_dia != "falta" else -horas_esperadas
+        entrada1 = saida1 = entrada2 = saida2 = ""
+    else:
+        for label, value in (("Entrada 1", entrada1), ("Saída 1", saida1), ("Entrada 2", entrada2), ("Saída 2", saida2)):
+            if not value:
+                raise ValueError(f"Informe o horário de {label.lower()}.")
+        minutos_manha = parse_hhmm_to_minutes(saida1) - parse_hhmm_to_minutes(entrada1)
+        minutos_tarde = parse_hhmm_to_minutes(saida2) - parse_hhmm_to_minutes(entrada2)
+        if minutos_manha <= 0 or minutos_tarde <= 0:
+            raise ValueError("Os horários informados são inconsistentes (saída antes da entrada).")
+        horas_trabalhadas = round((minutos_manha + minutos_tarde) / 60, 2)
+        saldo_dia = round(horas_trabalhadas - horas_esperadas, 2)
+
+    return {
+        "data": data, "tipo_dia": tipo_dia,
+        "entrada1": entrada1 or None, "saida1": saida1 or None, "entrada2": entrada2 or None, "saida2": saida2 or None,
+        "trabalho_noturno": trabalho_noturno, "horas_esperadas": horas_esperadas,
+        "horas_trabalhadas": horas_trabalhadas, "saldo_dia": saldo_dia,
+        "observacoes": str(payload.get("observacoes", "")).strip()[:2000] or None,
+    }
+
+
+BANCO_HORAS_AJUSTE_TIPO_VALUES = {"credito", "debito"}
+
+
+def banco_horas_ajuste_fields_from_payload(payload: dict) -> dict:
+    tipo = str(payload.get("tipo", "")).strip()
+    if tipo not in BANCO_HORAS_AJUSTE_TIPO_VALUES:
+        raise ValueError("Tipo de ajuste inválido.")
+    data = str(payload.get("data", "")).strip()
+    if not DATE_ISO_RE.match(data):
+        raise ValueError("Informe a data do ajuste.")
+    try:
+        horas = round(float(payload.get("horas", 0) or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Quantidade de horas inválida.")
+    if horas <= 0:
+        raise ValueError("Informe uma quantidade de horas maior que zero.")
+    return {
+        "tipo": tipo, "data": data, "horas": horas,
+        "motivo": str(payload.get("motivo", "")).strip()[:500] or None,
     }
 
 
@@ -4120,6 +4199,28 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         }
 
+    def ponto_registro_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "data": row["data"], "tipoDia": row["tipo_dia"],
+            "entrada1": row["entrada1"] or "", "saida1": row["saida1"] or "",
+            "entrada2": row["entrada2"] or "", "saida2": row["saida2"] or "",
+            "trabalhoNoturno": bool(row["trabalho_noturno"]),
+            "horasEsperadas": float(row["horas_esperadas"] or 0), "horasTrabalhadas": float(row["horas_trabalhadas"] or 0),
+            "saldoDia": float(row["saldo_dia"] or 0), "status": row["status"], "observacoes": row["observacoes"] or "",
+            "createdBy": row["created_by"] or "", "updatedBy": row["updated_by"] or "",
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def banco_horas_ajuste_row(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"], "colaboradorId": row["colaborador_id"],
+            "colaboradorNome": row.get("colaborador_nome", ""), "colaboradorCargo": row.get("colaborador_cargo", ""),
+            "data": row["data"], "tipo": row["tipo"], "horas": float(row["horas"] or 0), "motivo": row["motivo"] or "",
+            "createdBy": row["created_by"] or "", "createdAt": row["created_at"],
+        }
+
     def support_ticket_summary(self, row: sqlite3.Row) -> dict:
         ai_triage_raw = row["ai_triage"]
         if isinstance(ai_triage_raw, str):
@@ -6724,6 +6825,98 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 ).fetchall()
             self.send_json({"items": [self.beneficio_row(row) for row in rows]})
             return
+        if path == "/api/ponto":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ponto_eletronico"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            competencia = query_params.get("competencia", [""])[0].strip()
+            status_filter = query_params.get("status", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["p.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("p.colaborador_id = ?"); values.append(colaborador_id)
+            if re.match(r"^\d{4}-\d{2}$", competencia):
+                conditions.append("p.data LIKE ?"); values.append(competencia + "%")
+            if status_filter in ("pendente", "aprovado"):
+                conditions.append("p.status = ?"); values.append(status_filter)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT p.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM ponto_registros p JOIN colaboradores c ON c.id = p.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY p.data DESC
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.ponto_registro_row(row) for row in rows]})
+            return
+        if path == "/api/banco-horas/ajustes":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_banco_horas"):
+                return
+            query_params = parse_qs(parsed_url.query)
+            client_id = query_params.get("clientId", [""])[0].strip()
+            colaborador_id = query_params.get("colaboradorId", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            conditions, values = ["a.company_id = ?", "c.client_id = ?"], [user["company_id"], client_id]
+            if colaborador_id:
+                conditions.append("a.colaborador_id = ?"); values.append(colaborador_id)
+            with connect() as database:
+                rows = database.execute(
+                    f"""
+                    SELECT a.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                    FROM banco_horas_ajustes a JOIN colaboradores c ON c.id = a.colaborador_id
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY a.data DESC
+                    """,
+                    values,
+                ).fetchall()
+            self.send_json({"items": [self.banco_horas_ajuste_row(row) for row in rows]})
+            return
+        if path == "/api/banco-horas/saldo":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_banco_horas"):
+                return
+            client_id = parse_qs(parsed_url.query).get("clientId", [""])[0].strip()
+            if not client_id:
+                self.send_json({"error": "Informe o cliente."}, HTTPStatus.BAD_REQUEST)
+                return
+            with connect() as database:
+                colaboradores = database.execute(
+                    "SELECT id, nome_completo, cargo FROM colaboradores WHERE company_id = ? AND client_id = ? AND status != 'desligado' ORDER BY nome_completo",
+                    (user["company_id"], client_id),
+                ).fetchall()
+                saldos = []
+                for colaborador in colaboradores:
+                    ponto_saldo = database.execute(
+                        "SELECT COALESCE(SUM(saldo_dia), 0) AS total FROM ponto_registros WHERE colaborador_id = ? AND status = 'aprovado'",
+                        (colaborador["id"],),
+                    ).fetchone()["total"]
+                    creditos = database.execute(
+                        "SELECT COALESCE(SUM(horas), 0) AS total FROM banco_horas_ajustes WHERE colaborador_id = ? AND tipo = 'credito'",
+                        (colaborador["id"],),
+                    ).fetchone()["total"]
+                    debitos = database.execute(
+                        "SELECT COALESCE(SUM(horas), 0) AS total FROM banco_horas_ajustes WHERE colaborador_id = ? AND tipo = 'debito'",
+                        (colaborador["id"],),
+                    ).fetchone()["total"]
+                    saldo_total = float(ponto_saldo) + float(creditos) - float(debitos)
+                    saldos.append({
+                        "colaboradorId": colaborador["id"], "colaboradorNome": colaborador["nome_completo"],
+                        "colaboradorCargo": colaborador["cargo"] or "", "saldoPontoHoras": round(float(ponto_saldo), 2),
+                        "creditos": round(float(creditos), 2), "debitos": round(float(debitos), 2),
+                        "saldoTotal": round(saldo_total, 2),
+                    })
+            self.send_json({"items": saldos})
+            return
         if path == "/api/support/categories":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_central_suporte"):
@@ -8009,6 +8202,82 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
 
+        if path == "/api/ponto":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ponto_eletronico"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = ponto_registro_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    existing = database.execute(
+                        "SELECT id FROM ponto_registros WHERE colaborador_id = ? AND data = ?",
+                        (colaborador_id, fields["data"]),
+                    ).fetchone()
+                    if existing is not None:
+                        raise ValueError("Já existe um registro de ponto para este colaborador nesta data.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "updated_by", "created_at", "updated_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], user["email"], now, now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO ponto_registros({', '.join(columns)}) VALUES ({placeholders})", values)
+                    saved = database.execute(
+                        """
+                        SELECT p.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM ponto_registros p JOIN colaboradores c ON c.id = p.colaborador_id WHERE p.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "ponto_registrado", f"{saved['colaborador_nome']} · {fields['data']}")
+                self.send_json({"ok": True, "item": self.ponto_registro_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        if path == "/api/banco-horas/ajustes":
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_banco_horas"):
+                return
+            try:
+                colaborador_id = str(payload.get("colaboradorId", "")).strip()
+                if not colaborador_id:
+                    raise ValueError("Selecione o colaborador.")
+                fields = banco_horas_ajuste_fields_from_payload(payload)
+                now = local_now()
+                row_id = uuid.uuid4().hex
+                with connect() as database:
+                    colaborador = database.execute(
+                        "SELECT id FROM colaboradores WHERE id = ? AND company_id = ?",
+                        (colaborador_id, user["company_id"]),
+                    ).fetchone()
+                    if colaborador is None:
+                        raise ValueError("Colaborador não encontrado.")
+                    columns = ["id", "company_id", "colaborador_id", "created_by", "created_at"] + list(fields.keys())
+                    values = [row_id, user["company_id"], colaborador_id, user["email"], now] + list(fields.values())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    database.execute(f"INSERT INTO banco_horas_ajustes({', '.join(columns)}) VALUES ({placeholders})", values)
+                    saved = database.execute(
+                        """
+                        SELECT a.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM banco_horas_ajustes a JOIN colaboradores c ON c.id = a.colaborador_id WHERE a.id = ?
+                        """,
+                        (row_id,),
+                    ).fetchone()
+                self.audit(user["email"], "banco_horas_ajuste_registrado", f"{saved['colaborador_nome']} · {fields['tipo']} {fields['horas']}h")
+                self.send_json({"ok": True, "item": self.banco_horas_ajuste_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
         if path == "/api/acompanhamento-contabil":
             user = self.require_user()
             if user is None or not self.require_module_access(user, "tab_acompanhamento_contabil"):
@@ -8363,6 +8632,34 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
             self.audit(administrator["email"], "beneficio_excluido", beneficio_delete_match.group(1))
             self.send_json({"ok": True})
             return
+        ponto_delete_match = re.fullmatch(r"/api/ponto/([a-f0-9]{32})", path)
+        if ponto_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT id FROM ponto_registros WHERE id = ? AND company_id = ?", (ponto_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Registro de ponto não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM ponto_registros WHERE id = ?", (ponto_delete_match.group(1),))
+            self.audit(administrator["email"], "ponto_excluido", ponto_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
+        banco_horas_ajuste_delete_match = re.fullmatch(r"/api/banco-horas/ajustes/([a-f0-9]{32})", path)
+        if banco_horas_ajuste_delete_match:
+            administrator = self.require_admin()
+            if administrator is None:
+                return
+            with connect() as database:
+                target = database.execute("SELECT id FROM banco_horas_ajustes WHERE id = ? AND company_id = ?", (banco_horas_ajuste_delete_match.group(1), administrator["company_id"])).fetchone()
+                if target is None:
+                    self.send_json({"error": "Ajuste não encontrado."}, HTTPStatus.NOT_FOUND)
+                    return
+                database.execute("DELETE FROM banco_horas_ajustes WHERE id = ?", (banco_horas_ajuste_delete_match.group(1),))
+            self.audit(administrator["email"], "banco_horas_ajuste_excluido", banco_horas_ajuste_delete_match.group(1))
+            self.send_json({"ok": True})
+            return
         managed_user_match = re.fullmatch(r"/api/admin/users/([a-f0-9]{32})", path)
         if managed_user_match:
             administrator = self.require_admin()
@@ -8571,6 +8868,40 @@ class SimplesCalcHandler(SimpleHTTPRequestHandler):
                     ).fetchone()
                 self.audit(user["email"], "beneficio_atualizado", f"{saved['colaborador_nome']} · {fields['tipo']}")
                 self.send_json({"ok": True, "item": self.beneficio_row(saved)})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        ponto_put_match = re.fullmatch(r"/api/ponto/([a-f0-9]{32})", path)
+        if ponto_put_match:
+            user = self.require_user()
+            if user is None or not self.require_module_access(user, "tab_ponto_eletronico"):
+                return
+            try:
+                payload = self.read_json()
+                fields = ponto_registro_fields_from_payload(payload)
+                status = str(payload.get("status", "pendente")).strip()
+                if status not in ("pendente", "aprovado"):
+                    raise ValueError("Status inválido.")
+                fields["status"] = status
+                with connect() as database:
+                    existing = database.execute("SELECT id FROM ponto_registros WHERE id = ? AND company_id = ?", (ponto_put_match.group(1), user["company_id"])).fetchone()
+                    if existing is None:
+                        raise ValueError("Registro de ponto não encontrado.")
+                    assignments = ", ".join(f"{column} = ?" for column in fields.keys())
+                    database.execute(
+                        f"UPDATE ponto_registros SET {assignments}, updated_by = ?, updated_at = ? WHERE id = ?",
+                        list(fields.values()) + [user["email"], local_now(), ponto_put_match.group(1)],
+                    )
+                    saved = database.execute(
+                        """
+                        SELECT p.*, c.nome_completo AS colaborador_nome, c.cargo AS colaborador_cargo
+                        FROM ponto_registros p JOIN colaboradores c ON c.id = p.colaborador_id WHERE p.id = ?
+                        """,
+                        (ponto_put_match.group(1),),
+                    ).fetchone()
+                self.audit(user["email"], "ponto_atualizado", f"{saved['colaborador_nome']} · {fields['data']} · {status}")
+                self.send_json({"ok": True, "item": self.ponto_registro_row(saved)})
             except ValueError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             return
