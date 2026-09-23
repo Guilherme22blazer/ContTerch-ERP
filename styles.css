@@ -829,3 +829,12 @@ tr.row-clickable:hover{background:#f0f4f9}
 .colab-dependente-row .check{display:flex;align-items:center;gap:5px;font-size:8px;white-space:nowrap}
 .colab-form-actions{justify-content:flex-end;margin-top:14px}
 @media(max-width:900px){.colab-dependente-row{grid-template-columns:1fr 1fr}.colab-filters-grid{grid-template-columns:1fr}}
+.holerite-header{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;padding-bottom:10px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+.holerite-header b{display:block;font-size:10px}
+.holerite-header small{display:block;margin-top:2px;color:var(--muted);font-size:8px}
+.doc-sheet{max-width:820px;margin:0 auto}
+.doc-sheet-title{margin:0 0 14px;font-size:11px;text-align:center;text-transform:uppercase;letter-spacing:.04em}
+.doc-sheet p{margin:0 0 10px;line-height:1.6;text-align:justify;font-size:9px}
+.doc-sheet-signatures{display:flex;gap:32px;flex-wrap:wrap;margin-top:46px}
+.doc-sheet-signatures>div{flex:1;min-width:200px;padding-top:6px;border-top:1px solid var(--ink);text-align:center;font-size:8px;color:var(--muted)}
+.doc-type-list{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}

@@ -280,6 +280,7 @@
     { route: 'banco-horas', label: 'Banco de Horas', icon: '▧', desc: 'Saldo de horas por colaborador, ajustes manuais e valor estimado' },
     { route: 'rescisoes', label: 'Rescisão', icon: '⇥', desc: 'Cálculo completo de rescisão por colaborador, com desligamento automático e demonstrativo' },
     { route: 'holerite', label: 'Holerite', icon: '▤', desc: 'Demonstrativo de pagamento por colaborador e competência, pronto para impressão' },
+    { route: 'documentos-rh', label: 'Documentos', icon: '▨', desc: 'Ficha de registro, contrato de trabalho e demais documentos gerados a partir dos dados do colaborador' },
     { route: 'central-formularios', label: 'Central de Formulários', icon: '▧', desc: 'Formulários federais, trabalhistas e previdenciários para preencher e baixar' },
     { route: 'modelos-contratos', label: 'Modelos e Contratos', icon: '▨', desc: 'Contratos trabalhistas, comerciais e societários para preencher e baixar' },
     { route: 'kanban', label: 'Quadro Kanban', icon: '▦', desc: 'Organização visual de tarefas com blocos movidos entre etapas' },
@@ -5328,6 +5329,7 @@
     else if (state.route === 'banco-horas') main.innerHTML = renderBancoHoras();
     else if (state.route === 'rescisoes') main.innerHTML = renderRescisoes();
     else if (state.route === 'holerite') main.innerHTML = renderHolerite();
+    else if (state.route === 'documentos-rh') main.innerHTML = renderDocumentosRh();
     else if (state.route === 'central-formularios') main.innerHTML = renderFormsCenter();
     else if (state.route === 'modelos-contratos') main.innerHTML = renderContractsLibrary();
     else if (state.route === 'kanban') main.innerHTML = renderKanbanBoard();
@@ -5365,6 +5367,12 @@
       if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
       if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios();
       if (pontoState.loadedForClient !== (currentClient() && currentClient().id)) loadPonto();
+    }
+    if (state.route === 'documentos-rh') {
+      if (colaboradoresState.loadedForClient !== (currentClient() && currentClient().id)) loadColaboradores();
+      if (beneficiosState.loadedForClient !== (currentClient() && currentClient().id)) loadBeneficios();
+      if (feriasState.loadedForClient !== (currentClient() && currentClient().id)) loadFerias();
+      if (rescisoesState.loadedForClient !== (currentClient() && currentClient().id)) loadRescisoes();
     }
     if (state.route === 'central-suporte' && !supportTicketsState.detail && !supportTicketsState.loaded) loadSupportTickets();
     if (state.route === 'suporte-admin' && !supportAdminState.detail && !supportAdminState.loaded) loadSupportAdminDashboard();
@@ -8859,6 +8867,152 @@
     ].join('');
   }
 
+  function docsUi() {
+    if (!state.docsUi) state.docsUi = { colaboradorId: '', tipo: '' };
+    return state.docsUi;
+  }
+  function docsRelatedFor(colaborador) {
+    var vt = (beneficiosState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id && item.tipo === 'vale_transporte' && item.status === 'ativo'; })[0] || null;
+    var ferias = (feriasState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id && ['programada', 'aprovada', 'em_gozo'].indexOf(item.status) >= 0; })
+      .sort(function (a, b) { return (b.dataInicioGozo || b.periodoAquisitivoFim || '').localeCompare(a.dataInicioGozo || a.periodoAquisitivoFim || ''); })[0] || null;
+    var rescisao = (rescisoesState.items || []).filter(function (item) { return item.colaboradorId === colaborador.id; })
+      .sort(function (a, b) { return (b.dataDesligamento || '').localeCompare(a.dataDesligamento || ''); })[0] || null;
+    return { vt: vt, ferias: ferias, rescisao: rescisao };
+  }
+  function docsAvailableTypes(related) {
+    var types = [
+      { tipo: 'ficha-registro', label: 'Ficha de Registro do Empregado' },
+      { tipo: 'contrato-trabalho', label: 'Contrato de Trabalho' }
+    ];
+    if (related.vt) types.push({ tipo: 'declaracao-vt', label: 'Declaração de Vale-Transporte' });
+    if (related.ferias) types.push({ tipo: 'aviso-ferias', label: 'Aviso de Férias' });
+    if (related.rescisao) types.push({ tipo: 'termo-rescisao', label: 'Termo de Rescisão do Contrato de Trabalho' });
+    return types;
+  }
+  function docField(value) { return value ? esc(value) : '—'; }
+  function docEmployerLine(client) { return esc(client.name) + (client.document ? ' — CNPJ/CPF ' + esc(client.document) : ''); }
+  function docSheetHeader(client, colaborador) {
+    return '<div class="holerite-header"><div><b>' + esc(client.name) + '</b><small>' + (client.document ? 'CNPJ/CPF ' + esc(client.document) : '') + '</small></div><div><b>' + esc(colaborador.nomeCompleto) + '</b><small>' + esc(colaborador.cargo || '') + (colaborador.matricula ? ' · matrícula ' + esc(colaborador.matricula) : '') + '</small></div></div>';
+  }
+  function docFichaRegistro(client, colaborador) {
+    var endereco = [colaborador.enderecoLogradouro, colaborador.enderecoNumero, colaborador.enderecoComplemento, colaborador.enderecoBairro].filter(Boolean).join(', ');
+    var enderecoCidadeUf = [colaborador.enderecoCidade, colaborador.enderecoUf].filter(Boolean).join('/');
+    var rows = function (pairs) { return '<div class="table-wrap"><table><tbody>' + pairs.map(function (pair) { return '<tr><td style="width:38%"><b>' + esc(pair[0]) + '</b></td><td>' + pair[1] + '</td></tr>'; }).join('') + '</tbody></table></div>'; };
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Ficha de Registro do Empregado</h3>' +
+      rows([
+        ['Nome completo', docField(colaborador.nomeCompleto)], ['Nome social', docField(colaborador.nomeSocial)],
+        ['CPF', docField(colaborador.cpf)], ['RG', docField(colaborador.rg)],
+        ['Data de nascimento', colaborador.dataNascimento ? dateBR(colaborador.dataNascimento) : '—'],
+        ['Sexo', docField(colaborador.sexo)], ['Estado civil', docField(colaborador.estadoCivil)],
+        ['Nacionalidade', docField(colaborador.nacionalidade)], ['Naturalidade', docField(colaborador.naturalidade)],
+        ['Endereço', docField(endereco)], ['Cidade/UF', docField(enderecoCidadeUf)], ['CEP', docField(colaborador.enderecoCep)],
+        ['Telefone', docField(colaborador.telefone)], ['E-mail', docField(colaborador.email)],
+        ['PIS/PASEP', docField(colaborador.pisPasep)], ['CTPS', (colaborador.ctpsNumero || colaborador.ctpsSerie) ? (docField(colaborador.ctpsNumero) + ' série ' + docField(colaborador.ctpsSerie)) : '—']
+      ]) +
+      '<h3 class="doc-sheet-title" style="margin-top:18px">Dados contratuais</h3>' +
+      rows([
+        ['Cargo/Função', [colaborador.cargo, colaborador.funcao].filter(Boolean).join(' / ') || '—'], ['CBO', docField(colaborador.cbo)],
+        ['Departamento/Setor', [colaborador.departamento, colaborador.setor].filter(Boolean).join(' / ') || '—'],
+        ['Data de admissão', colaborador.dataAdmissao ? dateBR(colaborador.dataAdmissao) : '—'],
+        ['Tipo de contrato', docField(colaborador.tipoContrato)], ['Regime de trabalho', docField(colaborador.regimeTrabalho)],
+        ['Jornada', docField(colaborador.jornada)], ['Salário', money(colaborador.salario || 0)],
+        ['Categoria profissional', docField(colaborador.categoriaProfissional)], ['Sindicato', docField(colaborador.sindicato)],
+        ['Banco para pagamento', [colaborador.bancoNome, colaborador.bancoAgencia, colaborador.bancoConta].filter(Boolean).join(' / ') || '—']
+      ]) +
+      (colaborador.dependentes && colaborador.dependentes.length ? '<h3 class="doc-sheet-title" style="margin-top:18px">Dependentes</h3><div class="table-wrap"><table><thead><tr><th>Nome</th><th>Parentesco</th><th>Nascimento</th></tr></thead><tbody>' +
+        colaborador.dependentes.map(function (dep) { return '<tr><td>' + esc(dep.nome) + '</td><td>' + docField(dep.parentesco) + '</td><td>' + (dep.dataNascimento ? dateBR(dep.dataNascimento) : '—') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '') +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  function docContratoTrabalho(client, colaborador) {
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Contrato Individual de Trabalho</h3>' +
+      '<p>Pelo presente instrumento particular, de um lado <b>' + docEmployerLine(client) + '</b>, doravante denominado(a) <b>EMPREGADOR(A)</b>, e de outro lado <b>' + esc(colaborador.nomeCompleto) + '</b>, portador(a) do CPF nº ' + docField(colaborador.cpf) + (colaborador.ctpsNumero ? (' e CTPS nº ' + docField(colaborador.ctpsNumero) + ' série ' + docField(colaborador.ctpsSerie)) : '') + ', doravante denominado(a) <b>EMPREGADO(A)</b>, têm entre si justo e contratado o presente Contrato Individual de Trabalho, mediante as cláusulas e condições seguintes:</p>' +
+      '<p><b>Cláusula 1ª — Função.</b> O(A) EMPREGADO(A) exercerá a função de <b>' + docField(colaborador.cargo) + '</b>' + (colaborador.cbo ? (' (CBO ' + esc(colaborador.cbo) + ')') : '') + ', no setor/departamento <b>' + docField([colaborador.setor, colaborador.departamento].filter(Boolean).join(' — ') || null) + '</b>, podendo ser transferido(a) de função conforme a necessidade do serviço e a legislação vigente.</p>' +
+      '<p><b>Cláusula 2ª — Admissão e prazo.</b> O presente contrato tem início em <b>' + (colaborador.dataAdmissao ? dateBR(colaborador.dataAdmissao) : '—') + '</b>, na modalidade <b>' + docField(colaborador.tipoContrato) + '</b>.</p>' +
+      '<p><b>Cláusula 3ª — Jornada de trabalho.</b> A jornada de trabalho será de <b>' + docField(colaborador.jornada) + '</b>, no regime <b>' + docField(colaborador.regimeTrabalho) + '</b>' + (colaborador.escala ? (', escala ' + esc(colaborador.escala)) : '') + ', observados os intervalos legais para repouso e alimentação.</p>' +
+      '<p><b>Cláusula 4ª — Remuneração.</b> O(A) EMPREGADO(A) perceberá salário mensal de <b>' + money(colaborador.salario || 0) + '</b>, a ser pago até o 5º dia útil do mês subsequente ao trabalhado, mediante depósito em conta bancária indicada pelo(a) EMPREGADO(A).</p>' +
+      '<p><b>Cláusula 5ª — Categoria e convenção coletiva.</b> As partes observarão a Convenção ou Acordo Coletivo de Trabalho da categoria <b>' + docField(colaborador.categoriaProfissional) + '</b>' + (colaborador.sindicato ? (', representada pelo sindicato ' + esc(colaborador.sindicato)) : '') + '.</p>' +
+      '<p><b>Cláusula 6ª — Disposições gerais.</b> Aplicam-se a este contrato as demais disposições da Consolidação das Leis do Trabalho (CLT) e da legislação previdenciária vigente, no que não contrariar o disposto neste instrumento.</p>' +
+      '<p>E, por estarem assim justos e contratados, firmam o presente instrumento em duas vias de igual teor.</p>' +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  function docDeclaracaoVt(client, colaborador, vt) {
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Declaração de Opção — Vale-Transporte</h3>' +
+      '<p>Eu, <b>' + esc(colaborador.nomeCompleto) + '</b>, CPF nº ' + docField(colaborador.cpf) + ', admitido(a) por <b>' + docEmployerLine(client) + '</b> para exercer a função de <b>' + docField(colaborador.cargo) + '</b>, declaro para os devidos fins que <b>OPTO</b> pelo recebimento do benefício de Vale-Transporte, nos termos da Lei nº 7.418/1985, para custeio das despesas de deslocamento residência–trabalho e vice-versa.</p>' +
+      '<p>Declaro estar ciente de que o empregador está autorizado a descontar de minha remuneração mensal o valor correspondente a até 6% do meu salário-base, ou o custo efetivo do benefício, o que for menor, conforme detalhado abaixo:</p>' +
+      '<div class="table-wrap"><table><tbody>' +
+        '<tr><td>Custo total do vale-transporte no mês</td><td>' + money(vt.valorBeneficio) + '</td></tr>' +
+        '<tr><td>Desconto autorizado do empregado (até 6% do salário)</td><td>' + money(vt.valorDescontoColaborador) + '</td></tr>' +
+        '<tr class="hr-calc-total-row"><td><b>Custo assumido pelo empregador</b></td><td><b>' + money(vt.valorCustoEmpresa) + '</b></td></tr>' +
+      '</tbody></table></div>' +
+      '<p>Comprometo-me a informar imediatamente ao setor de Recursos Humanos qualquer alteração no meu itinerário ou meio de transporte que impacte o valor do benefício ora declarado.</p>' +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  function docAvisoFerias(client, colaborador, ferias) {
+    var inicio = ferias.dataInicioGozo || '';
+    var fimGozo = '';
+    if (inicio) { var d = new Date(inicio + 'T00:00:00'); d.setDate(d.getDate() + Number(ferias.diasGozo || 30) - 1); fimGozo = d.toISOString().slice(0, 10); }
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Aviso de Férias</h3>' +
+      '<p>Comunicamos a <b>' + esc(colaborador.nomeCompleto) + '</b>, ocupante do cargo de <b>' + docField(colaborador.cargo) + '</b>, que suas férias, referentes ao período aquisitivo de <b>' + dateBR(ferias.periodoAquisitivoInicio) + '</b> a <b>' + dateBR(ferias.periodoAquisitivoFim) + '</b>, foram concedidas conforme abaixo, em observância ao art. 135 da CLT (comunicação com antecedência mínima de 30 dias).</p>' +
+      '<div class="table-wrap"><table><tbody>' +
+        '<tr><td>Início do gozo</td><td>' + (inicio ? dateBR(inicio) : 'A definir') + '</td></tr>' +
+        '<tr><td>Dias de gozo</td><td>' + esc(ferias.diasGozo) + ' dias</td></tr>' +
+        (fimGozo ? '<tr><td>Retorno ao trabalho</td><td>' + dateBR((function () { var d2 = new Date(fimGozo + 'T00:00:00'); d2.setDate(d2.getDate() + 1); return d2.toISOString().slice(0, 10); })()) + '</td></tr>' : '') +
+        (ferias.diasAbono ? '<tr><td>Dias de abono pecuniário (venda de férias)</td><td>' + esc(ferias.diasAbono) + ' dias</td></tr>' : '') +
+        '<tr class="hr-calc-total-row"><td><b>Valor líquido de férias a receber</b></td><td><b>' + money(ferias.valorLiquido) + '</b></td></tr>' +
+      '</tbody></table></div>' +
+      '<p>O pagamento das férias e, quando aplicável, do abono pecuniário será realizado até 2 (dois) dias antes do início do respectivo período de descanso, conforme art. 145 da CLT.</p>' +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Ciente do empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  function docTermoRescisao(client, colaborador, rescisao) {
+    var result = rescisao.resultadoCalculo || {};
+    return docSheetHeader(client, colaborador) +
+      '<h3 class="doc-sheet-title">Termo de Rescisão do Contrato de Trabalho</h3>' +
+      '<p>Empregador: <b>' + docEmployerLine(client) + '</b><br>Empregado(a): <b>' + esc(colaborador.nomeCompleto) + '</b>, CPF nº ' + docField(colaborador.cpf) + '<br>Admissão: <b>' + (colaborador.dataAdmissao ? dateBR(colaborador.dataAdmissao) : '—') + '</b> · Desligamento: <b>' + dateBR(rescisao.dataDesligamento) + '</b><br>Motivo: <b>' + esc(terminationReasonLabel ? terminationReasonLabel(rescisao.motivo) : rescisao.motivo) + '</b> · Aviso prévio: <b>' + esc(rescisao.avisoPrevioTipo) + '</b></p>' +
+      '<div class="table-wrap"><table><thead><tr><th>Grupo</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>' + rescisaoLinesHtml(result.lines) + '</tbody></table></div>' +
+      '<div class="table-wrap" style="margin-top:10px"><table><tbody>' +
+        '<tr><td>Total bruto</td><td>' + money(rescisao.valorBruto) + '</td></tr>' +
+        '<tr><td>Total de descontos</td><td>' + money(rescisao.valorDescontos) + '</td></tr>' +
+        '<tr class="hr-calc-total-row"><td><b>Líquido a receber</b></td><td><b>' + money(rescisao.valorLiquido) + '</b></td></tr>' +
+        '<tr><td>FGTS a depositar</td><td>' + money(rescisao.fgtsDeposito) + '</td></tr>' +
+        '<tr><td>Multa rescisória do FGTS (40%/20%)</td><td>' + money(rescisao.fgtsMulta) + '</td></tr>' +
+      '</tbody></table></div>' +
+      '<p>Declaro, para os devidos fins, ter recebido a importância líquida acima discriminada, dando plena e geral quitação ao contrato de trabalho ora extinto, exclusivamente quanto aos valores aqui especificados.</p>' +
+      '<div class="doc-sheet-signatures"><div>' + esc(colaborador.nomeCompleto) + '<br>Empregado(a)</div><div>' + docEmployerLine(client) + '<br>Empregador</div></div>';
+  }
+  var DOC_RENDERERS = {
+    'ficha-registro': function (client, colaborador) { return docFichaRegistro(client, colaborador); },
+    'contrato-trabalho': function (client, colaborador) { return docContratoTrabalho(client, colaborador); },
+    'declaracao-vt': function (client, colaborador, related) { return related.vt ? docDeclaracaoVt(client, colaborador, related.vt) : ''; },
+    'aviso-ferias': function (client, colaborador, related) { return related.ferias ? docAvisoFerias(client, colaborador, related.ferias) : ''; },
+    'termo-rescisao': function (client, colaborador, related) { return related.rescisao ? docTermoRescisao(client, colaborador, related.rescisao) : ''; }
+  };
+  function renderDocumentosRh() {
+    var client = currentClient();
+    if (!client) return pageHeading('Documentos', 'Selecione um cliente no topo da página para gerar documentos.', '');
+    var ui = docsUi();
+    var colaborador = (colaboradoresState.items || []).find(function (item) { return item.id === ui.colaboradorId; });
+    var related = colaborador ? docsRelatedFor(colaborador) : null;
+    var types = colaborador ? docsAvailableTypes(related) : [];
+    if (colaborador && ui.tipo && types.every(function (item) { return item.tipo !== ui.tipo; })) ui.tipo = '';
+    var body = colaborador && ui.tipo && DOC_RENDERERS[ui.tipo] ? DOC_RENDERERS[ui.tipo](client, colaborador, related) : '';
+    return [
+      pageHeading('Documentos', 'Cliente: ' + esc(client.name), body ? '<button class="secondary-button" data-action="print-page">▣ PDF / imprimir</button>' : ''),
+      '<section class="card"><div class="card-body"><div class="form-grid" style="grid-template-columns:2fr 1fr">' +
+        '<label class="field"><span>Colaborador</span><select id="doc-colaboradorId">' + holeriteColaboradorOptions(ui.colaboradorId) + '</select></label>' +
+      '</div></div></section>',
+      !colaborador ? '<div class="info-banner"><span>i</span><div>Selecione um colaborador para ver os documentos disponíveis.</div></div>' : (
+        '<section class="card"><div class="card-body"><div class="doc-type-list">' + types.map(function (item) {
+          return '<button class="secondary-button' + (ui.tipo === item.tipo ? ' is-active' : '') + '" data-action="doc-select" data-tipo="' + item.tipo + '">' + esc(item.label) + '</button>';
+        }).join('') + '</div></div></section>'
+      ),
+      body ? '<section class="card doc-sheet"><div class="card-body">' + body + '</div></section>' : ''
+    ].join('');
+  }
+
   var ALIMONY_INSS_2026 = [
     { limit: 1621.00, rate: .075 },
     { limit: 2902.84, rate: .09 },
@@ -10944,6 +11098,7 @@
     else if (action === 'ponto-save') submitPontoForm();
     else if (action === 'ponto-approve') approvePonto(actionEl.getAttribute('data-id'));
     else if (action === 'ponto-delete') deletePonto(actionEl.getAttribute('data-id'));
+    else if (action === 'doc-select') { docsUi().tipo = actionEl.getAttribute('data-tipo'); route(); }
     else if (action === 'ajuste-new') openAjusteForm();
     else if (action === 'ajuste-cancel') closeAjusteForm();
     else if (action === 'ajuste-save') submitAjusteForm();
@@ -11385,6 +11540,7 @@
     else if (event.target.id === 'rescisao-status-filter') { rescisoesUi().statusFilter = event.target.value; route(); }
     else if (event.target.id === 'holerite-colaboradorId') { holeriteUi().colaboradorId = event.target.value; route(); }
     else if (event.target.id === 'holerite-competencia') { holeriteUi().competencia = event.target.value; route(); }
+    else if (event.target.id === 'doc-colaboradorId') { docsUi().colaboradorId = event.target.value; docsUi().tipo = ''; route(); }
     else if (event.target.id === 'ponto-tipoDia') { pontoCaptureFormState(); route(); }
     else if (event.target.id === 'ponto-competencia-filter') { pontoUi().competencia = event.target.value; route(); }
     else if (event.target.id === 'ponto-colaborador-filter') { pontoUi().colaboradorFilter = event.target.value; route(); }
